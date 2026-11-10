@@ -4,9 +4,18 @@
     <vendor url="https://github.com/v0rest/skein-intellij-claude-code">v0rest</vendor>
 
     <description><![CDATA[
-    Keeps your Claude Code CLI sessions as threads next to your code: a side panel lists them, shows which one
-    needs you, and notifies you. Runs your own unmodified <code>claude</code> in IDE terminal tabs and never touches
-    your Claude Code configuration. Unofficial, for Claude Code.
+    <p>Skein keeps your Claude Code CLI sessions as threads next to your code. A side panel lists the project's
+    sessions, shows which one waits for you, and notifies you when a turn ends or a permission prompt comes up.</p>
+    <ul>
+      <li>Each thread is an ordinary IDE terminal tab in the editor area, running your own unmodified
+        <code>claude</code>.</li>
+      <li>Each thread's state, model and context use at a glance.</li>
+      <li>Resume past sessions from the History; pin, name and mark them done.</li>
+      <li>Start threads in git worktrees, and keep, open or remove the worktrees they leave.</li>
+      <li>Closing a thread's tab ends its claude cleanly, so no session keeps running behind a closed tab.</li>
+    </ul>
+    <p>Skein adds no hooks or settings to Claude Code. Needs Claude Code 2.1.162 or newer, on macOS or Linux.
+    Unofficial, not affiliated with Anthropic.</p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
