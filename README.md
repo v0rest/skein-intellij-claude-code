@@ -13,6 +13,8 @@ know what each thread is doing, and takes the Claude home from `CLAUDE_CONFIG_DI
 
 Unofficial, for Claude Code.
 
+![Skein's panel beside a thread that waits for a permission: three threads, a kept worktree with its counts and the History](docs/images/skein-overview.png)
+
 ## Requirements
 
 Skein needs an IntelliJ-based IDE 2026.3 or newer with the bundled terminal plugin, on local macOS or Linux, and
@@ -32,6 +34,8 @@ offers New Thread in Worktree… (see below). A thread is orange when it waits f
 question, any other dialog), blue when it finished its turn and you have not looked yet, and shows a spinner while it
 works, each with its own glyph. Clicking a row opens its tab, and Tools | Skein has Jump to Waiting Thread for the
 keyboard.
+
+![A thread's menu in the Skein panel: Pin, Rename, Color and Close](docs/images/skein-thread-menu.png)
 
 A row has two lines. The first holds the state glyph, the name, a pin when the thread is pinned, the counts of a
 worktree thread (see Worktree threads) and the age on the right, and the name is bold while the thread is unread or
@@ -151,6 +155,8 @@ never deletes either. A double click, Enter or Open resumes the newest History s
 History's question when that session runs elsewhere, and without one starts `claude --worktree <name>` there with the
 checks of a new worktree thread. The menu also reveals the folder in the file manager, named as the IDE names that
 action on each system, and has Remove….
+
+![The Worktrees section with a kept worktree's menu: Open, Reveal in Finder and Remove…](docs/images/skein-worktrees.png)
 
 Remove… goes the way of the close question's Remove, with the same reasons to keep the worktree, and a thread in any
 open window counts. It asks first, with Cancel as the default, and the question says that the worktree's ignored files
