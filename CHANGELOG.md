@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.0.0...v1.0.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* describe Skein fully on its Marketplace page ([#2](https://github.com/v0rest/skein-intellij-claude-code/issues/2)) ([4b40b11](https://github.com/v0rest/skein-intellij-claude-code/commit/4b40b1137b7bb820d93f3751ea4858216eeee5b7))
+
 ## 1.0.0 (2026-11-10)
 
 
