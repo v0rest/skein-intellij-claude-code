@@ -1,0 +1,285 @@
+# Builds the Skein plugin on every push to main, every pull request and on demand: tests, the IntelliJ Plugin
+# Verifier and buildPlugin, then the installable plugin zip as a run artifact. A change to nothing but the files a
+# release pull request touches builds nothing, since the tag build covers them. The Release workflow calls this one
+# with the tag release-please just created next to a draft release (the tag must match version.txt); that build also
+# attaches the zip to the release and only then publishes it. A manual run with a tag builds that tag again and
+# attaches the new zip to its release, creating the release first when the tag has none, and publishes it if it is
+# still a draft. Releases come only from release-please: a tag pushed by hand would not be recorded in its manifest,
+# so it builds nothing here.
+name: Build
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - CHANGELOG.md
+      - version.txt
+      - .release-please-manifest.json
+  pull_request:
+    paths-ignore:
+      - CHANGELOG.md
+      - version.txt
+      - .release-please-manifest.json
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: A release tag (v<version>) to build again and attach to its release; empty builds the branch
+        type: string
+        required: false
+        default: ""
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag to build and attach the plugin zip to (v<version>)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # a release build gets its own group: under workflow_call github.ref is the caller's main, and a manual rebuild of a
+  # tag must wait for that tag's release build rather than run beside it
+  group: build-${{ inputs.tag || github.ref }}
+  # only a pull request's run is cut off by a newer one; a main build that has started finishes with its zip and cache
+  # (one still queued gives way to the newest push), and a release build is never cut off mid-release
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Test, verify and build the plugin
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      zip: ${{ steps.plugin.outputs.zip }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # a release build checks out its tag; otherwise the event's own ref
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || '' }}
+          persist-credentials: false
+
+      - name: Check that the tag matches the plugin version
+        if: inputs.tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ ! -f version.txt ]; then
+            echo "::error::$TAG has no version.txt, so it cannot be rebuilt here"
+            exit 1
+          fi
+          version=$(tr -d '[:space:]' < version.txt)
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::tag $TAG does not match version $version in version.txt"
+            exit 1
+          fi
+
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          # the open-source cache implementation, not the closed "enhanced" provider
+          cache-provider: basic
+          # a release build (one with a tag, the only kind that publishes) runs from a clean Gradle home, never from a
+          # cache another run could have written
+          cache-disabled: ${{ inputs.tag != '' }} # zizmor: ignore[cache-poisoning]
+
+      - name: Test, verify and build
+        run: ./gradlew test verifyPlugin buildPlugin --console=plain
+
+      - name: Name the plugin zip after the commit
+        id: plugin
+        env:
+          # for a pull request, the PR's own head commit rather than GitHub's synthetic merge commit
+          PR_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # otherwise the commit checked out, which for a manual rebuild is the tag's, not the branch's github.sha
+          sha=${PR_SHA:-$(git rev-parse HEAD)}
+          built=$(find build/distributions -maxdepth 1 -name 'skein-intellij-*.zip' -print -quit)
+          if [ -z "$built" ]; then
+            echo "::error::buildPlugin produced no plugin zip"
+            exit 1
+          fi
+          mkdir -p dist
+          zip="dist/$(basename "$built" .zip)-${sha:0:7}.zip"
+          cp "$built" "$zip"
+          echo "zip=$(basename "$zip")" >> "$GITHUB_OUTPUT"
+
+      # archive: false uploads the plugin zip as it is, so the download installs directly (Install Plugin from Disk);
+      # overwrite lets a re-run of this job replace the zip of the attempt before instead of failing on its name
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          # the artifact takes the file's own name anyway, but overwrite deletes by this input, so they must match
+          name: ${{ steps.plugin.outputs.zip }}
+          path: dist/${{ steps.plugin.outputs.zip }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
+
+      - name: Keep the test and verifier reports of a failed run
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports
+          path: |
+            build/reports/
+            build/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+          overwrite: true
+
+  release:
+    name: Attach the plugin zip to the release
+    if: inputs.tag
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # update the release and its asset, or create it; nothing else in this job writes to GitHub
+    outputs:
+      id: ${{ steps.release.outputs.id }}
+      draft: ${{ steps.release.outputs.draft }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.build.outputs.zip }}
+          path: dist
+          # the artifact is the plugin zip itself; unpacking it would ship the plugin's folder instead
+          skip-decompress: true
+
+      # idempotent: a re-run or a manual rebuild replaces the zip of the release that is there, draft or published
+      - name: Attach the plugin zip to the release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          # workflow_dispatch for a manual run; a run the Release workflow called carries its push event
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          # download-artifact names the file after the download's Content-Disposition header, so take the one file
+          # it left instead of assuming that name; a folder here would mean the zip got unpacked after all
+          shopt -s nullglob
+          downloaded=(dist/*)
+          if [ "${#downloaded[@]}" -ne 1 ] || [ ! -f "${downloaded[0]}" ]; then
+            echo "::error::expected the plugin zip alone in dist, found: ${downloaded[*]:-nothing}"
+            exit 1
+          fi
+          asset="skein-intellij-${TAG#v}.zip"
+          cp "${downloaded[0]}" "$asset"
+          # whether a release carries the tag comes from the REST list, which shows drafts to this token; gh's own
+          # lookup finds a draft through GraphQL and reports "release not found" when that query fails, and a create
+          # after that would add a second release for the tag
+          releases_for_tag() {
+            gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+              --jq '.[] | select(.tag_name == env.TAG) | "\(.id) \(.draft)"'
+          }
+          if ! found=$(releases_for_tag); then
+            echo "::error::could not list the releases to look for $TAG; nothing was changed"
+            exit 1
+          fi
+          count=$(grep -c . <<< "$found" || true)
+          if [ "$count" -gt 1 ]; then
+            echo "::error::$count releases carry the tag $TAG; delete all but one, then run this again"
+            exit 1
+          elif [ "$count" -eq 1 ]; then
+            read -r id draft <<< "$found"
+            gh release upload "$TAG" "$asset" --repo "$GITHUB_REPOSITORY" --clobber
+          elif [ "$EVENT" != workflow_dispatch ]; then
+            # the Release workflow calls this only after release-please created the draft
+            echo "::error::release-please reported $TAG, but no release carries that tag; nothing was created"
+            exit 1
+          else
+            # a manual run for a tag whose release never came: release-please creates the tag before the release
+            gh release create "$TAG" "$asset" --repo "$GITHUB_REPOSITORY" --draft --title "$TAG" --generate-notes \
+              --verify-tag
+            if ! found=$(releases_for_tag) || [ "$(grep -c . <<< "$found" || true)" -ne 1 ]; then
+              echo "::error::created a draft for $TAG but cannot find it alone in the release list"
+              exit 1
+            fi
+            read -r id draft <<< "$found"
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "draft=$draft" >> "$GITHUB_OUTPUT"
+
+  # the JetBrains Marketplace, switched off until the repository variable PUBLISH_TO_MARKETPLACE is 'true'; only a
+  # release still in draft goes there, so a manual rebuild of a published release never uploads its version twice. The
+  # signing and token secrets live only in the marketplace environment, which waits for the maintainer's approval
+  marketplace:
+    name: Publish the plugin to the JetBrains Marketplace
+    if: needs.release.outputs.draft == 'true' && vars.PUBLISH_TO_MARKETPLACE == 'true'
+    needs: release
+    runs-on: ubuntu-latest
+    # the upload builds the plugin again from a clean Gradle home first
+    timeout-minutes: 30
+    environment: marketplace
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ format('refs/tags/{0}', inputs.tag) }}
+          persist-credentials: false
+
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-provider: basic
+          # what goes to the Marketplace is built from a clean Gradle home, like the release zip
+          cache-disabled: true
+
+      # publishPlugin builds and signs the plugin from the tag and uploads that zip; signPlugin would skip itself
+      # without the certificate or the key and let an unsigned zip through, so every secret has to be there first
+      - name: Publish the plugin to the JetBrains Marketplace
+        env:
+          CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in CERTIFICATE_CHAIN PRIVATE_KEY PRIVATE_KEY_PASSWORD PUBLISH_TOKEN; do
+            if [ -z "${!name:-}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::PUBLISH_TO_MARKETPLACE is on, but these secrets are empty: ${missing[*]}"
+            exit 1
+          fi
+          ./gradlew publishPlugin --console=plain
+
+  # the release stays a draft until its zip is attached (and uploaded to the Marketplace when that is on). The PATCH
+  # goes by the release's id, so no tag lookup can miss the draft, and make_latest=legacy lets GitHub pick the latest
+  # release by date and version, so publishing an older draft late never takes Latest from a newer one
+  publish:
+    name: Publish the GitHub release
+    needs: [release, marketplace]
+    # a Marketplace upload that is switched off is skipped and the release goes out without it; one that failed, or
+    # that still waits for approval, keeps the release a draft
+    if: >-
+      always() && needs.release.result == 'success' && needs.release.outputs.draft == 'true' &&
+      (needs.marketplace.result == 'success' || needs.marketplace.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # publish the draft release
+    steps:
+      - name: Publish the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ID: ${{ needs.release.outputs.id }}
+        run: |
+          set -euo pipefail
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$ID" -F draft=false -f make_latest=legacy --silent

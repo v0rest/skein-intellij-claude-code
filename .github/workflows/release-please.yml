@@ -1,0 +1,51 @@
+# Keeps a release pull request open on main: after every merge, release-please raises the version in version.txt
+# from the commit types since the last release (fix: patch, feat: minor, a breaking change: major) and writes
+# CHANGELOG.md. Merging that pull request tags the release and creates the GitHub release as a draft; the Build
+# workflow then builds that tag, attaches the plugin zip and publishes the release. Nothing is published to the
+# JetBrains Marketplace until the repository variable PUBLISH_TO_MARKETPLACE is 'true', and then only after the
+# maintainer approves the marketplace environment.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  # one release-please run at a time, and a run that started is never cut off halfway through tagging
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: Update the release pull request or tag the release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # the release commit's tag and the GitHub release
+      pull-requests: write # the release pull request itself
+      issues: write # the autorelease labels release-please finds its own pull request by (created on first use)
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      # the draft release and its tag come from release-please-config.json ("draft", "force-tag-creation")
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # a tag that release-please creates with the workflow token starts no other workflow, so the release is built here
+  build:
+    name: Build and attach the plugin zip
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      contents: write # the Build workflow's release job uploads the zip to the release and publishes it
+    # ./ resolves to this commit just like $/ (GitHub's reusable-workflow docs), and actionlint does not read $/ yet
+    uses: ./.github/workflows/build.yml # zizmor: ignore[self-repository]
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
+    # no secrets pass from here: the Marketplace upload reads them from the marketplace environment, behind its approval

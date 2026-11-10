@@ -1,0 +1,4 @@
+{"type":"permission-mode","permissionMode":"acceptEdits","sessionId":"11111111-1111-4111-8111-111111111111"}
+{"type":"user","cwd":"/w/p","sessionId":"11111111-1111-4111-8111-111111111111","message":{"role":"user","content":"synthetic first prompt"}}
+{"type":"assistant","cwd":"/w/p","sessionId":"11111111-1111-4111-8111-111111111111","message":{"role":"assistant","content":[{"type":"text","text":"synthetic answer"}]}}
+{"type":"custom-title","customTitle":"old work","sessionId":"11111111-1111-4111-8111-111111111111"}

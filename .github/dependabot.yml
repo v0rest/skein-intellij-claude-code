@@ -1,0 +1,24 @@
+# Weekly pull requests for the GitHub Actions the workflows pin by commit and for the Gradle build's plugins and
+# libraries, one grouped pull request per ecosystem. A version has to be a week old before Dependabot offers it, so a
+# release that gets pulled for being malicious or broken in its first days never reaches a pull request.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: gradle
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      gradle:
+        patterns: ["*"]

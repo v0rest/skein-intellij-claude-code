@@ -1,0 +1,50 @@
+<idea-plugin>
+    <id>io.github.v0rest.skein</id>
+    <name>Skein - Claude Code Threads</name>
+    <vendor url="https://github.com/v0rest/skein-intellij-claude-code">v0rest</vendor>
+
+    <description><![CDATA[
+    Keeps your Claude Code CLI sessions as threads next to your code: a side panel lists them, shows which one
+    needs you, and notifies you. Runs your own unmodified <code>claude</code> in IDE terminal tabs and never touches
+    your Claude Code configuration. Unofficial, for Claude Code.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>org.jetbrains.plugins.terminal</depends>
+    <dependencies>
+        <plugin id="com.intellij.modules.jna"/>
+        <module name="intellij.libraries.jna"/>
+        <module name="intellij.terminal.frontend"/>
+    </dependencies>
+
+    <resource-bundle>messages.SkeinBundle</resource-bundle>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <postStartupActivity implementation="io.github.v0rest.skein.threads.SkeinStartup"/>
+        <toolWindow id="Skein" anchor="right" icon="/icons/skein.svg"
+                    factoryClass="io.github.v0rest.skein.ui.SkeinToolWindowFactory"/>
+        <editorTabColorProvider implementation="io.github.v0rest.skein.ui.ThreadTabColorProvider"/>
+        <virtualFilePreCloseCheck implementation="io.github.v0rest.skein.threads.ThreadTabCloseCheck"/>
+        <directoryIndexExcludePolicy implementation="io.github.v0rest.skein.ui.WorktreeExcludePolicy"/>
+        <notificationGroup id="Skein" displayType="BALLOON" key="notification.group.skein" bundle="messages.SkeinBundle"/>
+        <notificationGroup id="Skein.NeedsYou" displayType="STICKY_BALLOON" key="notification.group.needsYou" bundle="messages.SkeinBundle"/>
+        <applicationConfigurable parentId="tools" id="io.github.v0rest.skein.settings" displayName="Skein"
+                                 instance="io.github.v0rest.skein.settings.SkeinConfigurable"/>
+    </extensions>
+
+    <actions>
+        <group id="Skein.Actions" text="Skein" popup="true">
+            <action id="Skein.NewThread" class="io.github.v0rest.skein.ui.actions.NewThreadAction"
+                    text="New Thread" description="Start claude in a new terminal tab" icon="AllIcons.General.Add"/>
+            <action id="Skein.NewWorktreeThread" class="io.github.v0rest.skein.ui.actions.NewWorktreeThreadAction"
+                    text="New Thread in Worktree…" description="Start claude in a new terminal tab, in its own git worktree" icon="AllIcons.Vcs.Branch"/>
+            <action id="Skein.JumpToWaiting" class="io.github.v0rest.skein.ui.actions.JumpToWaitingThreadAction"
+                    text="Jump to Waiting Thread" description="Open the Skein thread that has waited longest for you"/>
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </group>
+        <action id="Skein.WaitingCounter" class="io.github.v0rest.skein.ui.actions.WaitingCounterAction"
+                text="Threads That Need You" description="Skein threads that need you" icon="/icons/skein.svg">
+            <add-to-group group-id="MainToolbarRight" anchor="first"/>
+        </action>
+    </actions>
+</idea-plugin>
