@@ -14,8 +14,9 @@
       <li>Start threads in git worktrees, and keep, open or remove the worktrees they leave.</li>
       <li>Closing a thread's tab ends its claude cleanly, so no session keeps running behind a closed tab.</li>
     </ul>
-    <p>Skein adds no hooks or settings to Claude Code. Needs Claude Code 2.1.162 or newer, on macOS or Linux.
-    Unofficial, not affiliated with Anthropic.</p>
+    <p>Skein adds no hooks or settings to Claude Code. Needs Claude Code 2.1.162 or newer. Tested on macOS; Linux is
+    supported but has seen less use. Windows is not supported yet: there, and for projects in WSL or Remote
+    Development, Skein turns itself off and says why. Unofficial, not affiliated with Anthropic.</p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
