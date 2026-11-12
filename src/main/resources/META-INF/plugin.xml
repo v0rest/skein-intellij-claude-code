@@ -7,8 +7,8 @@
     <p>Skein keeps your Claude Code CLI sessions as threads next to your code. A side panel lists the project's
     sessions, shows which one waits for you, and notifies you when a turn ends or a permission prompt comes up.</p>
     <ul>
-      <li>Each thread is an ordinary IDE terminal tab in the editor area, running your own unmodified
-        <code>claude</code>.</li>
+      <li>Each thread is an ordinary IDE terminal tab, in the editor area or the Terminal tool window, running your own
+        unmodified <code>claude</code>.</li>
       <li>Each thread's state, model and context use at a glance.</li>
       <li>Resume past sessions from the History; pin, name and mark them done.</li>
       <li>Start threads in git worktrees, and keep, open or remove the worktrees they leave.</li>

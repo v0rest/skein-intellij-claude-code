@@ -42,10 +42,11 @@ through Settings | Plugins | ⚙ | Install Plugin from Disk.
 ## Using it
 
 "+" in the Skein tool window starts a thread in the project folder, and the chevron next to it offers New Thread in
-Worktree…. A thread turns orange when it waits for you and blue when it finished and you have not looked yet; a click
-opens its tab, and Tools | Skein | Jump to Waiting Thread does the same from the keyboard. The eye in the title bar
-filters and groups the threads, a right click on a thread pins, renames, colours or closes it, and a double click on a
-History session resumes it in a new tab.
+Worktree…. A thread opens as an editor tab, or as a tab in the Terminal tool window if you turn off Open threads in the
+editor area in Settings | Tools | Skein, and you can drag its tab between the two. A thread turns orange when it waits
+for you and blue when it finished and you have not looked yet; a click opens its tab, and Tools | Skein | Jump to
+Waiting Thread does the same from the keyboard. The eye in the title bar filters and groups the threads, a right click
+on a thread pins, renames, colours or closes it, and a double click on a History session resumes it in a new tab.
 
 ![A thread's menu in the Skein panel: Pin, Rename, Color and Close](docs/images/skein-thread-menu.png)
 

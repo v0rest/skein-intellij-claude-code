@@ -7,7 +7,7 @@ import com.intellij.ui.dsl.builder.bindItem
 import com.intellij.ui.dsl.builder.bindSelected
 import com.intellij.ui.dsl.builder.panel
 
-/** Settings | Tools | Skein: notifications, sounds, keep-awake and the thread list. */
+/** Settings | Tools | Skein: notifications, sounds, keep-awake, where thread tabs open and the thread list. */
 class SkeinConfigurable : BoundConfigurable("Skein") {
     /** One choice of how long background work keeps the computer awake; [minutes] is what the setting stores. */
     private enum class Background(val minutes: Int, val label: String) {
@@ -49,6 +49,15 @@ class SkeinConfigurable : BoundConfigurable("Skein") {
                 }
                 if (!SystemInfo.isMac) {
                     row { comment("Available on macOS only") }
+                }
+            }
+            group("Thread tabs") {
+                row { checkBox("Open threads in the editor area").bindSelected(state::threadsInEditor) }
+                row {
+                    comment(
+                        "Off keeps new threads as tabs in the Terminal tool window. Threads already open stay where they are, " +
+                            "and the thread colour shows on editor tabs only.",
+                    )
                 }
             }
             group("Thread list") {

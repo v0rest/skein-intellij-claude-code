@@ -92,7 +92,7 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
 
     private val confined = Dispatchers.Default.limitedParallelism(1)
     private val mapper = ThreadMapper(JdkProcessProbe())
-    private val adapter = TerminalAdapter(project, scope, mapper::ideChildList)
+    private val adapter = TerminalAdapter(project, scope, mapper::ideChildList, inEditor = { SkeinSettings.getInstance().state.threadsInEditor })
     private val terminal: ThreadTerminal = adapter
     private val closeSequence = CloseSequence(LibcHangUp(), terminal, mapper, END_WAIT_MILLIS) { LOG.info(it) }
     private val monitor = SessionMonitor.getInstance()
@@ -276,8 +276,8 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
 
     /**
      * Ends the threads and then closes their tabs as their own close buttons do ([ThreadCoordinator.close],
-     * [CloseSequence]), asking nothing itself: the IDE does not ask for a Skein editor tab (a tab left in the Terminal
-     * tool window may get the IDE's own question), so the caller asks first and passes the busy threads the user
+     * [CloseSequence]), asking nothing itself: the IDE does not ask for a Skein editor tab (a tab in the Terminal tool
+     * window may get the IDE's own question), so the caller asks first and passes the busy threads the user
      * [confirmed]. A thread that turned busy since stays open, and one balloon says so. A tab that closes is reported
      * back and handled like any other close, its worktree question included.
      */

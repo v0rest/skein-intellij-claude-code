@@ -125,4 +125,59 @@ class CloseGateTest {
         assertTrue(CloseGate.askAll(listOf("a", "b")) { true })
         assertTrue(CloseGate.askAll(emptyList<String>()) { false })
     }
+
+    private fun terminalWindowClose(
+        running: Boolean = true,
+        released: Boolean = false,
+        endingForMillis: Long? = null,
+        closing: Boolean = false,
+        move: Boolean = false,
+    ) = CloseGate.decideTerminalWindowClose(CloseGate.Tab("t1", released, running, views = 1, endingForMillis), closing, move)
+
+    /** Move to Editor and a drag out of the Terminal tool window remove the content too, but nothing closes. */
+    @Test
+    fun aMoveOutOfTheTerminalWindowPasses() {
+        val batch = terminalWindowClose(move = true)
+        assertTrue(batch.pass)
+        assertEquals(emptyList<String>(), batch.take)
+    }
+
+    @Test
+    fun projectClosingPassesInTheTerminalWindow() {
+        assertTrue(terminalWindowClose(closing = true).pass)
+    }
+
+    @Test
+    fun aRunningTabInTheTerminalWindowIsEndedFirst() {
+        val batch = terminalWindowClose()
+        assertFalse(batch.pass)
+        assertEquals(listOf("t1"), batch.take)
+        assertEquals(emptyList<String>(), batch.waiting)
+    }
+
+    /** A restored thread whose shell never started has nothing to hang. */
+    @Test
+    fun aTabThatDoesNotRunClosesAtOnceInTheTerminalWindow() {
+        assertTrue(terminalWindowClose(running = false).pass)
+    }
+
+    @Test
+    fun aReleasedTabPassesInTheTerminalWindow() {
+        assertTrue(terminalWindowClose(released = true).pass)
+    }
+
+    @Test
+    fun anEndingUnderWayWaitsInTheTerminalWindow() {
+        val batch = terminalWindowClose(endingForMillis = 1_000)
+        assertFalse(batch.pass)
+        assertEquals(emptyList<String>(), batch.take)
+        assertEquals(listOf("t1"), batch.waiting)
+    }
+
+    /** Whatever views the caller counted, a Terminal tool window tab is one view: two would let it close unended. */
+    @Test
+    fun aTerminalWindowTabCountsAsOneView() {
+        val batch = CloseGate.decideTerminalWindowClose(CloseGate.Tab("t1", released = false, running = true, views = 2, endingForMillis = null), closing = false, move = false)
+        assertEquals(listOf("t1"), batch.take)
+    }
 }
