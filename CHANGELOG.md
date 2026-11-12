@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.0.1...v1.1.0) (2026-11-12)
+
+
+### Features
+
+* keep threads in the Terminal tool window if you like, and follow a tab moved there ([#6](https://github.com/v0rest/skein-intellij-claude-code/issues/6)) ([5838265](https://github.com/v0rest/skein-intellij-claude-code/commit/58382659801b3fbd0b72ef55dbe90ce3ba0c0b16))
+
 ## [1.0.1](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.0.0...v1.0.1) (2026-11-10)
 
 
