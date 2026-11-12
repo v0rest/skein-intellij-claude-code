@@ -14,8 +14,15 @@
       <li>Start threads in git worktrees, and keep, open or remove the worktrees they leave.</li>
       <li>Closing a thread's tab ends its claude cleanly, so no session keeps running behind a closed tab.</li>
     </ul>
-    <p>Skein adds no hooks or settings to Claude Code. Needs Claude Code 2.1.162 or newer. Tested on macOS; Linux is
-    supported but has seen less use. Windows is not supported yet: there, and for projects in WSL or Remote
+    <p>That last point works around a bug in the IDE's terminal,
+    <a href="https://youtrack.jetbrains.com/issue/IJPL-259859">IJPL-259859</a> - when a tab closes, the IDE keeps its
+    terminal connection open but stops reading it, so a claude still running there never exits. Its session still looks
+    in use, and resuming it warns that it runs elsewhere. Until JetBrains fixes it, Skein sends claude and the tab's
+    shell the hangup signal a closing terminal would send, waits up to five seconds for them to exit while the tab is
+    still open, and only then closes the tab. A claude you start in a plain terminal tab, outside Skein, is still left
+    behind.</p>
+    <p>Skein adds no hooks or settings to Claude Code. Needs Claude Code 2.1.162 or newer. Tested on macOS, and Linux
+    is supported but has seen less use. Windows is not supported yet - on Windows, and for projects in WSL or Remote
     Development, Skein turns itself off and says why. Unofficial, not affiliated with Anthropic.</p>
     ]]></description>
 
