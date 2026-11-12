@@ -27,22 +27,27 @@ sealed interface ShellsAtCommand {
 
 /**
  * Which thread tabs the user has before them, read in one go ([ThreadTerminal.tabsInView]). [inView]: the ids of the
- * threads whose tab the user is looking at right now (the IDE frame is active and the tab is a selected editor).
- * [inFront]: the id of the thread whose tab is the selected editor of this project, whether or not the IDE or the
- * project's window has focus, or null when the selected editor shows no thread; unlike [inView] this is what the list
- * marks, so the mark stays while the user is in another application.
+ * threads whose tab the user is looking at right now (the IDE frame is active and the tab is a selected editor, or
+ * the selected tab of the visible Terminal tool window). [inFront]: the id of the thread whose tab is the selected
+ * editor of this project, else one selected in the visible Terminal tool window, whether or not the IDE or the
+ * project's window has focus, or null; unlike [inView] this is what the list marks, so the mark stays while the user
+ * is in another application.
  */
 data class TabsInView(val inView: Set<String>, val inFront: String?)
 
 /** What the coordinator needs from the IDE terminal; the only seam between the IDE-free core and the terminal plugin. */
 interface ThreadTerminal {
-    /** Opens an editor-area terminal in [folder] running the user's shell; returns a handle at once, the tab appears on the EDT. */
+    /**
+     * Opens a terminal in [folder] running the user's shell, in the editor area or, as the setting says, in the Terminal
+     * tool window; returns a handle at once, the tab appears on the EDT. The user may move the tab between the two
+     * afterwards: it is the same thread there, closed only when its tab closes.
+     */
     fun open(threadId: String, folder: String, tabName: String, focus: Boolean): ThreadTab
 
     /** Types [command] plus Enter into the tab once the shell prompt is ready; returns at once. */
     fun type(tab: ThreadTab, command: String)
 
-    /** Brings the tab's editor forward. */
+    /** Brings the tab forward where it is: its editor, or the Terminal tool window with the tab selected. */
     fun select(tab: ThreadTab)
 
     /**
@@ -103,7 +108,8 @@ interface ThreadTerminalListener {
     fun tabSelected(tabId: String)
 
     /**
-     * The user closed thread editor tabs in the IDE (a ×, Close All, Close Others) and one of them still runs its shell:
+     * The user closed thread tabs in the IDE (an editor tab's ×, Close All, Close Others, or a Terminal tool window tab's
+     * close) and one of them still runs its shell:
      * [tabIds] are all the thread tabs of that close, running or not. True when the listener takes the close over: it
      * ends the threads and then closes those tabs itself in one batch ([ThreadTerminal.close]), and the IDE keeps them
      * open meanwhile; false lets them close at once. Called on the EDT; returns at once and never throws.

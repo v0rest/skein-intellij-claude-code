@@ -2,8 +2,8 @@ package io.github.v0rest.skein.terminal
 
 /**
  * What Skein's close check answers when the IDE is about to close a tab on the user's word (the editor tab's ×, Close,
- * Close All, Close Others; never a move to another split or window, a project close or the IDE quitting, which do not
- * ask the checks). A terminal tab closed while its shell runs leaves the shell, and a claude in it, hanging forever,
+ * Close All, Close Others, a Terminal tool window tab's close; never a move, which does not ask, nor a project close or
+ * the IDE quitting, which pass when they do ask). A terminal tab closed while its shell runs leaves the shell, and a claude in it, hanging forever,
  * because the IDE keeps the tab's pty open but stops reading it (IJPL-259859); so a Skein thread tab whose session runs
  * stays open until Skein has ended the thread there and closes the tab itself.
  */
@@ -56,6 +56,16 @@ object CloseGate {
         }.map { it.first.id }
         return Batch(pass = false, take = take, waiting = waiting)
     }
+
+    /**
+     * The answer when the Terminal tool window is about to remove a thread tab's content (the tab's ×, Close Tab, the
+     * tool window's close actions): a running thread is ended first there too, since the IDE leaves a closed tab's pty
+     * unread there as well (IJPL-259859). [move] is a removal the terminal plugin marks with `Content.TEMPORARY_REMOVED_KEY`,
+     * Move to Editor or a drag out of the tool window, where the terminal goes on in its new place: it always passes, as
+     * does a project close or an IDE quit ([closing]). The tab is one view whatever [tab] says.
+     */
+    fun decideTerminalWindowClose(tab: Tab, closing: Boolean, move: Boolean): Batch =
+        if (move) Batch(pass = true, take = emptyList(), waiting = emptyList()) else decideBatch(listOf(tab.copy(views = 1)), closing)
 
     /**
      * True when [can] says yes to every one of [items], asking about each one even after a no, unlike `all`: each

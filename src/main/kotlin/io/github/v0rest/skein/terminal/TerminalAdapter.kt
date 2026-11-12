@@ -28,10 +28,12 @@ import com.intellij.openapi.util.Key
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.terminal.TerminalTitle
+import com.intellij.terminal.frontend.toolwindow.TerminalTabsManagerListener
 import com.intellij.terminal.frontend.toolwindow.TerminalToolWindowTab
 import com.intellij.terminal.frontend.toolwindow.TerminalToolWindowTabsManager
 import com.intellij.terminal.frontend.view.TerminalViewSessionState
 import com.intellij.ui.content.Content
+import com.intellij.ui.content.ContentManager
 import com.intellij.ui.content.ContentManagerEvent
 import com.intellij.ui.content.ContentManagerListener
 import io.github.v0rest.skein.process.ProcessList
@@ -50,7 +52,10 @@ import org.jetbrains.plugins.terminal.view.TerminalOutputModelListener
 import java.awt.KeyboardFocusManager
 import java.awt.event.FocusAdapter
 import java.awt.event.FocusEvent
+import java.util.Collections
+import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
+import javax.swing.SwingUtilities
 
 /**
  * The only code that talks to the terminal plugin (IntelliJ 2026.3, build 263.7307.200; API checked with javap on
@@ -71,13 +76,27 @@ import java.util.concurrent.ConcurrentHashMap
  *   (MoveTerminalSessionToEditorAction), invoked through ActionManager with a data context that carries the Terminal
  *   tool window and its content manager, which is what ToolWindowContextMenuActionBase reads. Doing it by hand would
  *   need TerminalViewVirtualFile (Kotlin-internal) and FileEditorManagerKeys (@Internal). The editor file the action
- *   opened is found as the one new entry in FileEditorManager.openFiles. If the move ever fails, the tab stays in the
- *   Terminal tool window, where Skein follows it through the tool window's content manager.
+ *   opened is found as the one new entry in FileEditorManager.openFiles. With the setting off ([inEditor]), or if the
+ *   move fails, the tab stays in the Terminal tool window.
+ * - A tab is one `TerminalToolWindowTab` with one `Content` wherever it goes (intellij-community, tag
+ *   idea/263.7307.200, read 2026-11-12): Move to Editor detaches it (`detachTab` removes the content with
+ *   `Content.TEMPORARY_REMOVED_KEY` set and publishes `TerminalTabsManagerListener.tabDetached`), a drag of the editor
+ *   tab into the Terminal tool window attaches the same tab and content again (`attachTab`, then `tabAdded`), and the
+ *   terminal's editor shows `tab.content.component`. The tab is closed for good only when its content is disposed,
+ *   which ends its terminal: the editor disposes it when the file closes for good (not when it closes to reopen, as on a
+ *   move), the tool window when the content is removed with dispose. So Skein reports a thread closed when its content
+ *   is disposed (`Disposer.tryRegister`, no ApiStatus), never because an editor file closed or a content left the tool
+ *   window, and looks up where the tab is when it needs to ([TabPlaces]): the Terminal tool window when
+ *   `TerminalToolWindowTabsManager.getTabs` (Experimental, EDT) lists it, else the open editor file one of whose
+ *   `FileEditorManager.getAllEditors` (no ApiStatus) shows the tab's content component. A file found that way, and one
+ *   `fileOpened` reports, is marked with the thread. `TerminalTabsManagerListener.TOPIC` and its `tabAdded` are
+ *   Experimental, `ToolWindow.getContentManagerIfCreated`, `Content.TEMPORARY_REMOVED_KEY` and
+ *   `TerminalToolWindowTabsManager.closeTab` (Experimental) are what else is new (javap, 2026-11-12).
  * - Closing a tab from Skein takes the tab's own close path, so the same close events run: in the editor
  *   `FileEditorManagerEx.closeFileWithChecks(file, window)`, which is what the editor tab's close button (`CloseTab`)
  *   calls, for each window `FileEditorManagerEx.getWindows` lists whose `EditorWindow.isFileOpen`; in the Terminal
- *   tool window `ContentManager.removeContent(content, true)`. None of these carries an ApiStatus annotation (javap,
- *   2026-11-09). The content is the one `moveToEditor` already reads.
+ *   tool window `ContentManager.removeContent(content, true)` on the content's own manager (a pane of a split tool window
+ *   has its own). None of these carries an ApiStatus annotation (javap, 2026-11-09).
  * - A terminal tab closed while its shell runs leaves the shell, and a claude in it, hanging forever: the IDE keeps the
  *   tab's pty open but stops reading it (IJPL-259859). So Skein ends the thread first ([awaitEnded] waits for
  *   `TerminalView.getSessionState`, Experimental, to turn Terminated) and closes the tab after. For the editor tab's
@@ -85,9 +104,11 @@ import java.util.concurrent.ConcurrentHashMap
  *   thread tab open until then, and all the thread tabs of one close are ended and closed together; the tab Skein
  *   closes itself is released, so that check lets it through. The IDE's own checks do not cover this terminal file.
  *   Skein's own closes count as its own selections ([OwnSelections]), so the neighbour the IDE selects is not taken for
- *   the user opening it. In the Terminal tool window (the degraded path) the menu's Close ends the thread before the
- *   removal, which runs the tool window's close listeners and may ask the IDE's own question too; the tool window tab's
- *   own close button is left as it was.
+ *   the user opening it. In the Terminal tool window the same holds through a `ContentManagerListener` on every content
+ *   manager a thread tab sits in: its `contentRemoveQuery` keeps a running thread's tab ([CloseGate.decideTerminalWindowClose])
+ *   until Skein has ended the thread and removes the content itself, and lets a removal marked with
+ *   `Content.TEMPORARY_REMOVED_KEY` (a move, never a close) through. The terminal plugin's own close question
+ *   (`TerminalTabCloseListenerImpl`) is another listener on that content and may come first.
  * - Right before Skein sends a command into a tab it lists the IDE's child processes with their start instants
  *   ([ThreadTab.shellsAtCommand]): a close hangs up a thread's shell only if it is among them (and, the coordinator
  *   checks, was not open before the tab's shell started), so a terminal the user opened afterwards is never signalled.
@@ -101,10 +122,14 @@ class TerminalAdapter(
     private val scope: CoroutineScope,
     /** The IDE's child processes right now ([ThreadTab.shellsAtCommand]); blocking, so never called on the EDT. */
     private val ideShells: () -> ProcessList,
+    /** Whether a thread opened now goes into the editor area; false keeps it in the Terminal tool window. */
+    private val inEditor: () -> Boolean,
 ) : ThreadTerminal {
     private class Handle(override val id: String, override val folder: String) : ThreadTab {
         val tab = CompletableDeferred<TerminalToolWindowTab>()
-        val file = CompletableDeferred<VirtualFile>()
+
+        /** Completed once the tab has its first place, the editor or the Terminal tool window; exceptionally when its setup failed. */
+        val placed = CompletableDeferred<Unit>()
 
         @Volatile
         override var shellsAtCommand: ShellsAtCommand = ShellsAtCommand.NoCommandYet
@@ -128,14 +153,26 @@ class TerminalAdapter(
         /** The tab's title, set on the EDT once the tab exists; EDT only. */
         var tabTitle: TerminalTitle? = null
 
-        /**
-         * The tab's content in the Terminal tool window, kept when the move into the editor starts, so a tab the move
-         * left there can still be closed; EDT only.
-         */
+        /** The tab's content, set on the EDT once the tab exists; the same object wherever the tab goes. */
+        @Volatile
         var content: Content? = null
+
+        /** The editor file that last showed the tab, found or marked on the EDT; it may have closed since. */
+        @Volatile
+        var file: VirtualFile? = null
+
+        /** The tab's content was disposed: the tab is closed for good. */
+        @Volatile
+        var disposed = false
     }
 
+    /** Where a tab is now ([locate]): [file] for [TabPlaces.Where.EDITOR], [content] for [TabPlaces.Where.TERMINAL_WINDOW]. */
+    private data class Place(val where: TabPlaces.Where?, val file: VirtualFile? = null, val content: Content? = null)
+
     private val handles = ConcurrentHashMap<String, Handle>()
+
+    /** The Terminal tool window content managers [terminalWindowListener] listens to; EDT only. */
+    private val hookedManagers: MutableSet<ContentManager> = Collections.newSetFromMap(WeakHashMap())
 
     @Volatile
     private var listener: ThreadTerminalListener? = null
@@ -156,13 +193,19 @@ class TerminalAdapter(
         project.messageBus.connect(scope).subscribe(
             FileEditorManagerListener.FILE_EDITOR_MANAGER,
             object : FileEditorManagerListener {
-                override fun fileClosed(source: FileEditorManager, file: VirtualFile) {
-                    if (projectClosing) return
-                    val id = file.getUserData(THREAD_ID) ?: return
-                    // moving a tab to another split or a new window closes and reopens the same file: wait, then decide
-                    scope.launch(Dispatchers.EDT) {
-                        delay(REOPEN_GRACE_MILLIS)
-                        if (!projectClosing && !FileEditorManager.getInstance(project).isFileOpen(file)) closed(id)
+                // no fileClosed: a file closes for a move to another split or window and for a drag into the Terminal
+                // tool window too; a thread is closed when its tab's content is disposed ([watchDisposal])
+
+                /** A thread's tab that moved into the editor (Move to Editor, a drag) shows up as a new file: mark it. */
+                override fun fileOpened(source: FileEditorManager, file: VirtualFile) {
+                    try {
+                        if (file.getUserData(THREAD_ID) != null) return
+                        val handle = handles.values.firstOrNull { shows(source, file, it) } ?: return
+                        adoptFile(handle, file)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        LOG.warn("Skein could not tell whether an opened editor shows one of its threads", e)
                     }
                 }
 
@@ -170,6 +213,22 @@ class TerminalAdapter(
                     if (!userCaused()) return
                     val id = event.newFile?.getUserData(THREAD_ID) ?: return
                     listener?.tabSelected(id)
+                }
+            },
+        )
+        project.messageBus.connect(scope).subscribe(
+            TerminalTabsManagerListener.TOPIC,
+            object : TerminalTabsManagerListener {
+                /** A thread's tab dragged into the Terminal tool window, maybe into a pane of its own: listen to that pane. */
+                override fun tabAdded(tab: TerminalToolWindowTab) {
+                    try {
+                        val handle = handles.values.firstOrNull { it.content != null && it.content === tab.content } ?: return
+                        hookManagerOf(handle)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        LOG.warn("Skein could not follow a thread tab into the Terminal tool window", e)
+                    }
                 }
             },
         )
@@ -199,8 +258,18 @@ class TerminalAdapter(
     override fun open(threadId: String, folder: String, tabName: String, focus: Boolean): ThreadTab {
         val handle = Handle(threadId, folder)
         handles[threadId] = handle
+        val toEditor = try {
+            inEditor()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            LOG.warn("Skein could not read where threads open; this one opens in the editor", e)
+            true
+        }
         scope.launch(Dispatchers.EDT) {
             try {
+                // a tab created without focus still becomes the Terminal tool window's selected one: kept to give it back
+                val selectedBefore = if (toEditor || focus) null else terminalWindowSelection()
                 val tab = try {
                     TerminalToolWindowTabsManager.getInstance(project).createTabBuilder()
                         .workingDirectory(folder)
@@ -215,10 +284,12 @@ class TerminalAdapter(
                 } catch (e: Exception) {
                     LOG.warn("Skein could not open a terminal tab in $folder", e)
                     handle.tab.completeExceptionally(e)
-                    handle.file.completeExceptionally(e)
+                    handle.placed.completeExceptionally(e)
                     closed(threadId) // a thread without a tab must not linger in the list or come back on every restart
                     return@launch
                 }
+                handle.content = tab.content
+                watchDisposal(handle, tab.content)
                 try {
                     handle.session = tab.view.sessionState
                 } catch (e: CancellationException) {
@@ -237,33 +308,26 @@ class TerminalAdapter(
                     LOG.warn("Skein could not name the tab of thread $threadId", e)
                 }
                 watchFocus(threadId, tab)
+                if (!toEditor) {
+                    stayInTerminalWindow(handle, tab.content, focus, selectedBefore)
+                    return@launch
+                }
                 val file = try {
-                    moveToEditor(handle, tab, focus)
+                    moveToEditor(tab, focus)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     LOG.warn("Skein could not move the terminal tab into the editor; it stays in the Terminal tool window", e)
-                    handle.file.completeExceptionally(e)
-                    followInToolWindow(threadId, tab)
-                    selectInToolWindow(tab)
+                    stayInTerminalWindow(handle, tab.content, focus, null)
                     return@launch
                 }
-                markThread(file, threadId)
-                handle.file.complete(file)
-                // the tab was drawn before it knew its thread: ask for its colour again now, so a restored coloured
-                // thread is tinted without waiting for a later re-query
-                try {
-                    FileEditorManager.getInstance(project).updateFilePresentation(file)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    LOG.warn("Skein could not refresh the tab of thread $threadId", e)
-                }
+                adoptFile(handle, file)
+                handle.placed.complete(Unit)
             } catch (e: Throwable) {
-                // whatever stopped the setup, nothing may wait for this tab forever (a Close waits for its editor file)
+                // whatever stopped the setup, nothing may wait for this tab forever (a Close waits for its place)
                 val failure = IllegalStateException("the terminal tab of thread $threadId was not set up", e)
                 handle.tab.completeExceptionally(failure)
-                handle.file.completeExceptionally(failure)
+                handle.placed.completeExceptionally(failure)
                 if (e is CancellationException || e is ControlFlowException) throw e
                 LOG.warn("Skein could not set up the terminal tab of thread $threadId", e)
             }
@@ -272,12 +336,11 @@ class TerminalAdapter(
     }
 
     /**
-     * Runs the bundled Terminal.MoveToEditor action on [tab] and returns the editor file it opened. Keeps the tab's
-     * content on [handle] first, so a tab the move leaves in the Terminal tool window can be closed there.
+     * Runs the bundled Terminal.MoveToEditor action on [tab] and returns the editor file it opened. A move that fails
+     * leaves the tab in the Terminal tool window, where the caller keeps it.
      */
-    private suspend fun moveToEditor(handle: Handle, tab: TerminalToolWindowTab, focus: Boolean): VirtualFile {
+    private suspend fun moveToEditor(tab: TerminalToolWindowTab, focus: Boolean): VirtualFile {
         val content = tab.content
-        handle.content = content
         val action = ActionManager.getInstance().getAction(MOVE_TO_EDITOR_ACTION_ID)
             ?: throw IllegalStateException("action $MOVE_TO_EDITOR_ACTION_ID is not registered")
         val toolWindow = ToolWindowManager.getInstance(project).getToolWindow(TERMINAL_TOOL_WINDOW_ID)
@@ -327,24 +390,172 @@ class TerminalAdapter(
         )
     }
 
-    /** The degraded path: the tab stayed in the Terminal tool window, so follow it there. */
-    private fun followInToolWindow(threadId: String, tab: TerminalToolWindowTab) {
-        val contentManager = ToolWindowManager.getInstance(project).getToolWindow(TERMINAL_TOOL_WINDOW_ID)?.contentManager ?: return
-        contentManager.addContentManagerListener(
-            object : ContentManagerListener {
-                override fun contentRemoved(event: ContentManagerEvent) {
-                    if (event.content != tab.content || projectClosing) return
-                    contentManager.removeContentManagerListener(this)
-                    closed(threadId)
+    /**
+     * The tab stays in the Terminal tool window (the setting, or a failed move): listen to its pane, and with [focus]
+     * bring the tool window up on it; without, give the pane back the tab it had selected ([selectedBefore]). EDT only.
+     */
+    private fun stayInTerminalWindow(handle: Handle, content: Content, focus: Boolean, selectedBefore: Content?) {
+        hookManagerOf(handle)
+        handle.placed.complete(Unit)
+        try {
+            if (focus) {
+                selectInToolWindow(content)
+            } else if (selectedBefore != null && selectedBefore !== content) {
+                own.begin()
+                try {
+                    selectedBefore.manager?.setSelectedContent(selectedBefore, false)
+                } finally {
+                    own.end()
                 }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            LOG.warn("Skein could not show the Terminal tool window tab of thread ${handle.id}", e)
+        }
+    }
 
-                override fun selectionChanged(event: ContentManagerEvent) {
-                    if (userCaused() && event.content == tab.content && event.operation == ContentManagerEvent.ContentOperation.add) {
-                        listener?.tabSelected(threadId)
-                    }
+    /** The Terminal tool window's selected tab in its main pane, or null. EDT only. */
+    private fun terminalWindowSelection(): Content? = try {
+        ToolWindowManager.getInstance(project).getToolWindow(TERMINAL_TOOL_WINDOW_ID)?.contentManagerIfCreated?.selectedContent
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        null
+    }
+
+    /**
+     * Reports the thread closed once [content] is disposed, wherever the tab is then: that is when the IDE closes a
+     * terminal tab for good. Not while the project closes, as before. EDT (the callback runs where the content is disposed).
+     */
+    private fun watchDisposal(handle: Handle, content: Content) {
+        val gone = {
+            handle.disposed = true
+            if (!projectClosing) closed(handle.id)
+        }
+        if (!Disposer.tryRegister(content) { gone() }) gone()
+    }
+
+    /** Marks [file] as showing [handle]'s thread and asks the IDE to draw its tab again, so its colour shows. EDT only. */
+    private fun adoptFile(handle: Handle, file: VirtualFile) {
+        markThread(file, handle.id)
+        handle.file = file
+        try {
+            FileEditorManager.getInstance(project).updateFilePresentation(file)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            LOG.warn("Skein could not refresh the tab of thread ${handle.id}", e)
+        }
+    }
+
+    /** Whether an editor of [file] shows [handle]'s tab: the terminal's editor component is the tab's content component. EDT only. */
+    private fun shows(editors: FileEditorManager, file: VirtualFile, handle: Handle): Boolean {
+        val content = handle.content ?: return false
+        if (handle.disposed) return false
+        val component = content.component
+        return editors.getAllEditors(file).any { it.component === component || SwingUtilities.isDescendingFrom(component, it.component) }
+    }
+
+    /** Where [handle]'s tab is now ([TabPlaces]); a newly found editor file is marked. EDT only. */
+    private fun locate(handle: Handle): Place {
+        val content = handle.content ?: return Place(null)
+        if (handle.disposed || projectClosing) return Place(TabPlaces.where(projectClosing, handle.disposed, false, false))
+        val inTerminalWindow = TerminalToolWindowTabsManager.getInstance(project).tabs.any { it.content === content }
+        val editors = FileEditorManager.getInstance(project)
+        val file = if (inTerminalWindow) {
+            null
+        } else {
+            handle.file?.takeIf { editors.isFileOpen(it) && shows(editors, it, handle) }
+                ?: editors.openFiles.firstOrNull { shows(editors, it, handle) }?.also { adoptFile(handle, it) }
+        }
+        return when (val where = TabPlaces.where(projectClosing = false, disposed = false, inTerminalWindow, file != null)) {
+            TabPlaces.Where.TERMINAL_WINDOW -> Place(where, content = content)
+            TabPlaces.Where.EDITOR -> Place(where, file = file)
+            else -> Place(where)
+        }
+    }
+
+    /** Listens to the content manager [handle]'s tab sits in, once per manager (a split Terminal tool window has one per pane). EDT only. */
+    private fun hookManagerOf(handle: Handle) {
+        val manager = handle.content?.manager ?: return
+        if (hookedManagers.add(manager)) manager.addContentManagerListener(terminalWindowListener)
+    }
+
+    private fun handleOf(content: Content?): Handle? = content?.let { c -> handles.values.firstOrNull { it.content === c } }
+
+    /**
+     * On every Terminal tool window pane that holds a thread tab: a close of a running thread's tab waits until Skein
+     * has ended the thread ([holdsTerminalWindowClose]); a tab that moved to another pane gets that pane listened to; a
+     * selection the user makes counts as opening the thread. Never throws but for cancellation.
+     */
+    private val terminalWindowListener = object : ContentManagerListener {
+        override fun contentRemoveQuery(event: ContentManagerEvent) {
+            try {
+                if (event.isConsumed) return // the IDE's own question was answered no
+                val content = event.content
+                val handle = handleOf(content) ?: return
+                if (holdsTerminalWindowClose(handle, move = content.getUserData(Content.TEMPORARY_REMOVED_KEY) == true)) event.consume()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                LOG.warn("Skein could not check a thread tab before the Terminal tool window closed it; it closes at once", e)
+            }
+        }
+
+        override fun contentRemoved(event: ContentManagerEvent) {
+            val handle = handleOf(event.content) ?: return
+            // a split or a move between panes adds the content to another manager right after
+            scope.launch(Dispatchers.EDT + ModalityState.any().asContextElement()) {
+                delay(REOPEN_GRACE_MILLIS)
+                try {
+                    hookManagerOf(handle)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    LOG.warn("Skein could not follow the tab of thread ${handle.id} in the Terminal tool window", e)
                 }
-            },
+            }
+        }
+
+        override fun selectionChanged(event: ContentManagerEvent) {
+            if (!userCaused() || event.operation != ContentManagerEvent.ContentOperation.add) return
+            val handle = handleOf(event.content) ?: return
+            listener?.tabSelected(handle.id)
+        }
+    }
+
+    /**
+     * Whether the Terminal tool window keeps [handle]'s tab open now, as [threadTabsMayClose] does for the editor: a
+     * running thread is ended first and Skein removes the content itself afterwards; one Skein ends already stays until
+     * then; a [move] or anything else goes ahead. EDT only.
+     */
+    private fun holdsTerminalWindowClose(handle: Handle, move: Boolean): Boolean {
+        val now = monotonicMillis()
+        val tab = CloseGate.Tab(
+            id = handle.id,
+            released = handle.released,
+            running = handle.session?.value == TerminalViewSessionState.Running,
+            views = 1,
+            endingForMillis = handle.endingSince?.let { now - it },
         )
+        val batch = CloseGate.decideTerminalWindowClose(tab, closing = projectClosing || appClosing || project.isDisposed, move = move)
+        if (batch.pass) return false
+        if (batch.take.isEmpty()) return true // Skein ends it already and closes the tab itself
+        handle.endingSince = now
+        if (listener?.closeRequested(batch.take) == true) return true
+        handle.endingSince = null
+        return batch.waiting.isNotEmpty()
+    }
+
+    /** The threads whose tab is the selected one of a pane of the Terminal tool window while it is visible. EDT only. */
+    private fun threadsSelectedInTerminalWindow(): Set<String> {
+        val toolWindow = ToolWindowManager.getInstance(project).getToolWindow(TERMINAL_TOOL_WINDOW_ID) ?: return emptySet()
+        if (!toolWindow.isVisible) return emptySet()
+        return handles.values.filter { handle ->
+            val content = handle.content
+            content != null && !handle.disposed && content.manager?.selectedContent === content
+        }.mapTo(LinkedHashSet()) { it.id }
     }
 
     private fun closed(threadId: String) {
@@ -398,30 +609,41 @@ class TerminalAdapter(
     override fun select(tab: ThreadTab) {
         val handle = tab as Handle
         scope.launch(Dispatchers.EDT) {
-            val file = try {
-                handle.file.await()
+            try {
+                handle.placed.await()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                null
+                // a setup that failed after the tab was made still leaves a tab to show
+                if (handle.content == null) {
+                    LOG.warn("Skein has no terminal to select for thread ${handle.id}", e)
+                    return@launch
+                }
             }
             own.begin()
             try {
-                if (file != null) {
-                    show(file, true)
-                } else {
-                    try {
-                        selectInToolWindow(handle.tab.await())
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        LOG.warn("Skein has no terminal to select for thread ${handle.id}", e)
-                    }
+                val place = settledPlace(handle)
+                when (place.where) {
+                    TabPlaces.Where.EDITOR -> show(place.file!!, true)
+                    TabPlaces.Where.TERMINAL_WINDOW -> selectInToolWindow(place.content!!)
+                    else -> LOG.info("Skein found no tab to select for thread ${handle.id}")
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                LOG.warn("Skein could not select the tab of thread ${handle.id}", e)
             } finally {
                 own.end()
             }
         }
+    }
+
+    /** [locate], and once more after [REOPEN_GRACE_MILLIS] when the tab is on its way between the editor and the tool window. EDT only. */
+    private suspend fun settledPlace(handle: Handle): Place {
+        val place = locate(handle)
+        if (place.where != TabPlaces.Where.MOVING) return place
+        delay(REOPEN_GRACE_MILLIS)
+        return locate(handle)
     }
 
     override fun close(tabs: List<ThreadTab>) {
@@ -441,12 +663,14 @@ class TerminalAdapter(
     }
 
     /**
-     * Closes one tab where it is. A tab still on its way into the editor is closed once it got there; one that has not
-     * got there after [TAB_READY_WAIT_MILLIS] is skipped with a warning, so it cannot hold up the rest of a batch. EDT only.
+     * Closes one tab where it is now. A tab still being set up is closed once it has its place; one that has none after
+     * [TAB_READY_WAIT_MILLIS] is skipped with a warning, so it cannot hold up the rest of a batch. A tab on its way
+     * between the editor and the Terminal tool window is looked for once more a moment later, and one still in neither
+     * place then is closed through the terminal plugin, which releases its content. EDT only.
      */
     private suspend fun closeTab(handle: Handle) {
-        val file = try {
-            withTimeoutOrNull(TAB_READY_WAIT_MILLIS) { handle.file.await() } ?: run {
+        try {
+            withTimeoutOrNull(TAB_READY_WAIT_MILLIS) { handle.placed.await() } ?: run {
                 LOG.warn("Skein did not close the tab of thread ${handle.id}: it has not reached the editor or the Terminal tool window")
                 handle.endingSince = null
                 return
@@ -454,12 +678,33 @@ class TerminalAdapter(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            null
+            // a setup that failed after the tab was made leaves a tab to close; without one the thread was reported closed
+            if (handle.content == null) {
+                handle.endingSince = null
+                return
+            }
         }
-        // Skein's own close, after the thread was ended (or the wait timed out): its close check lets this one through
+        val place = try {
+            settledPlace(handle)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            LOG.warn("Skein could not tell where the tab of thread ${handle.id} is", e)
+            Place(null)
+        }
+        if (place.where == TabPlaces.Where.MOVING) {
+            releaseStrandedTab(handle)
+            return
+        }
+        if (place.where != TabPlaces.Where.EDITOR && place.where != TabPlaces.Where.TERMINAL_WINDOW) {
+            if (place.where != TabPlaces.Where.GONE) LOG.warn("Skein found no tab to close for thread ${handle.id}")
+            handle.endingSince = null
+            return
+        }
+        // Skein's own close, after the thread was ended (or the wait timed out): its close checks let this one through
         handle.released = true
         try {
-            if (file != null) closeEditorTab(file) else closeToolWindowTab(handle)
+            if (place.where == TabPlaces.Where.EDITOR) closeEditorTab(place.file!!) else closeToolWindowTab(handle, place.content!!)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -467,7 +712,7 @@ class TerminalAdapter(
         }
         try {
             // something else kept the tab open: a later close asks again and ends what runs in it first
-            if (stillOpen(handle, file)) {
+            if (stillOpen(place)) {
                 handle.released = false
                 handle.endingSince = null
             }
@@ -478,10 +723,29 @@ class TerminalAdapter(
         }
     }
 
-    /** Whether [handle]'s tab is still there: in the editor when it has an editor [file], else in the Terminal tool window. EDT only. */
-    private fun stillOpen(handle: Handle, file: VirtualFile?): Boolean {
-        if (file != null) return FileEditorManager.getInstance(project).isFileOpen(file)
-        val content = handle.content ?: return false
+    /**
+     * A tab alive but in neither place after the second look, which no move the IDE makes should leave: closed through
+     * `TerminalToolWindowTabsManager.closeTab` (Experimental), which releases a content no manager holds; the disposal
+     * then reports the thread closed. EDT only.
+     */
+    private suspend fun releaseStrandedTab(handle: Handle) {
+        LOG.warn("The tab of thread ${handle.id} is in neither the editor nor the Terminal tool window; Skein releases it")
+        handle.released = true
+        try {
+            TerminalToolWindowTabsManager.getInstance(project).closeTab(handle.tab.await())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            LOG.warn("Skein could not release the tab of thread ${handle.id}", e)
+            handle.released = false
+            handle.endingSince = null
+        }
+    }
+
+    /** Whether the tab is still where [place] found it: its editor file open, or its content in its pane. EDT only. */
+    private fun stillOpen(place: Place): Boolean {
+        place.file?.let { return FileEditorManager.getInstance(project).isFileOpen(it) }
+        val content = place.content ?: return false
         val manager = content.manager ?: return false
         return manager.getIndexOfContent(content) >= 0
     }
@@ -489,8 +753,8 @@ class TerminalAdapter(
     /**
      * What the editor tab's own close button does (`CloseTab` calls `closeFileWithChecks`), in each editor window that
      * shows [file], stopping at a window where a pre-close check keeps it. Skein's own check lets the file through, as
-     * the caller released it; no check of the IDE or the terminal plugin asks about this terminal file. The
-     * `fileClosed` listener then reports the close. EDT only.
+     * the caller released it; no check of the IDE or the terminal plugin asks about this terminal file. The file's
+     * close disposes the tab's content, which [watchDisposal] reports. EDT only.
      */
     private fun closeEditorTab(file: VirtualFile) {
         val editors = FileEditorManagerEx.getInstanceEx(project)
@@ -501,14 +765,14 @@ class TerminalAdapter(
     }
 
     /**
-     * What the Terminal tool window's tab close button does on the degraded path: the content is removed through its
-     * manager, so the tool window's close listeners run as for that button and may ask the IDE's own question after
-     * Skein's, or keep the tab; the listener [followInToolWindow] added reports a close that happens. EDT only.
+     * What the Terminal tool window's tab close button does: the content is removed through its own manager, so the
+     * tool window's close listeners run as for that button (Skein's lets it through, the caller released the tab) and
+     * may ask the IDE's own question, or keep the tab; a close that happens disposes the content, which [watchDisposal]
+     * reports. EDT only.
      */
-    private fun closeToolWindowTab(handle: Handle) {
-        val content = handle.content
-        val manager = content?.manager
-        if (content == null || manager == null || manager.getIndexOfContent(content) < 0) {
+    private fun closeToolWindowTab(handle: Handle, content: Content) {
+        val manager = content.manager
+        if (manager == null || manager.getIndexOfContent(content) < 0) {
             LOG.warn("Skein found no tab to close for thread ${handle.id} in the Terminal tool window")
             return
         }
@@ -656,10 +920,11 @@ class TerminalAdapter(
         val handle = handles[threadId] ?: return
         scope.launch(Dispatchers.EDT + ModalityState.any().asContextElement()) {
             try {
-                // a tab whose move into the editor failed completed with that failure: there is no editor tab to refresh
-                if (!handle.file.isCompleted || handle.file.isCancelled) return@launch
-                val file = handle.file.await()
-                FileEditorManager.getInstance(project).updateFilePresentation(file)
+                // only an editor tab has a colour to redraw; a tab still being set up gets it once it reaches the editor
+                if (!handle.placed.isCompleted) return@launch
+                val place = locate(handle)
+                if (place.where != TabPlaces.Where.EDITOR) return@launch
+                FileEditorManager.getInstance(project).updateFilePresentation(place.file!!)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -691,24 +956,47 @@ class TerminalAdapter(
         }
     }
 
-    private fun selectInToolWindow(tab: TerminalToolWindowTab) {
+    /** Brings the Terminal tool window up with [content] selected in its pane. EDT only. */
+    private fun selectInToolWindow(content: Content) {
         val toolWindow = ToolWindowManager.getInstance(project).getToolWindow(TERMINAL_TOOL_WINDOW_ID) ?: return
-        toolWindow.activate { toolWindow.contentManager.setSelectedContent(tab.content, true) }
+        toolWindow.activate { (content.manager ?: toolWindow.contentManager).setSelectedContent(content, true) }
     }
 
     // any modality: this read-only check must not wait behind an open modal dialog, or every status would freeze with it
     override suspend fun tabsInView(): TabsInView = withContext(Dispatchers.EDT + ModalityState.any().asContextElement()) {
+        // each tick also listens to a pane a thread tab reached unseen (a split made after the tab came there)
+        for (handle in handles.values) {
+            try {
+                if (handle.disposed || !handle.placed.isCompleted) continue
+                hookManagerOf(handle)
+                // and finds the editor file of a tab that moved there when fileOpened could not tell it apart yet
+                val file = handle.file
+                if (file == null || !FileEditorManager.getInstance(project).isFileOpen(file)) locate(handle)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                LOG.warn("Skein could not follow the tab of thread ${handle.id} in the Terminal tool window", e)
+            }
+        }
         val active = KeyboardFocusManager.getCurrentKeyboardFocusManager().activeWindow
         val focusInThisProject = active != null && DataManager.getInstance().getDataContext(active).getData(CommonDataKeys.PROJECT) == project
         val selected = FileEditorManager.getInstance(project).selectedEditor?.file?.getUserData(THREAD_ID)
+        val inTerminalWindow = try {
+            threadsSelectedInTerminalWindow()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            emptySet()
+        }
         TabsInView(
             inView = ViewRule.inView(
                 appActive = ApplicationManager.getApplication().isActive,
                 focusInThisProject = focusInThisProject,
                 selectedThreadOfFocusedWindow = selected,
+                threadsSelectedInTerminalWindow = inTerminalWindow,
             ),
             // no focus check: the list marks the tab in front also while the IDE is in the background
-            inFront = selected,
+            inFront = ViewRule.inFront(selected, inTerminalWindow),
         )
     }
 

@@ -5,13 +5,18 @@ How Skein works, what it does with worktrees, what is tested and how releases ar
 
 ## How it works
 
-The Skein tool window sits on the right by default; drag its icon to the left like any tool window. "+" opens an
-editor tab with your shell in the project folder and types `claude` into it, and when the project also has folders
-outside the project folder or separate repositories inside it, it first asks which one. The chevron next to it also
+The Skein tool window sits on the right by default; drag its icon to the left like any tool window. "+" opens a
+terminal tab with your shell in the project folder and types `claude` into it, and when the project also has folders
+outside the project folder or separate repositories inside it, it first asks which one. The tab opens in the editor
+area, or in the Terminal tool window when Open threads in the editor area is off in Settings | Tools | Skein, which
+also counts for the threads a restart brings back; threads already open stay where they are when you change it. A
+thread's tab can move afterwards, by Move to Editor or by dragging it between the editor and the Terminal tool window,
+and Skein follows it there, so the thread stays in the list until its tab really closes. The chevron next to it also
 offers New Thread in Worktree… (see below). A thread is orange when it waits for you (a permission prompt, a
 question, any other dialog), blue when it finished its turn and you have not looked yet, and shows a spinner while it
-works, each with its own glyph. Clicking a row opens its tab, and Tools | Skein has Jump to Waiting Thread for the
-keyboard.
+works, each with its own glyph. Clicking a row opens its tab, in the Terminal tool window by bringing the tool window
+up on it, and Tools | Skein has Jump to Waiting Thread for the keyboard. A thread whose tab you have in front, the
+selected editor or the selected tab of the visible Terminal tool window, counts as seen and gets no balloon.
 
 
 A row has two lines. The first holds the state glyph, the name, a pin when the thread is pinned, the counts of a
@@ -51,11 +56,13 @@ size and whether you left it open, the same for all projects.
 
 Right-click a thread to pin it, rename it, give it a colour or close it. Close ends claude in the tab right away, and
 for a Skein editor tab the IDE does not ask about that, so when claude is still starting, working or waiting for your
-answer in one of the threads, or Skein cannot tell, Skein asks first and names them. A tab left in the Terminal tool
-window may also get the IDE's own question. A thread that starts working after you answered stays open, and a balloon
-says so. Close and the editor tab's × first send claude and the tab's shell the hangup a closing terminal sends, wait
-up to five seconds for them to finish while the tab still shows them, and only then close the tab, since the IDE would
-otherwise leave both hanging with a dead terminal. The × asks nothing. A Close All or Close Others with a running
+answer in one of the threads, or Skein cannot tell, Skein asks first and names them. A tab in the Terminal tool window
+may also get the IDE's own question. A thread that starts working after you answered stays open, and a balloon says
+so. Close, the editor tab's × and the close of a thread tab in the Terminal tool window first send claude and the
+tab's shell the hangup a closing terminal sends, wait up to five seconds for them to finish while the tab still shows
+them, and only then close the tab, since the IDE would otherwise leave both hanging with a dead terminal
+(IJPL-259859). The editor tab's × asks nothing, in the Terminal tool window the IDE may ask its own question first, and
+moving a tab there or out of it ends nothing. A Close All or Close Others with a running
 thread in it closes the other files at once and the thread tabs once their claude has ended. With the editor split
 into several windows it closes only the thread tabs at first, so run it again for the rest. With several threads the
 tab in front closes last. A worktree thread then asks whether to keep its worktree, as after the tab's own close
@@ -204,34 +211,42 @@ the worktree, as it would with git itself.
 
 ## Checked
 
-- 905 unit tests, among them a lifecycle test that drives a thread from start to restore against a copy of a Claude
+- 927 unit tests, among them a lifecycle test that drives a thread from start to restore against a copy of a Claude
   home and proves, byte for byte, that nothing under it changed (and fails as soon as anything does).
 - Unit tests for the thread order with pins, the History arrangement (pinned first, done hidden, a done mark dropping
-  on newer activity), the sections and the waiting-only filter, the toolbar counter, the keep-awake policy and its
-  hold and release logic, the colour palette, the session name a notification shows, the line a thread row takes from
-  the transcript, the one-balloon-per-thread bookkeeping, the click rules of the thread list and the History, the
-  History eye's state to look and tooltip mapping, and for Close which threads count as busy, the question's words,
-  the coordinator handing back the right tabs with the claude and the shell to hang up in each, never a claude in
-  another terminal, and leaving open a thread that turned busy after the question, the order of a close (claude's
-  hangup, the shell's once claude is gone, the wait, each thread on its own, one close for the batch, and a close
-  after the timeout), no signal to a tab whose session does not run or to a pid now held by another process, a
-  terminal opened before a thread's shell started or after it, restored threads included, never hung up while a shell
-  with an unknown or drifted start time still gives the thread its status, what the close check answers for a × or a
-  Close All (a Skein tab or not, its session running or not, handed back, a second ×, an ending that never closed, two
-  views of the tab, the project or the IDE closing), the IDE's selections during Skein's own close not counted as the
-  user's, which other files of a held Close All Skein closes itself (with one editor window only, just the files the
-  IDE asked about and still open), the balloon's words, and the order that puts the tab in front last, tested as a
-  list function. A test sends a real SIGHUP through libc to a child process and sees it end. Unit tests for the
-  worktree counts as well, the status and worktree list parsing, the base order, the badge, tooltip and words of a
-  row, the folders the Worktrees section lists, the look's throttle and single flight, the base kept with a thread,
-  and Remove… with its second question before git's force and `branch -d` only, and a lock Claude Code left behind
-  lifted only once its claude has ended, against real git in a temporary repository for the counts, that lock and a
-  rebase, a merge and a cherry-pick stopped half way, and on a real disk for the folder delete, which removes a link
-  inside as a link.
+  on newer activity), the sections and the waiting-only filter, the toolbar counter, the keep-awake policy and its hold
+  and release logic, the colour palette, the session name a notification shows, the line a thread row takes from the
+  transcript, the one-balloon-per-thread bookkeeping, the click rules of the thread list and the History, the History
+  eye's state to look and tooltip mapping, and for Close which threads count as busy, the question's words, the
+  coordinator handing back the right tabs with the claude and the shell to hang up in each, never a claude in another
+  terminal, and leaving open a thread that turned busy after the question, the order of a close (claude's hangup, the
+  shell's once claude is gone, the wait, each thread on its own, one close for the batch, and a close after the
+  timeout), no signal to a tab whose session does not run or to a pid now held by another process, a terminal opened
+  before a thread's shell started or after it, restored threads included, never hung up while a shell with an unknown
+  or drifted start time still gives the thread its status, what the close check answers for a × or a Close All (a Skein
+  tab or not, its session running or not, handed back, a second ×, an ending that never closed, two views of the tab,
+  the project or the IDE closing), the IDE's selections during Skein's own close not counted as the user's, which other
+  files of a held Close All Skein closes itself (with one editor window only, just the files the IDE asked about and
+  still open), the balloon's words, and the order that puts the tab in front last, tested as a list function. For the
+  Terminal tool window, where a thread's tab is after a move (a closed editor file or a content that left the tool
+  window is not a close, only a disposed tab is), what the close of a thread tab there answers (a move always passes),
+  and that a thread selected in the visible tool window counts as seen. A test sends a real SIGHUP through libc to a
+  child process and sees it end. Unit tests for the worktree counts as well, the status and worktree list parsing, the
+  base order, the badge, tooltip and words of a row, the folders the Worktrees section lists, the look's throttle and
+  single flight, the base kept with a thread, and Remove… with its second question before git's force and `branch -d`
+  only, and a lock Claude Code left behind lifted only once its claude has ended, against real git in a temporary
+  repository for the counts, that lock and a rebase, a merge and a cherry-pick stopped half way, and on a real disk for
+  the folder delete, which removes a link inside as a link.
 - The IntelliJ Plugin Verifier against IntelliJ IDEA 2026.3 (263.7307.200): compatible, no internal API usage (the
   build fails on any), no deprecated API usage.
 - In a sandbox IDE: the terminal tab opens in the editor area, the typed command reaches the shell (0.4 to 0.9 s),
-  a closed tab is reported once, and restoring several tabs starts none of them on its own.
+  a closed tab is reported once, and restoring several tabs starts none of them on its own. With Open threads in the
+  editor area off, "+" opens the thread in the Terminal tool window, a click on its row brings that tab up, its own
+  close on a working thread ends claude first and leaves no session running, a thread in a second pane of a split
+  tool window closes the same way, a thread selected in the visible tool window gets no balloon, and a restart brings
+  the threads back into the tool window. With it on, an editor thread tab dragged into the tool window stays in the
+  list and closes the same way there, Move to Editor or a drag back leaves one row with its colour on the editor tab,
+  and the editor ×, Close All and Close work as before.
 - On macOS with IntelliJ IDEA 2026.3: every `claude` started in an IDE terminal tab has the chain
   `claude → zsh → idea`, so the tab's shell is the process Skein ties the thread to; a `claude` in iTerm2 never
   reaches the IDE and is left alone.

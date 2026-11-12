@@ -36,6 +36,9 @@ class SkeinSettings : SimplePersistentStateComponent<SkeinSettings.State>(State(
 
         /** How long background work keeps the computer awake: 0 = not at all, -1 = as long as it runs, otherwise minutes. */
         var keepAwakeBackgroundMinutes by property(30)
+
+        /** New and restored threads open in the editor area; off keeps them as tabs in the Terminal tool window. */
+        var threadsInEditor by property(true)
     }
 
     /** Told when a setting that changes how the thread list looks was changed; open panels re-apply it. */
