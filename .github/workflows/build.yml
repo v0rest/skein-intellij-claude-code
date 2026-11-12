@@ -33,6 +33,17 @@ on:
         description: The release tag to build and attach the plugin zip to (v<version>)
         type: string
         required: true
+    # the Marketplace upload's secrets live in the marketplace environment, and the caller still has to pass each one
+    # by name; required only checks that it does, so a call without them fails at its start, not after the approval
+    secrets:
+      CERTIFICATE_CHAIN:
+        required: true
+      PRIVATE_KEY:
+        required: true
+      PRIVATE_KEY_PASSWORD:
+        required: true
+      PUBLISH_TOKEN:
+        required: true
 
 permissions:
   contents: read

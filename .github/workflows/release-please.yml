@@ -48,4 +48,11 @@ jobs:
     uses: ./.github/workflows/build.yml # zizmor: ignore[self-repository]
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
-    # no secrets pass from here: the Marketplace upload reads them from the marketplace environment, behind its approval
+    # a reusable workflow gets an environment secret only when the caller passes it (by name here), which works although
+    # the secret exists in the marketplace environment alone; the values reach only the job that sets that environment,
+    # behind its approval (GitHub's reusable-workflow docs). Without this the Marketplace upload found them empty.
+    secrets:
+      CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
+      PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+      PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
+      PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}

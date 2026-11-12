@@ -128,9 +128,9 @@ intellijPlatform {
             VerifyPluginTask.FailureLevel.INVALID_PLUGIN,
         )
     }
-    // room for the JetBrains Marketplace, read only by publishPlugin, which the release job runs when the repository
-    // variable PUBLISH_TO_MARKETPLACE is 'true'; without these variables signPlugin skips itself and the rest of the
-    // build never reads them
+    // room for the JetBrains Marketplace, read only by publishPlugin, which the Build workflow's marketplace job runs
+    // when the repository variable PUBLISH_TO_MARKETPLACE is 'true'; without these variables signPlugin skips itself
+    // and the rest of the build never reads them
     signing {
         certificateChain = providers.environmentVariable("CERTIFICATE_CHAIN")
         privateKey = providers.environmentVariable("PRIVATE_KEY")
