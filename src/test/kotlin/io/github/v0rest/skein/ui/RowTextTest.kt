@@ -31,6 +31,17 @@ class RowTextTest {
         assertEquals("<html>idle", RowText.tooltip(thread(ThreadState.Idle, sessionCwd = "/w/acme/.claude/worktrees/feat-x")))
     }
 
+    /** A thread row's tooltip gets a body width when a worktree line had to wrap ([WorktreeBadge.wrap]), and none otherwise. */
+    @Test
+    fun aTooltipWithAWrappedLineGetsABodyWidth() {
+        assertEquals("<html>idle<br>1. a.kt", RowText.tooltip(thread(ThreadState.Idle), lines = listOf("1. a.kt"), widthPx = 420))
+        val wrapped = WorktreeBadge.wrap("1. docs/" + "a".repeat(80), indent = 3)
+        assertEquals(
+            "<html><body style=\"width: 420px\">idle<br>" + wrapped.joinToString("<br>"),
+            RowText.tooltip(thread(ThreadState.Idle), lines = wrapped, widthPx = 420),
+        )
+    }
+
     @Test
     fun theTooltipPutsOneThingOnEachLine() {
         val now = 1_000_000_000_000L

@@ -119,29 +119,32 @@ class ShowChangesTest {
         assertEquals("worktree task-1", ShowChanges.worktreeTitle("task-1"))
     }
 
-    /** The window's title, and its tab's, names the worktree and where in the list the file is, before the file. */
+    /** The tab names the worktree and how many files it holds; each block is titled by the file alone. */
     @Test
-    fun theTitleNamesTheWorktreeAndThePosition() {
-        assertEquals(
-            "task-old · 1/6 · docs/new-idea.md (untracked)",
-            ShowChanges.requestTitle("task-old", 0, 6, ChangedFile(ChangeKind.UNTRACKED, "docs/new-idea.md")),
-        )
-        assertEquals(
-            "task-1 · 3/3 · src/b.c (renamed from src/a.c)",
-            ShowChanges.requestTitle("task-1", 2, 3, ChangedFile(ChangeKind.RENAMED, "src/b.c", "src/a.c", blob)),
-        )
-        assertEquals("task-1 · 2/2 · src/a.c", ShowChanges.requestTitle("task-1", 1, 2, modified))
+    fun theTabNamesTheWorktreeAndTheCount() {
+        assertEquals("Changes in task-old (6 files)", ShowChanges.tabTitle("task-old", 6))
+        assertEquals("Changes in task-1 (1 file)", ShowChanges.tabTitle("task-1", 1))
+        assertEquals("Changes in task-1 (4,800 files)", ShowChanges.tabTitle("task-1", 4800))
     }
 
-    /** A refreshed window opens on the file the old one showed while it is still in the list, else on the first. */
+    /** A block lays out a header and a viewer per file: past the cap the rest is one note, so the tab stays usable. */
     @Test
-    fun aRefreshOpensOnTheFileShownBefore() {
-        val files = listOf(ChangedFile(ChangeKind.ADDED, "a.c"), modified, ChangedFile(ChangeKind.UNTRACKED, "z.c"))
-        assertEquals(1, ShowChanges.startAt(files, "src/a.c"))
-        assertEquals(2, ShowChanges.startAt(files, "z.c"))
-        assertEquals(0, ShowChanges.startAt(files, "gone.c"))
-        assertEquals(0, ShowChanges.startAt(files, null))
-        assertEquals(0, ShowChanges.startAt(emptyList(), "a.c"))
+    fun pastTheCapTheRestIsOneNote() {
+        val files = (1..5).map { ChangedFile(ChangeKind.UNTRACKED, "f$it.c") }
+        assertEquals(ShowChanges.Shown(files, 0), ShowChanges.capped(files, max = 5))
+        assertEquals(ShowChanges.Shown(files.take(3), 2), ShowChanges.capped(files, max = 3))
+        assertEquals("2 more files are not shown here, past the 3 Show Changes lists.", ShowChanges.moreNote(2, 3))
+        assertEquals("1 more file is not shown here, past the 200 Show Changes lists.", ShowChanges.moreNote(1, 200))
+    }
+
+    /** A block's path is the file's own path in the worktree, a folder's without its trailing slash. */
+    @Test
+    fun aBlockIsTheFilesOwnPath() {
+        val wt = "/w/acme/.claude/worktrees/task-1"
+        assertEquals("$wt/src/a.c", ShowChanges.blockPath(wt, modified))
+        assertEquals("$wt/nested", ShowChanges.blockPath(wt, ChangedFile(ChangeKind.UNTRACKED, "nested/")))
+        assertEquals(true, ShowChanges.isFolder(ChangedFile(ChangeKind.UNTRACKED, "nested/")))
+        assertEquals(false, ShowChanges.isFolder(modified))
     }
 
     /**

@@ -1,5 +1,8 @@
 package io.github.v0rest.skein.ui
 
+import com.intellij.openapi.util.text.StringUtil
+import com.intellij.util.ui.JBUI
+import io.github.v0rest.skein.claude.Worktrees
 import io.github.v0rest.skein.git.Changes
 import io.github.v0rest.skein.git.WorktreeCounts
 import io.github.v0rest.skein.threads.KeptKind
@@ -45,16 +48,94 @@ object WorktreeBadge {
     }
 
     /**
-     * The tooltip lines for [counts], plain text: up to [Changes.SHOWN] changed paths and how many more, then how the
-     * branch stands against its base, or "Clean, level with <base>"; git's reason when it failed.
+     * The tooltip lines for [counts], plain text: up to [Changes.SHOWN] changed paths, numbered, and how many more, then
+     * how the branch stands against its base, or "Clean, level with <base>"; git's reason when it failed. A long line is
+     * wrapped ([wrap]).
      */
     fun tooltip(counts: WorktreeCounts?): List<String> {
         return when (counts) {
             null, WorktreeCounts.NotShown -> emptyList()
-            is WorktreeCounts.Failed -> listOf("git could not read the worktree: ${counts.reason}")
+            is WorktreeCounts.Failed -> wrap("git could not read the worktree: ${counts.reason}")
             is WorktreeCounts.InProgress -> listOf(counts.operation.described) + paths(counts.changes)
             is WorktreeCounts.Counted -> paths(counts.changes) + standing(counts)
         }
+    }
+
+    /** The longest line a worktree tooltip has, in characters; a longer one wraps ([wrap]). */
+    const val MAX_CHARS = 60
+
+    /** The tooltip's width once a line had to wrap, before the IDE's scaling ([defaultWidthPx]). */
+    private const val WIDTH = 420
+
+    private const val NBSP = '\u00A0'
+
+    /** [WIDTH] as the IDE scales it. */
+    fun defaultWidthPx(): Int = JBUI.scale(WIDTH)
+
+    /**
+     * [line] cut into lines of at most [max] characters, after a `/` or at a space, a part with neither cut where it
+     * must be; every line after the first starts with [indent] no-break spaces ([isContinuation]). Swing's HTML breaks
+     * a line only where Java's line breaker allows it, never after a `/`, so a long path would make the tooltip as wide
+     * as itself.
+     */
+    fun wrap(line: String, max: Int = MAX_CHARS, indent: Int = 2): List<String> {
+        if (line.length <= max) return listOf(line)
+        val pad = NBSP.toString().repeat(indent.coerceIn(0, max - 1))
+        val lines = ArrayList<String>()
+        val current = StringBuilder()
+        var start = 0
+        for (piece in Regex("[^/ ]*[/ ]|[^/ ]+").findAll(line).map { it.value }) {
+            var rest = piece
+            while (rest.isNotEmpty()) {
+                if ((current.toString() + rest).trimEnd(' ').length <= max) {
+                    current.append(rest)
+                    break
+                }
+                if (current.length > start) {
+                    // the line so far is full: the piece starts the next one
+                    lines += current.toString().trimEnd(' ')
+                } else {
+                    // the piece alone is longer than a line: cut it
+                    val room = max - current.length
+                    lines += current.append(rest.take(room)).toString()
+                    rest = rest.drop(room)
+                }
+                current.setLength(0)
+                current.append(pad)
+                start = pad.length
+                rest = rest.trimStart(' ')
+            }
+        }
+        if (current.length > start) lines += current.toString().trimEnd(' ')
+        return lines
+    }
+
+    /** Whether [line] goes on from the one before it ([wrap]). */
+    fun isContinuation(line: String): Boolean = line.startsWith(NBSP)
+
+    /**
+     * The folder a Worktrees section row names in its tooltip: the worktree [name] of [repository] (as the project names
+     * it) from the project's [projectBase], `.claude/worktrees/task-1` say, or the whole resolved [path] for a
+     * repository outside the project.
+     */
+    fun folder(repository: String, name: String, path: String, projectBase: String?): String {
+        val base = projectBase?.trimEnd('/')?.takeIf { it.isNotEmpty() } ?: return path
+        val named = Worktrees.dirOf(repository, name)
+        return if (named.startsWith("$base/")) named.removePrefix("$base/") else path
+    }
+
+    /**
+     * A Worktrees section row's tooltip: its [folder], the [hint] about it and the counts' [lines] ([tooltip]), each on
+     * its own line and wrapped, as HTML with every line escaped. [widthPx] (or [defaultWidthPx]) is its width once a line
+     * had to wrap; without one it is as wide as its longest line.
+     */
+    fun sectionTooltip(folder: String, hint: List<String>, lines: List<String>, widthPx: Int? = null): String =
+        html((wrap(folder) + hint.flatMap { wrap(it) } + lines), widthPx)
+
+    /** [lines] as tooltip HTML, every one escaped, with a body width only when one of them wraps ([isContinuation]). */
+    fun html(lines: List<String>, widthPx: Int? = null): String {
+        val width = if (lines.any(::isContinuation)) "<body style=\"width: ${widthPx ?: defaultWidthPx()}px\">" else ""
+        return "<html>" + width + lines.joinToString("<br>") { StringUtil.escapeXmlEntities(it) }
     }
 
     /** What a screen reader hears of [counts]; null when the row shows nothing. */
@@ -89,9 +170,11 @@ object WorktreeBadge {
         )
     }
 
+    /** The paths numbered, a long one wrapped under its number, then how many more there are. */
     private fun paths(changes: Changes): List<String> {
         val more = changes.count - changes.first.size
-        return changes.first + listOfNotNull("… and $more more".takeIf { more > 0 })
+        val numbered = changes.first.withIndex().flatMap { (i, path) -> "${i + 1}. ".let { number -> wrap(number + path, indent = number.length) } }
+        return numbered + listOfNotNull("… and $more more".takeIf { more > 0 })
     }
 
     private fun standing(counts: WorktreeCounts.Counted): String {

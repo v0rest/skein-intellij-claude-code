@@ -15,11 +15,12 @@ object RowText {
      * the model and the context in use ([context]), then a worktree's [lines] ([WorktreeBadge.tooltip]). No preview and
      * no path: the row shows what fits of the one and names the folder or the worktree of the other. Always HTML with
      * every line escaped: names come from Claude Code, git and the user, and a tooltip that starts with `<html>` is read
-     * as HTML, remote images included, so none of them can ever be markup.
+     * as HTML, remote images included, so none of them can ever be markup. A worktree line that wrapped gives the
+     * tooltip a width ([WorktreeBadge.html]), [widthPx] or the scaled default.
      */
-    fun tooltip(thread: SkeinThread, cutName: String? = null, context: ContextUse? = null, now: Long = 0, lines: List<String> = emptyList()): String {
+    fun tooltip(thread: SkeinThread, cutName: String? = null, context: ContextUse? = null, now: Long = 0, lines: List<String> = emptyList(), widthPx: Int? = null): String {
         val state = listOfNotNull(StatusText.line(thread.state), context?.let { answered(it, now) }).joinToString(" · ")
-        return "<html>" + (listOfNotNull(cutName, state, context?.tooltipBase) + lines).joinToString("<br>") { StringUtil.escapeXmlEntities(it) }
+        return WorktreeBadge.html(listOfNotNull(cutName, state, context?.tooltipBase) + lines, widthPx)
     }
 
     /**

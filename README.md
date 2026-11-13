@@ -52,7 +52,8 @@ on a thread pins, renames, colours or closes it, and a double click on a History
 
 Worktrees (N) lists the worktrees Claude Code left in `.claude/worktrees` that no thread holds, with the same counts,
 and opens, reveals or removes them. Show Changes, in the right-click menu of a worktree thread or of a kept worktree,
-opens the IDE's diff window on everything the worktree changed since it branched off its base, committed or not.
+opens everything the worktree changed since it branched off its base, committed or not, in one tab of the IDE's
+combined diff, a file after the other.
 
 ![The Worktrees section with a kept worktree's menu: Open, Reveal in Finder and Remove…](docs/images/skein-worktrees.png)
 

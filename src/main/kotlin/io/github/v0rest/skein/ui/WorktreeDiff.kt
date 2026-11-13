@@ -1,17 +1,20 @@
 package io.github.v0rest.skein.ui
 
 import com.intellij.diff.DiffContentFactory
-import com.intellij.diff.DiffDialogHints
-import com.intellij.diff.DiffManager
 import com.intellij.diff.chains.DiffRequestProducer
 import com.intellij.diff.chains.DiffRequestProducerException
-import com.intellij.diff.chains.SimpleDiffRequestChain
 import com.intellij.diff.contents.DiffContent
+import com.intellij.diff.editor.DiffEditorTabFilesManager
 import com.intellij.diff.editor.DiffEditorViewerFileEditor
-import com.intellij.diff.impl.DiffRequestProcessor
+import com.intellij.diff.editor.DiffVirtualFileWithTabName
 import com.intellij.diff.requests.DiffRequest
 import com.intellij.diff.requests.MessageDiffRequest
 import com.intellij.diff.requests.SimpleDiffRequest
+import com.intellij.diff.tools.combined.CombinedBlockProducer
+import com.intellij.diff.tools.combined.CombinedDiffComponentProcessor
+import com.intellij.diff.tools.combined.CombinedDiffManager
+import com.intellij.diff.tools.combined.CombinedDiffVirtualFile
+import com.intellij.diff.tools.combined.CombinedPathBlockId
 import com.intellij.ide.trustedProjects.TrustedProjects
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
@@ -20,17 +23,22 @@ import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
+import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.fileEditor.FileEditor
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
+import com.intellij.openapi.fileTypes.FileType
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.UserDataHolder
 import com.intellij.openapi.util.text.StringUtil
+import com.intellij.openapi.vcs.FilePath
+import com.intellij.openapi.vcs.FileStatus
+import com.intellij.openapi.vcs.LocalFilePath
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.ide.progress.withBackgroundProgress
@@ -61,6 +69,7 @@ import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /** What a file is in the worktree, on disk, as Show Changes finds it. */
 sealed interface DiskSide {
@@ -193,15 +202,6 @@ object ShowChanges {
         "Skein shows the changes of the worktree $name only in a trusted project, since git can start programs a repository's configuration names."
 
     /**
-     * The title of the file at [index] of [count] in the worktree [name]'s window, which its editor tab shows too: the
-     * worktree and the position before the file's own label ([ChangeList.label]), so the tab says there are more.
-     */
-    fun requestTitle(name: String, index: Int, count: Int, file: ChangedFile): String = "$name · ${index + 1}/$count · ${ChangeList.label(file)}"
-
-    /** Where a refreshed window starts: on the file at [shown], which the old one showed, while it is still listed, else the first. */
-    fun startAt(files: List<ChangedFile>, shown: String?): Int = files.indexOfFirst { it.path == shown }.coerceAtLeast(0)
-
-    /**
      * Whether an editor's unsaved change to the file at [path] ([canonical] with its links resolved) is saved before
      * the list is read: the file lies in one of the worktree's folders [dirs] ([WorktreeCloseFlow.anyInWorktree]).
      */
@@ -211,12 +211,40 @@ object ShowChanges {
     fun worktreeDirs(repository: String, name: String, real: String?): Set<String> =
         setOfNotNull(Worktrees.dirOf(repository, name), real?.let { Worktrees.dirOf(it, name) })
 
+    /** The most files the combined view lists, a block each; past it the rest is one note ([capped]). */
+    const val MAX_BLOCKS = 200
+
+    /** The [files] the combined view lists, and how many [more] there are past the cap. */
+    data class Shown(val files: List<ChangedFile>, val more: Int)
+
+    /** The worktree's tab: its name and how many files differ, all of them, listed or not. */
+    fun tabTitle(name: String, count: Int): String = "Changes in $name (${String.format(Locale.ROOT, "%,d", count)} ${if (count == 1) "file" else "files"})"
+
+    /**
+     * The first [max] of [files] and how many more: each block lays out a header and a viewer, so an untracked folder
+     * no ignore rule hides, with thousands of files, would make the tab unusable.
+     */
+    fun capped(files: List<ChangedFile>, max: Int = MAX_BLOCKS): Shown = Shown(files.take(max), (files.size - max).coerceAtLeast(0))
+
+    /** The last block's note when [more] files are past the cap of [max]. */
+    fun moreNote(more: Int, max: Int): String =
+        if (more == 1) "1 more file is not shown here, past the $max Show Changes lists." else "$more more files are not shown here, past the $max Show Changes lists."
+
+    /** The path a block stands for: [file]'s own in [worktree], a folder's without its trailing slash. */
+    fun blockPath(worktree: String, file: ChangedFile): String = worktree.trimEnd('/') + "/" + file.path.removeSuffix("/")
+
+    /** Whether [file] is a folder git lists as one (a repository inside the worktree). */
+    fun isFolder(file: ChangedFile): Boolean = file.path.endsWith("/")
+
+    fun noCombinedView(name: String): String =
+        "Skein cannot show the changes of the worktree $name: the IDE's combined diff comes with its bundled Version Control plugin, which is turned off."
+
     /** The thread Show Changes is for in the thread menu: the one selected thread, when it is a worktree thread. */
     fun worktreeThread(selected: List<SkeinThread>): SkeinThread? = selected.singleOrNull()?.takeIf { it.worktree?.let(Worktrees::isValidName) == true }
 }
 
 /**
- * The Show Changes tab of each worktree, by the worktree's path: a second Show Changes replaces it instead of opening
+ * The Show Changes tab of each worktree, by the worktree's path: a second Show Changes refreshes it instead of opening
  * another. A tab is remembered from when it opens until it closes, or until it is asked for and is no longer open.
  * Safe from any thread.
  */
@@ -239,20 +267,17 @@ class DiffTabs<T : Any> {
     fun closed(tab: T) {
         synchronized(tabs) { tabs.values.removeIf { it == tab } }
     }
-
-    companion object {
-        /** The one editor file that is open [after] showDiff and was not [before]; null for none (a window) or several. */
-        fun <T : Any> newTab(before: Set<T>, after: List<T>): T? = after.filter { it !in before }.distinct().singleOrNull()
-    }
 }
 
 /**
- * Show Changes: the IDE's diff viewer over every file that differs between a worktree's merge-base with its base and the
- * worktree as it is on disk, one entry per file in one window ([WorktreeChangesReader]), whose title names the worktree
- * and the file's position in the list. One tab per worktree: a second Show Changes reads the list again and replaces
- * the tab it opened before ([DiffTabs]). The list is read off the EDT with a progress in the status bar, and a refusal
- * or an empty list is a balloon instead of an empty window, which leaves an open tab as it is. Each file
- * is read only when the viewer gets to it, by the platform's own background loading ([FileProducer]). The base side is
+ * Show Changes: the IDE's combined diff over every file that differs between a worktree's merge-base with its base and
+ * the worktree as it is on disk, all in one tab, a block per file one under the other ([WorktreeChangesReader]). The tab
+ * names the worktree and the count of files, each block the file. One tab per worktree: a second Show Changes saves the
+ * worktree's unsaved files, reads the list again and puts it in the tab it opened before ([DiffTabs]). The list is read
+ * off the EDT with a progress in the status bar, and a refusal or an empty list is a balloon instead of an empty tab,
+ * which leaves an open tab as it is. Each file is read only when the combined view gets to its block, by the platform's
+ * own background loading ([FileProducer]). The combined view is `@ApiStatus.Experimental` API, and the IDE's bundled
+ * Version Control plugin provides it; without that plugin Show Changes says so. The base side is
  * read-only, the worktree side is the file itself, so the IDE edits and saves it as any file. Skein writes nothing and
  * registers no VCS root for this: git runs through Skein's own runner, without optional locks and with `core.fsmonitor`
  * off, and only in a trusted project, since git can start programs a repository's configuration names.
@@ -264,14 +289,19 @@ class WorktreeDiff(private val project: Project, private val scope: CoroutineSco
     /** The worktrees whose Show Changes is under way, so a quick second click does not open a second window. */
     private val busy: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
-    /** The tab Show Changes opened for each worktree, by the worktree's path, so a second one replaces it. */
-    private val tabs = DiffTabs<VirtualFile>()
+    /** The tab Show Changes opened for each worktree, by the worktree's path, so a second one refreshes it. */
+    private val tabs = DiffTabs<WorktreeChangesFile>()
+
+    /** Counts the lists read, so every block of a new one has an id of its own and is loaded anew. */
+    private val generation = AtomicLong()
 
     init {
         project.messageBus.connect(scope).subscribe(
             FileEditorManagerListener.FILE_EDITOR_MANAGER,
             object : FileEditorManagerListener {
-                override fun fileClosed(source: FileEditorManager, file: VirtualFile) = tabs.closed(file)
+                override fun fileClosed(source: FileEditorManager, file: VirtualFile) {
+                    if (file is WorktreeChangesFile) tabs.closed(file)
+                }
             },
         )
     }
@@ -279,8 +309,8 @@ class WorktreeDiff(private val project: Project, private val scope: CoroutineSco
     private sealed interface Outcome {
         data class Said(val text: String, val type: NotificationType) : Outcome
 
-        /** The worktree's window to open, keyed by the worktree's [key], with a producer per file of [files]. */
-        class Diff(val key: String, val files: List<ChangedFile>, val producers: List<DiffRequestProducer>) : Outcome
+        /** The worktree's tab to open or refresh, keyed by the worktree's [key], titled [title], with its [blocks]. */
+        class Diff(val key: String, val title: String, val blocks: List<CombinedBlockProducer>) : Outcome
     }
 
     /**
@@ -334,6 +364,7 @@ class WorktreeDiff(private val project: Project, private val scope: CoroutineSco
     /** What to show for the worktree: the diff, or a balloon's words. Blocking, off the EDT. */
     private fun look(repository: String, name: String, recorded: String?): Outcome {
         if (!TrustedProjects.isProjectTrusted(project)) return Outcome.Said(ShowChanges.untrusted(name), NotificationType.WARNING)
+        if (project.getService(CombinedDiffManager::class.java) == null) return Outcome.Said(ShowChanges.noCombinedView(name), NotificationType.WARNING)
         val real = GitToplevel.resolved(repository) ?: return Outcome.Said(ShowChanges.refused(name, "its repository $repository is gone"), NotificationType.WARNING)
         if (ClaudeHome.default().holdsWorktreesOf(Path.of(real))) return Outcome.Said(ShowChanges.refused(name, WorktreeClose.CLAUDE_HOME), NotificationType.WARNING)
         val worktree = Path.of(Worktrees.dirOf(real, name))
@@ -343,33 +374,57 @@ class WorktreeDiff(private val project: Project, private val scope: CoroutineSco
                 if (found.files.isEmpty()) {
                     Outcome.Said(ShowChanges.noChanges(name, found.base.name), NotificationType.INFORMATION)
                 } else {
-                    Outcome.Diff(worktree.toString(), found.files, producers(project, reader, worktree, name, found))
+                    Outcome.Diff(worktree.toString(), ShowChanges.tabTitle(name, found.files.size), blocks(worktree, name, found))
                 }
         }
     }
 
     /**
-     * Opens the worktree's window, or replaces the one Show Changes opened for it before, which shows the list as it
-     * was then: the new one opens on the file the old one shows while that is still listed, and the old tab closes. The
-     * tab showDiff opened is the one new editor file ([DiffTabs.newTab]), in the main window or in a separate editor
-     * window alike. Only a diff the IDE shows in a frame of its own is none and is not replaced: with the registry key
-     * `show.diff.as.frame` on, from a modal dialog, or in an external diff tool. EDT.
+     * The blocks of [found], in its order: a block per file up to [ShowChanges.MAX_BLOCKS], then one note for the rest.
+     * A block's id holds the file's own path, named by its label ([BlockPath]), and this list's generation, so a refresh
+     * loads every block anew rather than keep what an earlier list loaded.
+     */
+    private fun blocks(worktree: Path, name: String, found: ChangesLookup.Found): List<CombinedBlockProducer> {
+        val tag = generation.incrementAndGet()
+        val shown = ShowChanges.capped(found.files)
+        val files = producers(project, reader, worktree, name, found.copy(files = shown.files)).zip(shown.files) { producer, file ->
+            val path = BlockPath(ShowChanges.blockPath(worktree.toString(), file), ShowChanges.isFolder(file), ChangeList.label(file))
+            CombinedBlockProducer(CombinedPathBlockId(path, status(file.kind), tag), producer)
+        }
+        if (shown.more == 0) return files
+        val label = "… and ${shown.more} more"
+        val note = NoteProducer(label, ShowChanges.moreNote(shown.more, ShowChanges.MAX_BLOCKS))
+        return files + CombinedBlockProducer(CombinedPathBlockId(BlockPath(worktree.toString(), true, label), FileStatus.NOT_CHANGED, tag), note)
+    }
+
+    private fun status(kind: ChangeKind): FileStatus = when (kind) {
+        ChangeKind.ADDED -> FileStatus.ADDED
+        ChangeKind.UNTRACKED -> FileStatus.UNKNOWN
+        ChangeKind.DELETED -> FileStatus.DELETED
+        ChangeKind.MODIFIED, ChangeKind.RENAMED, ChangeKind.COPIED -> FileStatus.MODIFIED
+    }
+
+    /**
+     * Opens the worktree's tab, or refreshes the one Show Changes opened for it before, in place: its title and the
+     * blocks of every view of it, then brings it to the front. The tab is a file of Skein's own ([WorktreeChangesFile]),
+     * opened as the IDE opens a diff, in the editor or in a separate window as its settings say. EDT.
      */
     private fun open(outcome: Outcome.Diff) {
         val editors = FileEditorManager.getInstance(project)
-        val old = tabs.current(outcome.key) { editors.isFileOpen(it) }
-        val start = ShowChanges.startAt(outcome.files, old?.let { shownPath(editors, it) })
-        val before = editors.openFiles.toSet()
-        DiffManager.getInstance().showDiff(project, SimpleDiffRequestChain.fromProducers(outcome.producers, start), DiffDialogHints.DEFAULT)
-        val opened = DiffTabs.newTab(before, editors.openFiles.toList())
-        if (opened != null) tabs.opened(outcome.key, opened)
-        if (old != null && old != opened) editors.closeFile(old)
+        val tab = tabs.current(outcome.key) { editors.isFileOpen(it) }
+        if (tab != null) {
+            tab.update(outcome.title, outcome.blocks)
+            editors.getAllEditors(tab).filterIsInstance<DiffEditorViewerFileEditor>()
+                .mapNotNull { it.editorViewer as? CombinedDiffComponentProcessor }
+                .forEach { it.setBlocks(outcome.blocks) }
+            editors.updateFilePresentation(tab)
+            DiffEditorTabFilesManager.getInstance(project).showDiffFile(tab, true)
+            return
+        }
+        val file = WorktreeChangesFile(outcome.key, outcome.title, outcome.blocks)
+        tabs.opened(outcome.key, file)
+        DiffEditorTabFilesManager.getInstance(project).showDiffFile(file, true)
     }
-
-    /** The path of the file [tab] shows now, as its request says ([PATH]); null while it loads or shows an error. */
-    private fun shownPath(editors: FileEditorManager, tab: VirtualFile): String? =
-        editors.getAllEditors(tab).filterIsInstance<DiffEditorViewerFileEditor>()
-            .firstNotNullOfOrNull { (it.editorViewer as? DiffRequestProcessor)?.activeRequest?.getUserData(PATH) }
 
     private fun balloon(text: String, type: NotificationType) {
         if (project.isDisposed) return
@@ -385,26 +440,32 @@ class WorktreeDiff(private val project: Project, private val scope: CoroutineSco
         /** How long one git call of Show Changes may take: the person waits for it, with a progress, but not forever. */
         const val GIT_TIMEOUT_MILLIS = 30_000
 
-        /** The worktree path of the file a request shows, so a refresh can open on the same file. */
-        internal val PATH: Key<String> = Key.create("Skein.ShowChanges.path")
+        /** The place the combined view is made for, as the platform's diff settings know it. */
+        private const val DIFF_PLACE = "Skein.WorktreeChanges"
 
         fun getInstance(project: Project): WorktreeDiff = project.service()
 
-        /** A producer per file of [found] in the worktree [name], each named by its full title ([ShowChanges.requestTitle]). */
-        internal fun producers(project: Project, reader: WorktreeChangesReader, worktree: Path, name: String, found: ChangesLookup.Found): List<DiffRequestProducer> {
-            val count = found.files.size
-            return found.files.mapIndexed { index, file ->
-                val title = ShowChanges.requestTitle(name, index, count, file)
-                FileProducer(project, reader, worktree, file, title, ShowChanges.baseTitle(found.base.name, found.mergeBase, file), ShowChanges.worktreeTitle(name))
+        /** A producer per file of [found] in the worktree [name], each named by the file's label ([ChangeList.label]). */
+        internal fun producers(project: Project, reader: WorktreeChangesReader, worktree: Path, name: String, found: ChangesLookup.Found): List<DiffRequestProducer> =
+            found.files.map { file ->
+                FileProducer(project, reader, worktree, file, ChangeList.label(file), ShowChanges.baseTitle(found.base.name, found.mergeBase, file), ShowChanges.worktreeTitle(name))
             }
+
+        /**
+         * The combined view for a [WorktreeChangesFile], made by the IDE's [CombinedDiffManager], which its bundled
+         * Version Control plugin provides; checked before git runs ([look]).
+         */
+        internal fun combinedView(project: Project, blocks: List<CombinedBlockProducer>): CombinedDiffComponentProcessor {
+            val manager = project.getService(CombinedDiffManager::class.java) ?: throw IllegalStateException("the IDE's combined diff is not available")
+            return manager.createProcessor(DIFF_PLACE, emptyList(), emptyList()).also { it.setBlocks(blocks) }
         }
     }
 }
 
 /**
- * One file of Show Changes, read when the diff viewer gets to it, on the platform's background thread: what the file is
- * on disk inside the worktree ([WorktreeDisk]), then its bytes at the merge-base through git, each side only up to
- * [ShowChanges.LIMIT].
+ * One file of Show Changes, read when the combined view gets to its block, on the platform's background thread: what the
+ * file is on disk inside the worktree ([WorktreeDisk]), then its bytes at the merge-base through git, each side only up
+ * to [ShowChanges.LIMIT].
  */
 private class FileProducer(
     private val project: Project,
@@ -415,16 +476,22 @@ private class FileProducer(
     private val baseTitle: String,
     private val worktreeTitle: String,
 ) : DiffRequestProducer {
-    /**
-     * The full title, as the request's own: the platform names its loading and error pages after the producer, and the
-     * tab shows that name while the file loads or fails, so it names the worktree and the position too.
-     */
+    /** The file's label, as its block's title. */
     override fun getName(): String = title
 
-    /** The request for the file, marked with its path ([WorktreeDiff.PATH]) so a refresh can find it again. */
-    @Throws(DiffRequestProducerException::class)
+    /**
+     * The request for the file, or a note with the reason when it cannot be read. Never throws but for cancellation: the
+     * combined view loads a batch of blocks in one go, and a throw would leave the rest of them loading for good.
+     */
     override fun process(context: UserDataHolder, indicator: ProgressIndicator): DiffRequest =
-        request(indicator).also { it.putUserData(WorktreeDiff.PATH, file.path) }
+        try {
+            request(indicator)
+        } catch (e: DiffRequestProducerException) {
+            MessageDiffRequest(title, e.message ?: "Skein cannot show ${file.path}")
+        } catch (e: Exception) {
+            if (e is ControlFlowException || e is CancellationException) throw e
+            MessageDiffRequest(title, "Skein cannot show ${file.path}: ${e.message ?: e.javaClass.simpleName}")
+        }
 
     private fun request(indicator: ProgressIndicator): DiffRequest {
         val disk = try {
@@ -478,5 +545,49 @@ private class FileProducer(
         if (local != null) return factory.createFromBytes(project, bytes, local)
         val name = (file.from ?: file.path).substringAfterLast('/')
         return factory.createFromBytes(project, bytes, FileTypeManager.getInstance().getFileTypeByFileName(name), name)
+    }
+}
+
+/** A block that only says something: the note past the cap ([ShowChanges.moreNote]). */
+private class NoteProducer(private val title: String, private val text: String) : DiffRequestProducer {
+    override fun getName(): String = title
+
+    override fun process(context: UserDataHolder, indicator: ProgressIndicator): DiffRequest = MessageDiffRequest(title, text)
+}
+
+/**
+ * The path of a block: the file's own path in the worktree, so the header's icon and the IDE's navigation find the
+ * file, named by its [label] ([ChangeList.label]) and with no parent, so the header reads as the label alone.
+ */
+private class BlockPath(path: String, folder: Boolean, private val label: String) : LocalFilePath(path, folder) {
+    override fun getName(): String = label
+
+    override fun getParentPath(): FilePath? = null
+
+    /** By the file itself while it is there, else by its own name: the label would name no type. */
+    override fun getFileType(): FileType =
+        virtualFile?.let { FileTypeManager.getInstance().getFileTypeByFile(it) } ?: FileTypeManager.getInstance().getFileTypeByFileName(path.substringAfterLast('/'))
+}
+
+/**
+ * The tab of one worktree's changes: a combined diff file of Skein's own, titled by [title] ([ShowChanges.tabTitle]),
+ * whose views show [blocks]. [update] gives it a refreshed list; the views already open get theirs from [WorktreeDiff].
+ */
+internal class WorktreeChangesFile(key: String, title: String, blocks: List<CombinedBlockProducer>) :
+    CombinedDiffVirtualFile(title, "Skein/$key"),
+    DiffVirtualFileWithTabName {
+    @Volatile
+    private var title: String = title
+
+    @Volatile
+    private var blocks: List<CombinedBlockProducer> = blocks
+
+    override fun createViewer(project: Project): CombinedDiffComponentProcessor = WorktreeDiff.combinedView(project, blocks)
+
+    override fun getEditorTabName(project: Project, editors: List<FileEditor>): String = title
+
+    fun update(title: String, blocks: List<CombinedBlockProducer>) {
+        this.title = title
+        this.blocks = blocks
     }
 }

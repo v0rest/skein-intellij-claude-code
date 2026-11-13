@@ -70,7 +70,7 @@ import javax.swing.SwingConstants
 internal class WorktreesSection(private val project: Project, private val scope: CoroutineScope) {
     private val hygiene = WorktreeHygiene.getInstance(project)
     private val model = CollectionListModel<KeptWorktree>()
-    private val list = JBList(model).apply { cellRenderer = KeptWorktreeRowRenderer() }
+    private val list = JBList(model).apply { cellRenderer = KeptWorktreeRowRenderer(project.basePath) }
     private val scroll = JBScrollPane(list).apply { isVisible = false }
     private val header = JBLabel(TITLE, AllIcons.General.ArrowRight, SwingConstants.LEFT).apply {
         border = JBUI.Borders.empty(6, 8)
@@ -274,9 +274,10 @@ internal class WorktreesSection(private val project: Project, private val scope:
  * One row of the Worktrees section, with the History row's anatomy ([TwoLineRow]): a branch glyph (a folder for one
  * git does not list), the worktree's name and its counts on line 1 ([WorktreeBadge], as on a worktree thread's row),
  * and on line 2 its branch, "detached HEAD" or "not a git worktree" ([WorktreeBadge.kind]). The tooltip is the folder,
- * then the counts' lines. No I/O: the look read everything.
+ * named from the project's [projectBase] when it lies inside the project ([WorktreeBadge.folder]), then the counts'
+ * lines, wrapped ([WorktreeBadge.sectionTooltip]). No I/O: the look read everything.
  */
-internal class KeptWorktreeRowRenderer : ListCellRenderer<KeptWorktree> {
+internal class KeptWorktreeRowRenderer(private val projectBase: String? = null) : ListCellRenderer<KeptWorktree> {
     private val row = TwoLineRow()
 
     /** The list font the small one was taken with; it is taken again only when that changes (theme, font size). */
@@ -309,7 +310,8 @@ internal class KeptWorktreeRowRenderer : ListCellRenderer<KeptWorktree> {
             label.foreground = grey
         }
         ThreadRowRenderer.showBadge(row, WorktreeBadge.of(item.counts), smallFont, grey, if (selected && focused) foreground else null)
-        row.toolTipText = RowText.escapedTooltip(listOf(item.path), WorktreeBadge.hint(item.kind, item.path) + WorktreeBadge.tooltip(item.counts))
+        val folder = WorktreeBadge.folder(item.repository, item.name, item.path, projectBase)
+        row.toolTipText = WorktreeBadge.sectionTooltip(folder, WorktreeBadge.hint(item.kind, item.path), WorktreeBadge.tooltip(item.counts))
         row.accessibleContext.accessibleName = listOfNotNull(item.name, second, WorktreeBadge.spoken(item.counts)).joinToString(", ")
         row.invalidate() // the next validate lays the row out for this folder, whatever the last one was
         return row
