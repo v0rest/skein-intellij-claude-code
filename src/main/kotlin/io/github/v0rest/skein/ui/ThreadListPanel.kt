@@ -76,6 +76,7 @@ class ThreadListPanel(private val project: Project, parent: Disposable) {
                 contexts = { contexts },
                 showContext = { SkeinSettings.getInstance().state.showContext },
                 worktreeCounts = { worktreeCounts },
+                base = { project.basePath },
             ),
             headers = { headers },
         )

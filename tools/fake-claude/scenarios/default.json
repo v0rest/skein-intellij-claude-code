@@ -1,0 +1,20 @@
+{
+  "model": "claude-opus-5-5",
+  "steps": [
+    {"wait": "prompt"},
+    {"prompt": "Tidy up the README of demo-shop"},
+    {"status": "busy"},
+    {"sleep": 2},
+    {"toolUse": "Bash", "input": {"command": "git status --short"}},
+    {"status": "waiting", "waitingFor": "permission prompt"},
+    {"wait": "allow"},
+    {"toolResult": "M README.md"},
+    {"status": "busy"},
+    {"sleep": 2},
+    {"answer": "The README of demo-shop reads well now. I shortened the setup section.",
+     "usage": {"input_tokens": 6, "cache_creation_input_tokens": 1800, "cache_read_input_tokens": 41000, "output_tokens": 350}},
+    {"aiTitle": "Tidy up the demo-shop README"},
+    {"status": "idle"},
+    {"wait": "exit"}
+  ]
+}

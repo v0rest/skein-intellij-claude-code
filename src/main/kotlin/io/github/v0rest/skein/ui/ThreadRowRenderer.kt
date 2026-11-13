@@ -19,7 +19,8 @@ import javax.swing.ListCellRenderer
 /**
  * One thread row on two lines. Line 1: the state glyph (the spinner while working), the name (bold while the thread
  * needs you or its finished turn is unread), a pin when pinned, and the age on the right ([showAge]). Line 2, grey and
- * small ([RowText.secondLine]): the worktree mark when there is one, then what the thread did last ([previews], by
+ * small ([RowText.secondLine]): the worktree mark when there is one, else the folder inside the project ([base], the
+ * project's base folder, [FolderLabel]) a thread was started in, then what the thread did last ([previews], by
  * thread id, while [showPreview] is on), or the state words without it. At the right end of line 2 the model family and
  * the context in use ([contexts], by thread id, while [showContext] is on and the value is known, nothing otherwise),
  * which keeps its whole text so the preview gives way first; the tooltip has the full model id and token count
@@ -40,6 +41,7 @@ class ThreadRowRenderer(
     private val contexts: () -> Map<String, ContextUse> = { emptyMap() },
     private val showContext: () -> Boolean = { true },
     private val worktreeCounts: () -> Map<String, WorktreeCounts> = { emptyMap() },
+    private val base: () -> String? = { null },
     private val now: () -> Long = System::currentTimeMillis,
 ) : ListCellRenderer<SkeinThread> {
     private val row = TwoLineRow()
@@ -80,9 +82,11 @@ class ThreadRowRenderer(
         row.pin.icon = if (thread.pinned) AllIcons.General.Pin_tab else null
         row.age.isVisible = showAge()
         row.age.text = if (row.age.isVisible) StatusText.age(thread.stateSince, now()) else ""
-        val worktree = WorktreeLabel.of(shownName, thread.worktree, thread.sessionCwd)
+        // the worktree a thread runs in, else the folder inside the project it was started in ([FolderLabel])
+        val mark = WorktreeLabel.of(shownName, thread.worktree, thread.sessionCwd)
+            ?: FolderLabel.of(shownName, thread.folder, base())
         val preview = if (showPreview()) previews()[thread.id] else null
-        row.detail.text = RowText.secondLine(thread.state, worktree, preview)
+        row.detail.text = RowText.secondLine(thread.state, mark, preview)
         val use = if (showContext()) contexts()[thread.id] else null
         row.context.isVisible = use != null
         row.context.text = use?.label.orEmpty()
@@ -102,8 +106,8 @@ class ThreadRowRenderer(
             now = now(),
             lines = WorktreeBadge.tooltip(counts),
         )
-        // a screen reader hears the name and the state words, whatever line 2 shows, then the worktree and the preview
-        row.accessibleContext.accessibleName = listOfNotNull(shownName, StatusText.line(thread.state), worktree, WorktreeBadge.spoken(counts), preview, use?.spoken).joinToString(", ")
+        // a screen reader hears the name and the state words, whatever line 2 shows, then the worktree or folder and the preview
+        row.accessibleContext.accessibleName = listOfNotNull(shownName, StatusText.line(thread.state), mark, WorktreeBadge.spoken(counts), preview, use?.spoken).joinToString(", ")
         row.invalidate() // the next validate lays the row out for this thread, whatever the last one was
         return row
     }
