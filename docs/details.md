@@ -267,7 +267,7 @@ the worktree, as it would with git itself.
 
 ## Checked
 
-- 927 unit tests, among them a lifecycle test that drives a thread from start to restore against a copy of a Claude
+- 1117 unit tests, among them a lifecycle test that drives a thread from start to restore against a copy of a Claude
   home and proves, byte for byte, that nothing under it changed (and fails as soon as anything does).
 - Unit tests for which glyph and tooltip words a waiting thread gets for each reason (and that the three glyphs differ
   and stay orange in both themes), the thread order with pins, the History arrangement (pinned first, done hidden, a
@@ -341,6 +341,15 @@ the worktree, as it would with git itself.
   the threads back into the tool window. With it on, an editor thread tab dragged into the tool window stays in the
   list and closes the same way there, Move to Editor or a drag back leaves one row with its colour on the editor tab,
   and the editor ×, Close All and Close work as before.
+  With a demo repository whose main is a commit behind its origin, New Thread Here starts a thread in a folder, in a
+  file's folder and from an editor tab, is missing on external libraries, scratches and a worktree folder, and a
+  subfolder thread comes back after a restart and resumes in its folder, with its session in the History. A waiting
+  thread shows the lock for a permission and the speech bubble for a question, with their tooltips, on a selected row
+  and in a dark theme, and the toolbar counter and Jump to Waiting Thread count both. The base warning shows with
+  `head`, goes away for an existing worktree's name and comes back for a new one, and stays away with `fresh`. Show
+  Changes on a kept worktree steps through committed, staged, unstaged, untracked, deleted and renamed files with the
+  worktree and the position in the tab title, a commit the base got later does not show up, a second Show Changes keeps
+  one tab, and with 17 changed files the worktree tooltip numbers ten of them and says how many more.
 - On macOS with IntelliJ IDEA 2026.3: every `claude` started in an IDE terminal tab has the chain
   `claude → zsh → idea`, so the tab's shell is the process Skein ties the thread to; a `claude` in iTerm2 never
   reaches the IDE and is left alone.
@@ -348,11 +357,11 @@ the worktree, as it would with git itself.
   notifications in front and in the background, `/clear`, close, exit and relaunch, restart, a session running in
   another terminal, `claude` missing from PATH) on macOS and Linux. The newer features still wait for their checks
   too: that the keep-awake assertion shows up in `pmset -g assertions` and the JNA module loads, that pins, names,
-  colours and done marks survive a restart, the editor-tab tint, the toolbar counter and the sound. The refreshed tool
-  window waits for its checks as well, the tab titles after the move into the editor and after a restart, the badge
-  while the Skein window has not been opened yet, the split "+" in the title bar and the spinner in the new row.
-  The lock and speech-bubble glyphs of a waiting thread, in a light and a dark theme at 100 % and 200 % scale (the
-  headless paint is checked, not how they look in the row).
+  colours and done marks survive a restart, the editor-tab tint, a click on the toolbar counter and the sound. The
+  refreshed tool window waits for its checks as well, the tab titles after the move into the editor and after a
+  restart, the badge while the Skein window has not been opened yet, the split "+" in the title bar and the spinner
+  in the new row.
+  The lock and speech-bubble glyphs of a waiting thread in a light theme, and at 100 % and 200 % scale side by side.
   For worktree threads: the `cwd` in the status file of a first worktree session, a restored worktree thread
   resuming into its worktree, the notice about the worktrees `.gitignore` and the exclude line on a first worktree
   thread, the close question and its Keep-only answer for an unsaved editor change, and the exclude rule in a window
@@ -363,8 +372,6 @@ the worktree, as it would with git itself.
   wait for theirs too, a dirty worktree thread, a rebase stopped half way, a kept worktree opened from the section,
   Remove… of a dirty one through its second question, a folder git does not list, and the amber in a light and a dark
   theme.
-  The base warning in the name dialog waits too, in a real clone that is behind its remote with `worktree.baseRef`
-  set to `head`. Its look and its wrapping, and that it goes away when an existing worktree's name is typed.
   The ending before a close waits for its checks in a sandbox IDE as well: the × and the menu's Close on a working
   thread (claude and its shell gone, the History no longer showing the session as running, the worktree question
   after), a Close All with a thread and other files, a session that outlives the five seconds, a drag of a thread tab
@@ -376,19 +383,16 @@ the worktree, as it would with git itself.
   to another tab while it works (working, the permission prompt with its balloon, the finished turn in blue with the
   model and the context on its row), the History listing the session, a restart resuming a thread that got its prompt,
   and a worktree thread in a git repository.
-  New Thread Here waits for its checks too, in the Project view on a folder, a file and several files of one folder,
-  hidden on a library jar, a scratch file, a folder outside the project, a worktree folder and a thread's own tab, in
-  an editor tab's menu, and a subfolder thread end to end, its row's folder, its session in the History and its
-  resume there after a restart.
-  Show Changes waits for its checks in a sandbox IDE too - the item in a worktree thread's menu and not in a plain
-  thread's, the diff window stepping through committed, staged, unstaged, untracked, deleted and renamed files, an
-  image and a binary file, a note for a big file and for a repository inside, an edit saved on the worktree side, the
-  balloons for a clean worktree, a rebase stopped half way and an untrusted project, the same from a row of the
-  Worktrees section, the tab title with the worktree and the position, and a second Show Changes on the same worktree
-  replacing its tab on the same file while another worktree gets its own, also in a separate editor window, and an
-  unsaved edit on the worktree side showing up in the list of a second Show Changes. The note past 1,000 files, and
-  the worktree tooltip, a long path wrapping, its numbers, the width, and the folder named from the project's folder
-  in the Worktrees section.
+  New Thread Here waits for the rest of its checks, several files of one folder, a folder outside the project, a
+  thread's own tab and the folder a subfolder thread's row names.
+  The base warning waits for its look and its wrapping in the name dialog.
+  Show Changes waits for the rest of its checks, the item in a worktree thread's menu and not in a plain thread's,
+  an image and a binary file, a note for a big file and for a repository inside, an edit saved on the worktree side,
+  an unsaved edit on the worktree side showing up in the list of a second Show Changes, a second Show Changes landing
+  on the same file while another worktree gets its own tab, also in a separate editor window, the balloons for a
+  clean worktree, a rebase stopped half way and an untrusted project, and the note past 1,000 files. The worktree
+  tooltip waits for a long path wrapping, its width and the folder named from the project's folder in the Worktrees
+  section.
 
 ## Releasing
 

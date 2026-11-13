@@ -9,9 +9,12 @@
     <ul>
       <li>Each thread is an ordinary IDE terminal tab, in the editor area or the Terminal tool window, running your own
         unmodified <code>claude</code>.</li>
-      <li>Each thread's state, model and context use at a glance.</li>
+      <li>Each thread's state, model and context use at a glance, with a lock when claude waits for a permission and a
+        speech bubble when it asks a question.</li>
+      <li>New Thread Here starts a thread in a folder of the project, from the Project view or an editor tab.</li>
       <li>Resume past sessions from the History; pin, name and mark them done.</li>
-      <li>Start threads in git worktrees, and keep, open or remove the worktrees they leave.</li>
+      <li>Start threads in git worktrees, see a worktree's changes in the IDE's diff viewer, and keep, open or remove
+        the worktrees they leave.</li>
       <li>Closing a thread's tab ends its claude cleanly, so no session keeps running behind a closed tab.</li>
     </ul>
     <p>That last point works around a bug in the IDE's terminal,
