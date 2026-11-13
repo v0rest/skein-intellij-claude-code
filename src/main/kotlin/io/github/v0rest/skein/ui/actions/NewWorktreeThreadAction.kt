@@ -12,6 +12,8 @@ import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.text.StringUtil
 import io.github.v0rest.skein.claude.ClaudeHome
+import io.github.v0rest.skein.claude.WorktreeBaseRef
+import io.github.v0rest.skein.git.BaseWarning
 import io.github.v0rest.skein.git.ExcludeResult
 import io.github.v0rest.skein.git.GitToplevel
 import io.github.v0rest.skein.git.ProcessGitRunner
@@ -60,8 +62,18 @@ class NewWorktreeThreadAction : DumbAwareAction() {
             val inUse = WorktreeStart.threadNames(repositories, ThreadService.getInstance(project).threads.value, GitToplevel::resolved)
             // a branch left behind by an earlier worktree of the same name (git refused to delete it)
             val branches = git.branches(repository)
+            // the base the worktree starts from may be behind its remote (as of the last fetch, Skein never fetches); the
+            // branch and the counts are asked only when it starts from the local branch, see BaseWarning.compute
+            val warning = BaseWarning.compute(
+                repository,
+                mainRoot = git::mainCheckoutRoot,
+                mode = { WorktreeBaseRef.read(ClaudeHome.default(), it) },
+                hasOrigin = { git.hasOrigin(repository) },
+                branch = { git.currentBranch(repository) },
+                counts = { git.upstreamCounts(repository) },
+            )
             ApplicationManager.getApplication().invokeLater({
-                val dialog = WorktreeNameDialog(project, existing, inUse, branches)
+                val dialog = WorktreeNameDialog(project, existing, inUse, branches, warning)
                 if (!dialog.showAndGet()) return@invokeLater // cancelled: nothing was written
                 val name = dialog.name
                 // an existing worktree reopens: the repository's branch now says nothing about where it started

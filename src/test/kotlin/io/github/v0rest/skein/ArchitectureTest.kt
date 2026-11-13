@@ -50,6 +50,18 @@ class ArchitectureTest {
             .filter { f -> SourceRules.offenders(SourceRules.codeLines(f), needles.toList()).isNotEmpty() }
             .map { mainRoot.relativize(it).toString() }
 
+    /** Skein sends nothing over the network, so no main source hands git a command that talks to a remote. */
+    @Test
+    fun noGitCommandThatTalksToARemote() {
+        val talksToARemote = Regex(
+            "\"(fetch|pull|push|ls-remote|clone)\"|\"remote\"\\s*,\\s*\"(show|set-head|prune|update)\"|\"submodule\"\\s*,\\s*\"update\"",
+        )
+        val offenders = SourceRules.kotlinFiles(mainRoot)
+            .filter { f -> talksToARemote.containsMatchIn(SourceRules.codeLines(f).joinToString("\n")) }
+            .map { mainRoot.relativize(it).toString() }
+        assertEquals(emptyList<String>(), offenders)
+    }
+
     /** The folder name as a string literal (`".claude"`, `"~/.claude/..."`), not the `skein.claude` package name. */
     @Test
     fun onlyClaudeHomeMentionsDotClaude() {
