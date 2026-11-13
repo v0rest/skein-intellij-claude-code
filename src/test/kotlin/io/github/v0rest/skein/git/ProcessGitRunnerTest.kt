@@ -2,6 +2,7 @@ package io.github.v0rest.skein.git
 
 import io.github.v0rest.skein.testutil.RealGit
 import io.github.v0rest.skein.ui.WorktreeStart
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -10,6 +11,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.nio.file.Files
 
 /** Smoke test against the real git; skipped when git is not installed. */
 class ProcessGitRunnerTest {
@@ -78,5 +80,33 @@ class ProcessGitRunnerTest {
         assertTrue(git.run(repo, "tag", "worktree-task-1").ok)
         assertTrue(git.run(repo, "branch", "feature/x").ok)
         assertTrue(WorktreeGit(git).branches(repo).containsAll(setOf("worktree-task-1", "feature/x")))
+    }
+
+    /**
+     * [ProcessGitRunner.bytes] hands back a blob as git stored it: a CRLF and a lone CR as they are, a NUL, bytes that are
+     * not UTF-8, and a backspace that the platform's own capture would let delete the byte before it.
+     */
+    @Test
+    fun bytesComeBackAsGitWroteThem() {
+        val git = RealGit(folder)
+        assumeTrue(git.available)
+        val repo = git.repository()
+        val bytes = byteArrayOf(97, 13, 10, 98, 13, 99, 0, 10, 0x80.toByte(), 0xC3.toByte(), 0x28, 7, 8, 0xFF.toByte(), 13) + ByteArray(256) { it.toByte() }
+        Files.write(repo.resolve("raw.bin"), bytes)
+        val id = git.run(repo, "-c", "core.autocrlf=false", "hash-object", "-w", "--no-filters", "--", "raw.bin").stdout.trim()
+        val read = runner.bytes(repo, "cat-file", "blob", id)
+        assertTrue(read.ok)
+        assertArrayEquals(bytes, read.bytes)
+        assertEquals("", read.result.stdout)
+    }
+
+    @Test
+    fun bytesOfAFailedCallSayWhy() {
+        val dir = folder.newFolder("not-a-repository").toPath()
+        assumeTrue(runner.run(dir, "--version").ok)
+        val read = runner.bytes(dir, "cat-file", "blob", "0".repeat(40))
+        assertFalse(read.ok)
+        assertTrue(read.result.reason(), read.result.ran)
+        assertEquals(0, read.bytes.size)
     }
 }

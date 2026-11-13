@@ -15,6 +15,8 @@ import io.github.v0rest.skein.threads.SessionMarksService
 import io.github.v0rest.skein.threads.SkeinThread
 import io.github.v0rest.skein.threads.ThreadColor
 import io.github.v0rest.skein.threads.ThreadService
+import io.github.v0rest.skein.ui.ShowChanges
+import io.github.v0rest.skein.ui.WorktreeDiff
 import javax.swing.JList
 
 /** What the Rename dialog's answer means for the Skein name. */
@@ -105,7 +107,7 @@ internal fun renameSession(project: Project, marks: SessionMarksService, session
     }
 }
 
-/** The right-click menu of the thread list: pin, rename, colour and close. */
+/** The right-click menu of the thread list: pin, rename, colour, a worktree thread's Show Changes and close. */
 class ThreadMenu(private val project: Project, private val list: JList<SkeinThread>) {
     private val service = ThreadService.getInstance(project)
     private val marks = SessionMarksService.getInstance(project)
@@ -183,11 +185,29 @@ class ThreadMenu(private val project: Project, private val list: JList<SkeinThre
         }
     }
 
+    /**
+     * The worktree's changes against the commit it shares with its base, in the IDE's diff viewer ([WorktreeDiff]):
+     * there only for one selected worktree thread.
+     */
+    private val showChanges = object : DumbAwareAction("Show Changes") {
+        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+
+        override fun update(e: AnActionEvent) {
+            e.presentation.isEnabledAndVisible = ShowChanges.worktreeThread(selected()) != null
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            val thread = ShowChanges.worktreeThread(selected()) ?: return
+            WorktreeDiff.getInstance(project).show(thread.folder, thread.worktree ?: return, thread.base)
+        }
+    }
+
     /** Asks [question] on the EDT; true for Close. */
     private fun confirmClose(question: CloseQuestion.Question): Boolean =
         Messages.showYesNoDialog(project, question.message, question.title, "Close", "Cancel", Messages.getWarningIcon()) == Messages.YES
 
     fun install() {
-        PopupHandler.installPopupMenu(list, DefaultActionGroup(pin, rename, colors, Separator.getInstance(), close), "SkeinThreadPopup")
+        val group = DefaultActionGroup(pin, rename, colors, Separator.getInstance(), showChanges, Separator.getInstance(), close)
+        PopupHandler.installPopupMenu(list, group, "SkeinThreadPopup")
     }
 }
