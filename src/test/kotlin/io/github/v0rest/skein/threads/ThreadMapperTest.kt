@@ -103,6 +103,17 @@ class ThreadMapperTest {
     @Test
     fun ignoresOtherFolder() = assertNull(mapper.matchLaunch(pending(), listOf(s100.copy(cwd = "/q")), emptySet()))
 
+    /** A thread New Thread Here started in a subfolder takes the claude that runs there, not one in the project folder. */
+    @Test
+    fun aThreadInASubfolderTakesTheClaudeThere() {
+        probe.add(30, parent = 1, start = Instant.ofEpochMilli(0))
+        probe.add(130, parent = 30, start = Instant.ofEpochMilli(1_400))
+        val inDocs = sessionFile(pid = 130, cwd = "/p/docs", startedAt = 1_500, sessionId = "def")
+        assertEquals(LaunchMatch(30, inDocs), mapper.matchLaunch(pending().copy(folder = "/p/docs"), listOf(s100, inDocs), emptySet()))
+        assertEquals(LaunchMatch(10, s100), mapper.matchLaunch(pending(), listOf(inDocs, s100), emptySet()))
+        assertNull(mapper.matchLaunch(pending().copy(folder = "/p/docs"), listOf(s100), emptySet()))
+    }
+
     @Test
     fun ignoresSessionStartedBeforeTyping() {
         assertNull(mapper.matchLaunch(pending(), listOf(s100.copy(startedAt = 999)), emptySet()))

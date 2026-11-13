@@ -59,6 +59,12 @@
                     text="Jump to Waiting Thread" description="Open the Skein thread that has waited longest for you"/>
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </group>
+        <action id="Skein.NewThreadHere" class="io.github.v0rest.skein.ui.actions.NewThreadHereAction"
+                text="New Thread Here" description="Start claude in a new Skein thread in this folder, or in the file's folder" icon="/icons/skein.svg">
+            <!-- next to Open In, where the IDE's own Terminal entry lives -->
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="after" relative-to-action="SplitRevealGroup"/>
+            <add-to-group group-id="EditorTabPopupMenuEx" anchor="after" relative-to-action="SplitRevealGroup"/>
+        </action>
         <action id="Skein.WaitingCounter" class="io.github.v0rest.skein.ui.actions.WaitingCounterAction"
                 text="Threads That Need You" description="Skein threads that need you" icon="/icons/skein.svg">
             <add-to-group group-id="MainToolbarRight" anchor="first"/>
