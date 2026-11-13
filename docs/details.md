@@ -237,6 +237,17 @@ the worktree, as it would with git itself.
   only, and a lock Claude Code left behind lifted only once its claude has ended, against real git in a temporary
   repository for the counts, that lock and a rebase, a merge and a cherry-pick stopped half way, and on a real disk for
   the folder delete, which removes a link inside as a link.
+- End-to-end tests against a fake claude, `tools/fake-claude`, a python3 script that writes the status files and
+  transcript lines Skein reads, step by step as a scenario says. Its shapes come from Skein's own parsers and fixtures,
+  never from Claude Code's program, and it writes only into a Claude home marked as its own, in a temporary folder. A
+  real shell the test starts runs it when Skein types `claude`, so the chain claude → shell → test JVM is a real one,
+  and the real watcher, mapper and coordinator follow a thread from working to a permission prompt to a finished turn,
+  with its preview, model and context, and on to its exit, resume it from History in the same tab, find a worktree
+  thread's claude in its git worktree, and close a thread with real SIGHUPs, the fake's first and then its shell's.
+  Contract tests check every status and transcript line the fake writes against Skein's readers, that it refuses the
+  real Claude home and an unmarked one, and that a fake left waiting ends once its test is gone. These tests are skipped
+  where python3 3.8 or newer or `/bin/sh` is missing, the git worktree tests also without git, and the close test
+  outside macOS and Linux.
 - The IntelliJ Plugin Verifier against IntelliJ IDEA 2026.3 (263.7307.200): compatible, no internal API usage (the
   build fails on any), no deprecated API usage.
 - In a sandbox IDE: the terminal tab opens in the editor area, the typed command reaches the shell (0.4 to 0.9 s),
@@ -273,6 +284,11 @@ the worktree, as it would with git itself.
   to another split or window, which must not end claude, and closing the project with threads running.
   A plain IDE terminal opened in a thread's folder, with a claude of its own, must keep running when the thread
   closes.
+  The fake claude waits for its run in a sandbox IDE, started as `tools/fake-claude/README.md` says, with `type claude`
+  in a sandbox tab naming the fake, a thread going through the default scenario as you press Enter in its tab and turn
+  to another tab while it works (working, the permission prompt with its balloon, the finished turn in blue with the
+  model and the context on its row), the History listing the session, a restart resuming a thread that got its prompt,
+  and a worktree thread in a git repository.
 
 ## Releasing
 

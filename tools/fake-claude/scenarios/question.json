@@ -1,0 +1,20 @@
+{
+  "model": "claude-sonnet-4-5",
+  "steps": [
+    {"wait": "prompt"},
+    {"prompt": "Add a cache to the acme price service"},
+    {"status": "busy"},
+    {"sleep": 1},
+    {"toolUse": "AskUserQuestion", "input": {"questions": [{"question": "Which cache should the price service use?"}]}},
+    {"status": "waiting", "waitingFor": "input needed"},
+    {"wait": "answer"},
+    {"toolResult": "An in-memory one"},
+    {"status": "busy"},
+    {"sleep": 2},
+    {"answer": "The price service caches prices in memory for five minutes.",
+     "usage": {"input_tokens": 4, "cache_creation_input_tokens": 900, "cache_read_input_tokens": 12000, "output_tokens": 200}},
+    {"aiTitle": "Cache for the acme price service"},
+    {"status": "idle"},
+    {"wait": "exit"}
+  ]
+}
