@@ -169,6 +169,13 @@ object ShowChanges {
     }
 
     /** The note for a file whose base side git says is [size] bytes, more than [limit]. */
+    /**
+     * [text] as a Swing label shows it, literally. A label renders a text that starts with `<html>` as HTML, remote
+     * images included, and a note or a title can start with the name of a file in the worktree, which whoever wrote the
+     * repository chose, so such a text is moved off its first character.
+     */
+    fun plain(text: String): String = if (text.startsWith("<")) " $text" else text
+
     fun tooLargeAtBase(file: ChangedFile, size: Long, limit: Long): String =
         "${file.from ?: file.path} is ${size(size)} at the base, more than the ${size(limit)} Show Changes reads."
 
@@ -463,7 +470,7 @@ private class FileProducer(
             throw DiffRequestProducerException("Skein cannot read ${file.path} in the worktree: ${e.message}")
         }
         val plan = when (val planned = ShowChanges.plan(file, disk)) {
-            is DiffPlan.Note -> return MessageDiffRequest(title, planned.text)
+            is DiffPlan.Note -> return MessageDiffRequest(ShowChanges.plain(title), ShowChanges.plain(planned.text))
             is DiffPlan.Show -> planned
         }
         val factory = DiffContentFactory.getInstance()
@@ -483,7 +490,7 @@ private class FileProducer(
             BaseView.BYTES, BaseView.LINK -> {
                 val bytes = when (val read = reader.blob(worktree, file.base!!.id, ShowChanges.LIMIT)) {
                     is BlobRead.Loaded -> read.bytes
-                    is BlobRead.TooLarge -> return MessageDiffRequest(title, ShowChanges.tooLargeAtBase(file, read.size, ShowChanges.LIMIT))
+                    is BlobRead.TooLarge -> return MessageDiffRequest(ShowChanges.plain(title), ShowChanges.plain(ShowChanges.tooLargeAtBase(file, read.size, ShowChanges.LIMIT)))
                     is BlobRead.Failed -> throw DiffRequestProducerException("git could not read ${file.from ?: file.path} at the base: ${read.reason}")
                 }
                 if (plan.base == BaseView.LINK) factory.create(project, String(bytes, StandardCharsets.UTF_8)) else base(factory, bytes, local)
@@ -513,5 +520,5 @@ private class FileProducer(
 private class NoteProducer(private val title: String, private val text: String) : DiffRequestProducer {
     override fun getName(): String = title
 
-    override fun process(context: UserDataHolder, indicator: ProgressIndicator): DiffRequest = MessageDiffRequest(title, text)
+    override fun process(context: UserDataHolder, indicator: ProgressIndicator): DiffRequest = MessageDiffRequest(ShowChanges.plain(title), ShowChanges.plain(text))
 }
