@@ -291,6 +291,17 @@ class ArchitectureTest {
         assertTrue("plugin.xml registers a smoke hook", !descriptor.contains("smoke", ignoreCase = true))
     }
 
+    /**
+     * The fake claude in tools/fake-claude and its variables are for the tests and the sandbox only. No main source and
+     * no line of plugin.xml names them, so the plugin never behaves differently next to the fake.
+     */
+    @Test
+    fun theFakeClaudeStaysOutOfThePlugin() {
+        assertEquals(emptyList<String>(), filesContaining("fake-claude", "FAKE_CLAUDE", "--fake-check-scenario"))
+        val descriptor = Path.of("src/main/resources/META-INF/plugin.xml").toFile().readText()
+        assertTrue("plugin.xml names the fake claude", !descriptor.contains("fake-claude") && !descriptor.contains("FAKE_CLAUDE"))
+    }
+
     @Test
     fun mainSourcesExist() {
         assertTrue(SourceRules.kotlinFiles(mainRoot).isNotEmpty())
