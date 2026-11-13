@@ -19,7 +19,7 @@ object RowText {
      * tooltip a width ([WorktreeBadge.html]), [widthPx] or the scaled default.
      */
     fun tooltip(thread: SkeinThread, cutName: String? = null, context: ContextUse? = null, now: Long = 0, lines: List<String> = emptyList(), widthPx: Int? = null): String {
-        val state = listOfNotNull(StatusText.line(thread.state), context?.let { answered(it, now) }).joinToString(" · ")
+        val state = listOfNotNull(StatusText.tooltipLine(thread.state), context?.let { answered(it, now) }).joinToString(" · ")
         return WorktreeBadge.html(listOfNotNull(cutName, state, context?.tooltipBase) + lines, widthPx)
     }
 

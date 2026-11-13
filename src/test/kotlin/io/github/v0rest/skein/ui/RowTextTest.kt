@@ -25,7 +25,7 @@ class RowTextTest {
 
     @Test
     fun theTooltipSaysTheStateAndNoPath() {
-        assertEquals("<html>permission", RowText.tooltip(thread(ThreadState.NeedsYou(WaitReason.PERMISSION, 0))))
+        assertEquals("<html>waiting for your permission", RowText.tooltip(thread(ThreadState.NeedsYou(WaitReason.PERMISSION, 0))))
         assertEquals("<html>idle", RowText.tooltip(thread(ThreadState.Idle)))
         // the folder is on the row already (its name or the worktree mark): no long path in the tooltip
         assertEquals("<html>idle", RowText.tooltip(thread(ThreadState.Idle, sessionCwd = "/w/acme/.claude/worktrees/feat-x")))

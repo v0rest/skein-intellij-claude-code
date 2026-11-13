@@ -42,10 +42,13 @@ through Settings | Plugins | ⚙ | Install Plugin from Disk.
 ## Using it
 
 "+" in the Skein tool window starts a thread in the project folder, and the chevron next to it offers New Thread in
-Worktree…. A thread opens as an editor tab, or as a tab in the Terminal tool window if you turn off Open threads in the
+Worktree…. New Thread Here in the right-click menu of a folder or a file in the Project view, or of an editor tab,
+starts one in that folder, or in the file's folder.
+A thread opens as an editor tab, or as a tab in the Terminal tool window if you turn off Open threads in the
 editor area in Settings | Tools | Skein, and you can drag its tab between the two. A thread turns orange when it waits
-for you and blue when it finished and you have not looked yet; a click opens its tab, and Tools | Skein | Jump to
-Waiting Thread does the same from the keyboard. The eye in the title bar filters and groups the threads, a right click
+for you, with a lock for a permission prompt and a speech bubble for a question, and blue when it finished and you
+have not looked yet. A click opens its tab, and Tools | Skein | Jump to Waiting Thread does the same from the
+keyboard. The eye in the title bar filters and groups the threads, a right click
 on a thread pins, renames, colours or closes it, and a double click on a History session resumes it in a new tab.
 
 ![A thread's menu in the Skein panel: Pin, Rename, Color and Close](docs/images/skein-thread-menu.png)
@@ -69,7 +72,8 @@ describes, not in an issue.
 
 `./gradlew buildPlugin` builds `build/distributions/skein-intellij-<version>.zip`, `./gradlew test verifyPlugin`
 runs the tests and the verifier (with `-PverifyNewestIdes=true` against the newest IDEs instead of 2026.3), and
-`./gradlew runIde` starts a sandbox IDE with the plugin.
+`./gradlew runIde` starts a sandbox IDE with the plugin. `tools/fake-claude` holds a fake `claude` for the end-to-end
+tests, which also drives a sandbox IDE without a Claude Code login, as its README describes.
 
 ## License
 

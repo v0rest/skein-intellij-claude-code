@@ -98,4 +98,13 @@ class WorktreeStartTest {
             WorktreeStart.headRefusal(GitResult(-1, "", "Cannot run program \"git\": error=2, No such file or directory", false)),
         )
     }
+
+    @Test
+    fun theBaseWarningShowsForANewNameAndNotForAReopenedWorktree() {
+        val existing = setOf("task-1")
+        assertEquals("behind", WorktreeStart.baseWarningFor("task-2", "task-2", existing, "behind"))
+        assertEquals("behind", WorktreeStart.baseWarningFor("", "task-2", existing, "behind"))
+        assertNull(WorktreeStart.baseWarningFor("task-1", "task-2", existing, "behind"))
+        assertNull(WorktreeStart.baseWarningFor("task-2", "task-2", existing, null))
+    }
 }

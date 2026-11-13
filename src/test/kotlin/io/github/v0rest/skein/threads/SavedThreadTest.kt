@@ -20,6 +20,16 @@ class SavedThreadTest {
         assertEquals("main", back.base)
     }
 
+    /** A thread New Thread Here started in a subfolder comes back there, to resume where it ran. */
+    @Test
+    fun aThreadInASubfolderComesBackThere() {
+        val thread = SkeinThread("t2", "/w/acme/web/src", "22222222-2222-4222-8222-222222222222", "src", ThreadState.Idle, 9, 5, 42, sessionCwd = "/w/acme/web/src")
+        val back = ThreadService.restored(ThreadService.saved(thread))!!
+        assertEquals(thread.copy(state = ThreadState.NotStarted, stateSince = 0, anchor = null, sessionCwd = null), back)
+        assertEquals("/w/acme/web/src", back.folder)
+        assertNull(back.worktree)
+    }
+
     @Test
     fun aThreadSavedBeforeBasesExistedHasNone() {
         val saved = ThreadService.SavedThread().apply {

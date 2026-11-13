@@ -12,16 +12,28 @@ area, or in the Terminal tool window when Open threads in the editor area is off
 also counts for the threads a restart brings back; threads already open stay where they are when you change it. A
 thread's tab can move afterwards, by Move to Editor or by dragging it between the editor and the Terminal tool window,
 and Skein follows it there, so the thread stays in the list until its tab really closes. The chevron next to it also
-offers New Thread in Worktree… (see below). A thread is orange when it waits for you (a permission prompt, a
+offers New Thread in Worktree… (see below). New Thread Here, in the right-click menu of a folder or a file in the
+Project view and of an editor tab, starts a thread the same way in that folder, or in the file's folder. It shows only
+for a folder of the project on the local disk, the project folder, one of its content roots or anything inside them,
+so not on a library jar, a scratch file, a folder outside the project or a folder in a worktree, which the Worktrees
+section opens unless the project itself is that worktree, and with several items selected only while they all lead
+to the same folder.
+A thread is orange when it waits for you (a permission prompt, a
 question, any other dialog), blue when it finished its turn and you have not looked yet, and shows a spinner while it
-works, each with its own glyph. Clicking a row opens its tab, in the Terminal tool window by bringing the tool window
-up on it, and Tools | Skein has Jump to Waiting Thread for the keyboard. A thread whose tab you have in front, the
-selected editor or the selected tab of the visible Terminal tool window, counts as seen and gets no balloon.
+works, each with its own glyph. The orange one is a ring with a lock in it for a permission prompt, a ring with a
+speech bubble for a question and a ring with a dot for any other dialog, all three orange because all three need you,
+and the tooltip says "waiting for your permission" or "waiting for your answer". Grouping, the waiting-only filter, the
+counter, Jump to Waiting Thread and the tool window badge treat the three alike. Clicking a row opens its tab, in the
+Terminal tool window by bringing the tool window up on it, and Tools | Skein has Jump to Waiting Thread for the
+keyboard. A thread whose tab you have in front, the selected editor or the selected tab of the visible Terminal tool
+window, counts as seen and gets no balloon.
 
 
 A row has two lines. The first holds the state glyph, the name, a pin when the thread is pinned, the counts of a
 worktree thread (see Worktree threads) and the age on the right, and the name is bold while the thread is unread or
-needs you. The second line starts with the worktree mark when there is one, then a preview of what happened last, the
+needs you. The second line starts with the worktree mark when there is one, or for a thread started in a folder inside
+the project folder with that folder's path from the project folder unless the name already says just that,
+then a preview of what happened last, the
 answer, the tool a permission prompt waits on or what a working thread is doing, and at its right end the model and
 the context in use once claude has answered, like Opus · 385k, with the full model id, the exact token count and the
 time of the last answer in the tooltip, and no percentage because the transcript does not say how big the window is. A
@@ -47,7 +59,8 @@ name on its own line to the system notification centre, unless you turned system
 Settings | Appearance & Behavior | Notifications.
 
 When the IDE restarts, Skein reopens the same thread tabs and runs `claude --resume <id>` in each one only when you
-first open it. The history under the threads lists the project's past sessions, including those started elsewhere,
+first open it. The history under the threads lists the project's past sessions, including those started elsewhere and
+those started in a folder inside the project, which show that folder after their title,
 but leaves out the runs a program made through the Agent SDK on its own, so they do not bury yours; a run you went on
 with in a terminal stays, and a session that moved to another folder shows up where it moved to. A click selects a
 session, and a double click on it, Enter or Open in its right-click menu resumes it in a new tab; a session still
@@ -101,6 +114,24 @@ with no commit yet or a git that cannot run gets a message instead of a thread, 
 the Claude home, such as a dotfiles repository in your home folder, since Claude Code would put the worktrees inside
 its own home there. The tab and the row carry the worktree name, History lists the worktree sessions as
 "worktree <name>", and after a restart the thread comes back and resumes into its worktree.
+
+When the new worktree starts from the repository's local branch, the name dialog warns under the name field if that
+branch is behind its remote-tracking branch or has diverged from it, with the counts and "as of your last fetch", since
+Skein never fetches and only reads what your last fetch left. That is the case when Claude Code's `worktree.baseRef`
+is `head`, and also when the repository has no `origin` at all, since Claude Code's default `fresh` then falls back to
+the local HEAD. OK goes on as before and Cancel stops, the warning never blocks. With the default `fresh` and an
+`origin`, Claude Code starts from the remote's default branch and fetches it itself when it is old, so Skein says
+nothing, and it says nothing either when `origin` has no cached default branch, since what happens then depends on
+Claude Code's own fetch. A level or ahead-only branch, a branch with no upstream or one that tracks a local branch, a
+detached HEAD and a git error give no warning, and the dialog looks as it always did. In a shallow repository the
+counts cannot be trusted, so the warning says the branch differs from the remote and leaves the numbers out. Typing the
+name of an existing worktree, which reopens it, hides the warning too.
+
+Skein reads `worktree.baseRef` from the project's `.claude/settings.local.json` and `.claude/settings.json` and the
+user's `settings.json`, in that order and as strict JSON, so a file Claude Code would reject (a comment, a trailing
+comma) is skipped and the next one decides. For a repository that is a linked worktree it reads the project files from
+the main checkout's root, as Claude Code does. It never writes them. It does not see managed settings or `--settings`,
+so a `fresh` set there over a `head` in a file can give a warning that is not needed, which is rare.
 
 A worktree thread's row shows how its worktree stands, right before the age. `✎3` in amber counts what `git status`
 lists as changed, staged, unstaged and untracked alike, one per path, and `↑2` counts the commits on the worktree's
@@ -238,8 +269,10 @@ the worktree, as it would with git itself.
 
 - 927 unit tests, among them a lifecycle test that drives a thread from start to restore against a copy of a Claude
   home and proves, byte for byte, that nothing under it changed (and fails as soon as anything does).
-- Unit tests for the thread order with pins, the History arrangement (pinned first, done hidden, a done mark dropping
-  on newer activity), the sections and the waiting-only filter, the toolbar counter, the keep-awake policy and its hold
+- Unit tests for which glyph and tooltip words a waiting thread gets for each reason (and that the three glyphs differ
+  and stay orange in both themes), the thread order with pins, the History arrangement (pinned first, done hidden, a
+  done mark dropping on newer activity), the sections and the waiting-only filter, the toolbar counter, the keep-awake
+  policy and its hold
   and release logic, the colour palette, the session name a notification shows, the line a thread row takes from the
   transcript, the one-balloon-per-thread bookkeeping, the click rules of the thread list and the History, the History
   eye's state to look and tooltip mapping, and for Close which threads count as busy, the question's words, the
@@ -262,6 +295,27 @@ the worktree, as it would with git itself.
   only, and a lock Claude Code left behind lifted only once its claude has ended, against real git in a temporary
   repository for the counts, that lock and a rebase, a merge and a cherry-pick stopped half way, and on a real disk for
   the folder delete, which removes a link inside as a link.
+- End-to-end tests against a fake claude, `tools/fake-claude`, a python3 script that writes the status files and
+  transcript lines Skein reads, step by step as a scenario says. Its shapes come from Skein's own parsers and fixtures,
+  never from Claude Code's program, and it writes only into a Claude home marked as its own, in a temporary folder. A
+  real shell the test starts runs it when Skein types `claude`, so the chain claude → shell → test JVM is a real one,
+  and the real watcher, mapper and coordinator follow a thread from working to a permission prompt to a finished turn,
+  with its preview, model and context, and on to its exit, resume it from History in the same tab, find a worktree
+  thread's claude in its git worktree, and close a thread with real SIGHUPs, the fake's first and then its shell's.
+  Contract tests check every status and transcript line the fake writes against Skein's readers, that it refuses the
+  real Claude home and an unmarked one, and that a fake left waiting ends once its test is gone. These tests are skipped
+  where python3 3.8 or newer or `/bin/sh` is missing, the git worktree tests also without git, and the close test
+  outside macOS and Linux.
+- Unit tests for New Thread Here as well, the folder a selection leads to (a file its folder, a folder itself, several
+  items only when they lead to one folder, none outside the project, off the local disk or in a worktree), the folder
+  a subfolder thread's row names, a subfolder thread tied to its own claude and restored to its folder, and the
+  History listing sessions deep inside the project and in a subfolder of another root, scripted ones left out, without
+  reading the transcripts of a project whose folder name does not start with the project's own.
+- Unit tests for the base warning before a worktree thread (the `worktree.baseRef` precedence over the three settings
+  files read as strict JSON, when behind or diverged warns and the words, no warning for a level or ahead-only branch,
+  `fresh` with an origin, no upstream, a local upstream, a detached HEAD, a gone upstream and no remote, a shallow
+  clone's wording and a linked worktree's main checkout), the git parts against real git in a temporary clone of a
+  local remote, and a tripwire that no source hands git a command that talks to a remote.
 - Unit tests for Show Changes, the reading of git's raw diff and untracked list (renames, copies, deletions, a type
   change, a file taken out of the index but still on disk, paths with spaces, line breaks or a leading colon, an entry
   cut short), its git commands and every refusal, how each file is shown (a note for a submodule, a folder, a path
@@ -297,6 +351,8 @@ the worktree, as it would with git itself.
   colours and done marks survive a restart, the editor-tab tint, the toolbar counter and the sound. The refreshed tool
   window waits for its checks as well, the tab titles after the move into the editor and after a restart, the badge
   while the Skein window has not been opened yet, the split "+" in the title bar and the spinner in the new row.
+  The lock and speech-bubble glyphs of a waiting thread, in a light and a dark theme at 100 % and 200 % scale (the
+  headless paint is checked, not how they look in the row).
   For worktree threads: the `cwd` in the status file of a first worktree session, a restored worktree thread
   resuming into its worktree, the notice about the worktrees `.gitignore` and the exclude line on a first worktree
   thread, the close question and its Keep-only answer for an unsaved editor change, and the exclude rule in a window
@@ -307,13 +363,24 @@ the worktree, as it would with git itself.
   wait for theirs too, a dirty worktree thread, a rebase stopped half way, a kept worktree opened from the section,
   Remove… of a dirty one through its second question, a folder git does not list, and the amber in a light and a dark
   theme.
+  The base warning in the name dialog waits too, in a real clone that is behind its remote with `worktree.baseRef`
+  set to `head`. Its look and its wrapping, and that it goes away when an existing worktree's name is typed.
   The ending before a close waits for its checks in a sandbox IDE as well: the × and the menu's Close on a working
   thread (claude and its shell gone, the History no longer showing the session as running, the worktree question
   after), a Close All with a thread and other files, a session that outlives the five seconds, a drag of a thread tab
   to another split or window, which must not end claude, and closing the project with threads running.
   A plain IDE terminal opened in a thread's folder, with a claude of its own, must keep running when the thread
   closes.
-  Show Changes waits for its checks in a sandbox IDE too: the item in a worktree thread's menu and not in a plain
+  The fake claude waits for its run in a sandbox IDE, started as `tools/fake-claude/README.md` says, with `type claude`
+  in a sandbox tab naming the fake, a thread going through the default scenario as you press Enter in its tab and turn
+  to another tab while it works (working, the permission prompt with its balloon, the finished turn in blue with the
+  model and the context on its row), the History listing the session, a restart resuming a thread that got its prompt,
+  and a worktree thread in a git repository.
+  New Thread Here waits for its checks too, in the Project view on a folder, a file and several files of one folder,
+  hidden on a library jar, a scratch file, a folder outside the project, a worktree folder and a thread's own tab, in
+  an editor tab's menu, and a subfolder thread end to end, its row's folder, its session in the History and its
+  resume there after a restart.
+  Show Changes waits for its checks in a sandbox IDE too - the item in a worktree thread's menu and not in a plain
   thread's, the diff window stepping through committed, staged, unstaged, untracked, deleted and renamed files, an
   image and a binary file, a note for a big file and for a repository inside, an edit saved on the worktree side, the
   balloons for a clean worktree, a rebase stopped half way and an untrusted project, the same from a row of the

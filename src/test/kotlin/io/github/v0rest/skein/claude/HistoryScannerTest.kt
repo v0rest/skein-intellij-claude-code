@@ -104,6 +104,44 @@ class HistoryScannerTest {
         assertEquals(listOf(u("sub-1") to "/w/acme/docs", u("root-1") to "/w/acme"), ids)
     }
 
+    /**
+     * A thread started in a folder deep inside the project, as New Thread Here does. Claude Code keeps its transcript in
+     * the folder named after that cwd, whose name starts with the project's own slug, and the cwd inside decides.
+     */
+    @Test
+    fun sessionsDeepInsideTheProjectAreListed() {
+        transcript("/w/acme/web/src/main", u("deep-1"), 100)
+        transcript("/w/acme/my app.v2", u("odd-1"), 200)
+        val ids = scanner.scan(roots).entries.map { it.sessionId to it.cwd }
+        assertEquals(listOf(u("odd-1") to "/w/acme/my app.v2", u("deep-1") to "/w/acme/web/src/main"), ids)
+    }
+
+    @Test
+    fun aSubfolderOfARootOutsideTheBaseIsListed() {
+        transcript("/elsewhere/repo/docs", u("docs-1"), 100)
+        assertEquals(listOf(u("docs-1")), scanner.scan(listOf("/w/acme", "/elsewhere/repo")).entries.map { it.sessionId })
+    }
+
+    @Test
+    fun aScriptedRunInASubfolderStaysOut() {
+        transcript("/w/acme/docs", u("typed"), 100, first = userWith("/w/acme/docs", u("typed"), "\"entrypoint\":\"cli\""))
+        transcript("/w/acme/docs", u("py"), 200, first = userWith("/w/acme/docs", u("py"), "\"entrypoint\":\"sdk-py\""))
+        assertEquals(listOf(u("typed")), scanner.scan(roots).entries.map { it.sessionId })
+    }
+
+    /**
+     * Subfolders come in through the folder names alone, so a project whose folder name does not start with the
+     * project's own slug is never read. A sibling like /w/acme-old does start with it and is read, then left out by the
+     * cwd inside (see [excludesPrefixSibling]).
+     */
+    @Test
+    fun projectsWhoseFolderNameDoesNotStartWithOursAreNotRead() {
+        transcript("/w/acme/docs", u("ours-1"), 100)
+        val foreign = listOf(transcript("/w/zeta", u("zeta-1"), 200), transcript("/w/zeta/docs", u("zeta-2"), 300), transcript("/other/acme/docs", u("far-1"), 400))
+        assertEquals(listOf(u("ours-1")), scanner.scan(roots).entries.map { it.sessionId })
+        assertEquals(emptyList<Path>(), foreign.filter { it in home.bytesRead })
+    }
+
     @Test
     fun contentRootOutsideTheBaseIsScannedToo() {
         transcript("/elsewhere/repo", u("x-1"), 100)

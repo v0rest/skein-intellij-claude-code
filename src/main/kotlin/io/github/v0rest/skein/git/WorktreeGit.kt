@@ -62,6 +62,38 @@ class WorktreeGit(private val git: GitRunner) {
         return if (result.ok) result.stdout.trim().ifEmpty { null } else null
     }
 
+    /**
+     * How the checked-out branch of [repository] stands against its remote-tracking branch, from what the last fetch
+     * left in the repository (Skein never fetches). Null when HEAD is detached, the branch has no upstream, its upstream
+     * is gone or is a local branch (`--track main`), there is no remote, or git cannot tell. Three git calls at most.
+     */
+    fun upstreamCounts(repository: Path): UpstreamCounts? {
+        val name = git.run(repository, *NO_FSMONITOR, "rev-parse", "--symbolic-full-name", "@{upstream}")
+        val full = (if (name.ok) name.stdout.trim() else "").takeIf { it.startsWith(REMOTES) } ?: return null
+        val counts = git.run(repository, *NO_FSMONITOR, "rev-list", "--left-right", "--count", "HEAD...@{upstream}")
+        if (!counts.ok) return null
+        val (ahead, behind) = BaseWarning.parseCounts(counts.stdout) ?: return null
+        val shallow = git.run(repository, *NO_FSMONITOR, "rev-parse", "--is-shallow-repository")
+        return UpstreamCounts(full.removePrefix(REMOTES), ahead, behind, shallow.ok && shallow.stdout.trim() == "true")
+    }
+
+    /** Whether [repository] has a remote named `origin` (`git remote`, nothing over the network), and true when git cannot tell. */
+    fun hasOrigin(repository: Path): Boolean {
+        val result = git.run(repository, *NO_FSMONITOR, "remote")
+        return !result.ok || result.stdout.lines().any { it.trim() == "origin" }
+    }
+
+    /**
+     * The root of the main checkout of [repository], which is the folder itself unless it is a linked worktree. Claude
+     * Code reads the project settings from there. It is the folder holding git's common directory when that is a `.git`, else
+     * [repository] as given.
+     */
+    fun mainCheckoutRoot(repository: Path): Path {
+        val result = git.run(repository, *NO_FSMONITOR, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        val common = if (result.ok) result.stdout.trim().takeIf { it.isNotEmpty() }?.let { Path.of(it) } else null
+        return if (common != null && common.fileName?.toString() == ".git") common.parent ?: repository else repository
+    }
+
     /** Null when git cannot tell. `core.fsmonitor` is off for it ([NO_FSMONITOR]). */
     fun state(worktree: Path): WorktreeState? {
         val status = git.run(worktree, *NO_FSMONITOR, "--no-optional-locks", "status", "--porcelain")
@@ -131,6 +163,8 @@ class WorktreeGit(private val git: GitRunner) {
     private fun failure(result: GitResult): String = if (result.ran || result.timedOut) result.reason() else "git could not be run: " + result.reason()
 
     companion object {
+        private const val REMOTES = "refs/remotes/"
+
         /**
          * Turns off `core.fsmonitor` for one git call: a repository's configuration may name a program there, which a
          * git call that reads the work tree (`status`, `ls-files`, `ls-tree`, `worktree remove`) would start. Every such
