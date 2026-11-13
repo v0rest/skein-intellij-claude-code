@@ -79,7 +79,7 @@ moving a tab there or out of it ends nothing. A Close All or Close Others with a
 thread in it closes the other files at once and the thread tabs once their claude has ended. With the editor split
 into several windows it closes only the thread tabs at first, so run it again for the rest. With several threads the
 tab in front closes last. A worktree thread then asks whether to keep its worktree, as after the tab's own close
-button.
+button. A worktree thread's menu also has Show Changes, see Worktree threads.
 Right-click a history row to open it, pin it, rename it or mark it done. Pinned
 threads and pinned sessions come first, in the threads and in the history. Pins, names, colours and done marks are
 Skein's own, kept by the IDE in the project's workspace file; Skein never writes them into the session or anything
@@ -138,8 +138,10 @@ lists as changed, staged, unstaged and untracked alike, one per path, and `↑2`
 branch that its base does not have. A clean worktree level with its base shows nothing, a rebase, merge or cherry-pick
 stopped half way shows `rebase`, `merge` or `pick` instead of the numbers, a detached HEAD shows `✎3` alone, and a
 worktree folder that is gone shows nothing. When git fails or takes longer than 15 seconds the row shows a grey `?`,
-never zeros, and the tooltip says why. Otherwise the tooltip lists up to ten of the changed paths and how many more
-there are, then the commits not in the base, or says the worktree is clean and level with it.
+never zeros, and the tooltip says why. Otherwise the tooltip lists up to ten of the changed paths, numbered, and how
+many more there are, then the commits not in the base, or says the worktree is clean and level with it. A line longer
+than 60 characters wraps, a path after a `/`, and the tooltip then keeps a fixed width instead of growing as wide as
+its longest path.
 
 The base is the branch the repository had checked out when Skein started the thread, as `git branch --show-current`
 names it, and it stays with the thread across restarts. A thread resumed from History, a worktree that already existed
@@ -155,21 +157,22 @@ project you have not trusted, since `git status` can start programs a repository
 rows show no counts and the Worktrees section stays hidden, while the close question's Remove still works. git runs
 off the UI thread, one call at a time, each stopped after 15 seconds, with `--no-optional-locks`, which is what
 `GIT_OPTIONAL_LOCKS=0` does, so a look never takes the index lock your own git may need. Every git call of Skein's
-that reads a working tree, `status`, `ls-files`, `ls-tree` and `worktree remove`, the minute check's included, runs
-with `core.fsmonitor` turned off. There is no file watcher and no VCS listener, and a row is drawn again only when
-what it shows changed.
+that reads a working tree, `status`, `ls-files`, `ls-tree`, Show Changes' `diff` and `worktree remove`, the minute
+check's included, runs with `core.fsmonitor` turned off. There is no file watcher and no VCS listener, and a row is
+drawn again only when what it shows changed.
 
 Worktrees (N) under the threads lists the folders in `.claude/worktrees` of the project's repositories that no thread
 in this window works in, kept worktrees for the most part, and it shows only while there is one. It opens and closes
 like History, with its own line to drag while it is open, and Skein remembers its size and whether you left it open.
 Each row has the worktree's name, its branch, "detached HEAD" or "not a git worktree" for a folder `git worktree list`
-does not name, and the same counts as a thread row, which Skein reads only while the section is open. A folder git
-does not list but that has a `.git` of its own says "worktree git links elsewhere", as after the repository moved or
-was copied, with `git worktree repair <path>` in its tooltip to link it again, or "a repository of its own", and Skein
-never deletes either. A double click, Enter or Open resumes the newest History session that ran in a worktree, with
-History's question when that session runs elsewhere, and without one starts `claude --worktree <name>` there with the
-checks of a new worktree thread. The menu also reveals the folder in the file manager, named as the IDE names that
-action on each system, and has Remove….
+does not name, and the same counts as a thread row, which Skein reads only while the section is open. Its tooltip
+names the folder from the project's own folder, like `.claude/worktrees/task-1`, and gives the whole path only for a
+repository outside the project. A folder git does not list but that has a `.git` of its own says "worktree git links
+elsewhere", as after the repository moved or was copied, with `git worktree repair <path>` in its tooltip to link it
+again, or "a repository of its own", and Skein never deletes either. A double click, Enter or Open resumes the newest
+History session that ran in a worktree, with History's question when that session runs elsewhere, and without one
+starts `claude --worktree <name>` there with the checks of a new worktree thread. The menu also has Show Changes (see
+below), reveals the folder in the file manager, named as the IDE names that action on each system, and has Remove….
 
 
 Remove… goes the way of the close question's Remove, with the same reasons to keep the worktree, and a thread in any
@@ -212,9 +215,31 @@ the worktrees only where the line in `.git/info/exclude` does not hold them, as 
 re-include them. The `.gitignore` and the line stay after Skein is uninstalled.
 
 Skein does not add worktrees to the IDE's Git roots and never touches `.idea/vcs.xml`, so the Commit window does not
-show a worktree's changes. Review them with git in the worktree, in the thread's terminal, before you merge the
-branch. The IDE keeps worktree folders out of the index, by its own rule for the project root and by an exclude rule
-of Skein's for other content roots, so their files open without code insight.
+show a worktree's changes. Show Changes in the right-click menu of a worktree thread, and of a row in the Worktrees
+section, shows them in the IDE's own diff window instead, one file after the other, and the window's title, which its
+editor tab shows too, names the worktree and where in the list the file is, like `task-1 · 2/6 · src/a.c`. Each
+worktree has one such tab. Show Changes again on the same worktree reads the list afresh, opens it on the file the old
+tab showed while that file is still in the list, else on the first, and closes the old tab, while Show Changes on
+another worktree opens a tab of its own. A diff in a separate editor window counts the same, and only one the IDE
+shows in a frame of its own, from a modal dialog, with the registry key `show.diff.as.frame` or in an external diff
+tool, is not replaced. Before git reads the list, Skein saves what the editor holds unsaved for files in that
+worktree, so an edit just made on the worktree side is in it. A worktree with more than 1,000 changed files gets the
+first 1,000 and, as the last entry, a note saying how many more there are. It compares the worktree as it is on disk
+with the commit its branch shares with its base, the merge-base, so what the base got after the branch started does
+not count, and takes in the commits on the worktree's branch and what is staged, unstaged or untracked alike, one
+entry per file, with added, deleted and renamed files named as such and the files an ignore rule hides left out. The
+base is the one the row counts against, and for a kept worktree, which has no thread, the repository's own. The base
+side is read-only, the worktree side is the file itself, so an edit there goes into the file when the IDE saves it.
+Each file is read only when the window gets to it, and one bigger than 10 MB on either side, a submodule or a
+repository inside the worktree gets a note instead of a diff. A deleted file always shows against an empty side,
+whatever lies at its path now, and the worktree side is read only inside the worktree, never through a link on the
+way, so a path behind a link gets a note too. A folder that is gone, one git does not list as a worktree, a rebase,
+merge or cherry-pick stopped half way, no base branch, a branch with no commit in common with its base, a worktree
+with nothing to show and a git that fails or takes longer than 30 seconds each get a balloon instead of an empty
+window. git runs off the UI thread with the same care as for the counts, `--no-optional-locks`, with `core.fsmonitor`
+off and no external diff program, and only in a project you trust. The IDE keeps worktree folders out of the index, by
+its own rule for the project root and by an exclude rule of Skein's for other content roots, so their files open
+without code insight.
 
 When you close the tab of a worktree thread, Skein asks whether to keep the worktree or remove it, and Keep is the
 default. The question counts the changed files and the commits not pushed (with no remote, every commit on the branch
@@ -291,6 +316,21 @@ the worktree, as it would with git itself.
   `fresh` with an origin, no upstream, a local upstream, a detached HEAD, a gone upstream and no remote, a shallow
   clone's wording and a linked worktree's main checkout), the git parts against real git in a temporary clone of a
   local remote, and a tripwire that no source hands git a command that talks to a remote.
+- Unit tests for Show Changes, the reading of git's raw diff and untracked list (renames, copies, deletions, a type
+  change, a file taken out of the index but still on disk, paths with spaces, line breaks or a leading colon, an entry
+  cut short), its git commands and every refusal, how each file is shown (a note for a submodule, a folder, a path
+  behind a link, a file over the limit on either side or one gone since the list, and a deletion against an empty side
+  whatever lies at its path now), its words, the title with the worktree and the position, which the window's loading
+  and error pages carry too, which unsaved edits are saved before git reads the list, the first 1,000 files and a
+  closing note past them, the file a second Show Changes opens on, the one tab per worktree it remembers until the tab
+  closes, and the thread menu's rule, on a real disk with real links that the worktree side is never read through a
+  link on the way, and against real git in a temporary repository the list (committed, staged, unstaged and untracked
+  together, the base moving on after the branch started, a rename, a detached HEAD, a repository inside, names with a
+  CRLF, a backspace or a tab, a folder replaced by a link to the outside, a rebase stopped half way, no commit in
+  common, a folder git does not list) and the base side's bytes exactly as git stored them, a CRLF, a lone CR, a NUL,
+  bytes that are not UTF-8 and a backspace included. Unit tests for the worktree tooltip too, its numbered paths, a
+  long line wrapped after a `/` or at a space under its number, the fixed width only once a line wrapped, and the
+  folder named from the project's folder or in full outside it.
 - The IntelliJ Plugin Verifier against IntelliJ IDEA 2026.3 (263.7307.200): compatible, no internal API usage (the
   build fails on any), no deprecated API usage.
 - In a sandbox IDE: the terminal tab opens in the editor area, the typed command reaches the shell (0.4 to 0.9 s),
@@ -340,6 +380,15 @@ the worktree, as it would with git itself.
   hidden on a library jar, a scratch file, a folder outside the project, a worktree folder and a thread's own tab, in
   an editor tab's menu, and a subfolder thread end to end, its row's folder, its session in the History and its
   resume there after a restart.
+  Show Changes waits for its checks in a sandbox IDE too - the item in a worktree thread's menu and not in a plain
+  thread's, the diff window stepping through committed, staged, unstaged, untracked, deleted and renamed files, an
+  image and a binary file, a note for a big file and for a repository inside, an edit saved on the worktree side, the
+  balloons for a clean worktree, a rebase stopped half way and an untrusted project, the same from a row of the
+  Worktrees section, the tab title with the worktree and the position, and a second Show Changes on the same worktree
+  replacing its tab on the same file while another worktree gets its own, also in a separate editor window, and an
+  unsaved edit on the worktree side showing up in the list of a second Show Changes. The note past 1,000 files, and
+  the worktree tooltip, a long path wrapping, its numbers, the width, and the folder named from the project's folder
+  in the Worktrees section.
 
 ## Releasing
 

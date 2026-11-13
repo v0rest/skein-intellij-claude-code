@@ -3,8 +3,10 @@ package io.github.v0rest.skein.testutil
 import com.intellij.execution.ExecutionException
 import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.execution.process.CapturingProcessHandler
+import io.github.v0rest.skein.git.GitBytes
 import io.github.v0rest.skein.git.GitResult
 import io.github.v0rest.skein.git.GitRunner
+import io.github.v0rest.skein.git.ProcessGitRunner
 import org.junit.Assert.assertTrue
 import org.junit.rules.TemporaryFolder
 import java.nio.charset.StandardCharsets
@@ -18,6 +20,7 @@ import java.nio.file.Path
  */
 class RealGit(private val folder: TemporaryFolder) : GitRunner {
     private val runner = EnglishGit()
+    private val bytesRunner = ProcessGitRunner(30_000)
     private val settings = listOf(
         "-c", "core.excludesFile=" + folder.newFile(),
         "-c", "core.hooksPath=" + folder.newFolder(),
@@ -30,6 +33,9 @@ class RealGit(private val folder: TemporaryFolder) : GitRunner {
     val available: Boolean get() = runner.run(folder.root.toPath(), "--version").ok
 
     override fun run(dir: Path, vararg args: String): GitResult = runner.run(dir, *(settings + args).toTypedArray())
+
+    /** Bytes as Skein itself reads them ([ProcessGitRunner.bytes]), with the same settings; a file's bytes speak no language. */
+    override fun bytes(dir: Path, vararg args: String): GitBytes = bytesRunner.bytes(dir, *(settings + args).toTypedArray())
 
     /**
      * A new repository [name] with one commit that holds `a.c`, the [gitignore] lines as `.gitignore` when given, and

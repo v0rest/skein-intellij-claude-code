@@ -6,6 +6,7 @@ import io.github.v0rest.skein.git.WorktreeCounts
 import io.github.v0rest.skein.threads.KeptKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WorktreeBadgeTest {
@@ -50,19 +51,66 @@ class WorktreeBadgeTest {
     @Test
     fun theTooltipListsUpToTenPathsThenHowManyMore() {
         val lines = WorktreeBadge.tooltip(counted(changed = 13, ahead = 2))
-        assertEquals((1..10).map { "f$it.kt" } + listOf("… and 3 more", "2 commits not in main"), lines)
+        assertEquals((1..10).map { "$it. f$it.kt" } + listOf("… and 3 more", "2 commits not in main"), lines)
     }
 
     @Test
     fun theTooltipSaysHowTheBranchStands() {
         assertEquals(listOf("Clean, level with main"), WorktreeBadge.tooltip(counted()))
-        assertEquals(listOf("f1.kt", "Level with origin/main"), WorktreeBadge.tooltip(counted(changed = 1, base = "origin/main")))
+        assertEquals(listOf("1. f1.kt", "Level with origin/main"), WorktreeBadge.tooltip(counted(changed = 1, base = "origin/main")))
         assertEquals(listOf("1 commit not in main"), WorktreeBadge.tooltip(counted(ahead = 1)))
-        assertEquals(listOf("f1.kt", "Detached HEAD, on no branch"), WorktreeBadge.tooltip(counted(changed = 1, ahead = null, base = null, detached = true)))
+        assertEquals(listOf("1. f1.kt", "Detached HEAD, on no branch"), WorktreeBadge.tooltip(counted(changed = 1, ahead = null, base = null, detached = true)))
         assertEquals(listOf("Clean, detached HEAD"), WorktreeBadge.tooltip(counted(ahead = null, base = null, detached = true)))
         assertEquals(listOf("Clean, no base branch to compare with"), WorktreeBadge.tooltip(counted(ahead = null, base = null)))
-        assertEquals(listOf("A rebase is in progress", "a.kt"), WorktreeBadge.tooltip(WorktreeCounts.InProgress(Operation.REBASE, Changes.of(listOf("a.kt")))))
+        assertEquals(listOf("A rebase is in progress", "1. a.kt"), WorktreeBadge.tooltip(WorktreeCounts.InProgress(Operation.REBASE, Changes.of(listOf("a.kt")))))
         assertEquals(emptyList<String>(), WorktreeBadge.tooltip(WorktreeCounts.NotShown))
+    }
+
+    private val nbsp = "\u00A0"
+
+    /** A long line wraps after a `/` or at a space, the continuation indented; Swing's HTML itself never breaks a path. */
+    @Test
+    fun aLongLineWrapsAfterASlashOrAtASpace() {
+        assertEquals(listOf("1. short.kt"), WorktreeBadge.wrap("1. short.kt", max = 20, indent = 3))
+        assertEquals(
+            listOf("1. docs/very/long/", "$nbsp$nbsp${nbsp}path/name.md"),
+            WorktreeBadge.wrap("1. docs/very/long/path/name.md", max = 20, indent = 3),
+        )
+        assertEquals(listOf("A worktree git links", "to another path."), WorktreeBadge.wrap("A worktree git links to another path.", max = 20, indent = 0))
+        // a name with no break in it is cut where it must be
+        assertEquals(listOf("abcdefghij", "${nbsp}klmnopqrs", "${nbsp}tuvwxyz"), WorktreeBadge.wrap("abcdefghijklmnopqrstuvwxyz", max = 10, indent = 1))
+    }
+
+    @Test
+    fun theTooltipNumbersThePathsAndWrapsTheLongOnesUnderTheirNumber() {
+        val long = "docs/" + "a".repeat(30) + "/" + "b".repeat(30) + ".md"
+        val counts = WorktreeCounts.Counted(Changes.of(listOf("x.kt", long)), detached = false, base = "main", ahead = 1)
+        val lines = WorktreeBadge.tooltip(counts)
+        assertEquals("1. x.kt", lines[0])
+        assertEquals("2. docs/" + "a".repeat(30) + "/", lines[1])
+        assertEquals("$nbsp$nbsp$nbsp" + "b".repeat(30) + ".md", lines[2])
+        assertEquals("1 commit not in main", lines.last())
+        assertTrue(lines.all { it.length <= WorktreeBadge.MAX_CHARS })
+    }
+
+    /** The section row names its folder from the project's base, and the whole path only for one outside the project. */
+    @Test
+    fun theFolderIsNamedFromTheProjectBase() {
+        assertEquals(".claude/worktrees/task-old", WorktreeBadge.folder("/w/acme", "task-old", "/private/w/acme/.claude/worktrees/task-old", "/w/acme"))
+        assertEquals(".claude/worktrees/task-old", WorktreeBadge.folder("/w/acme/", "task-old", "/w/acme/.claude/worktrees/task-old", "/w/acme/"))
+        assertEquals("libs/demo-shop/.claude/worktrees/task-1", WorktreeBadge.folder("/w/acme/libs/demo-shop", "task-1", "/w/acme/libs/demo-shop/.claude/worktrees/task-1", "/w/acme"))
+        assertEquals("/elsewhere/shop/.claude/worktrees/task-1", WorktreeBadge.folder("/elsewhere/shop", "task-1", "/elsewhere/shop/.claude/worktrees/task-1", "/w/acme"))
+        assertEquals("/w/acme-old/.claude/worktrees/task-1", WorktreeBadge.folder("/w/acme-old", "task-1", "/w/acme-old/.claude/worktrees/task-1", "/w/acme"))
+        assertEquals("/w/acme/.claude/worktrees/task-1", WorktreeBadge.folder("/w/acme", "task-1", "/w/acme/.claude/worktrees/task-1", null))
+    }
+
+    /** The tooltip is as wide as its longest line, and given a body width only when a line had to wrap. */
+    @Test
+    fun aTooltipThatWrapsGetsABodyWidth() {
+        assertEquals("<html>.claude/worktrees/task-1<br>1. a.kt<br>1 commit not in main", WorktreeBadge.sectionTooltip(".claude/worktrees/task-1", emptyList(), listOf("1. a.kt", "1 commit not in main"), widthPx = 420))
+        val wrapped = WorktreeBadge.sectionTooltip(".claude/worktrees/task-1", listOf("x".repeat(70)), emptyList(), widthPx = 420)
+        assertTrue(wrapped, wrapped.startsWith("<html><body style=\"width: 420px\">.claude/worktrees/task-1<br>"))
+        assertEquals("<html>&lt;b&gt;", WorktreeBadge.sectionTooltip("<b>", emptyList(), emptyList(), widthPx = 420))
     }
 
     @Test

@@ -60,16 +60,17 @@ import javax.swing.SwingConstants
  * "Worktrees (N)" under the threads: the folders under the worktrees folder of each repository Skein knows that no
  * thread of this window holds ([io.github.v0rest.skein.threads.KeptWorktrees.visible]), shown only while there is one,
  * open or closed as the owner left it, with the History's header and rows. A double click, Enter or the menu's Open
- * opens a thread there ([openKept]); the menu also reveals the folder in the file manager and removes it
- * ([WorktreeCloseFlow]). Opening the section asks for a look with the rows' counts ([WorktreeHygiene.setSectionOpen]),
- * and Skein's own Open or Remove asks for one right away when it is done. A folder with a `.git` that git does not list
+ * opens a thread there ([openKept]); the menu also shows the worktree's changes in the IDE's diff viewer
+ * ([WorktreeDiff]), reveals the folder in the file manager and removes it ([WorktreeCloseFlow]). Opening the section
+ * asks for a look with the rows' counts ([WorktreeHygiene.setSectionOpen]), and Skein's own Open or Remove asks for one
+ * right away when it is done. A folder with a `.git` that git does not list
  * here says so, with the `git worktree repair` hint in its tooltip; Open and Remove… explain and leave it. EDT only,
  * but for the flows it starts.
  */
 internal class WorktreesSection(private val project: Project, private val scope: CoroutineScope) {
     private val hygiene = WorktreeHygiene.getInstance(project)
     private val model = CollectionListModel<KeptWorktree>()
-    private val list = JBList(model).apply { cellRenderer = KeptWorktreeRowRenderer() }
+    private val list = JBList(model).apply { cellRenderer = KeptWorktreeRowRenderer(project.basePath) }
     private val scroll = JBScrollPane(list).apply { isVisible = false }
     private val header = JBLabel(TITLE, AllIcons.General.ArrowRight, SwingConstants.LEFT).apply {
         border = JBUI.Borders.empty(6, 8)
@@ -149,6 +150,19 @@ internal class WorktreesSection(private val project: Project, private val scope:
                 selected()?.let(clicks::openRow)
             }
         }
+        val showChanges = object : DumbAwareAction("Show Changes") {
+            override fun getActionUpdateThread() = ActionUpdateThread.EDT
+
+            override fun update(e: AnActionEvent) {
+                e.presentation.isEnabled = selected()?.kind is KeptKind.Registered
+            }
+
+            // no thread recorded a base for a kept worktree: the repository's base counts, as for the row's counts
+            override fun actionPerformed(e: AnActionEvent) {
+                val row = selected()?.takeIf { it.kind is KeptKind.Registered } ?: return
+                WorktreeDiff.getInstance(project).show(row.repository, row.name, recorded = null)
+            }
+        }
         val reveal = object : DumbAwareAction(RevealFileAction.getActionName()) {
             override fun getActionUpdateThread() = ActionUpdateThread.EDT
 
@@ -172,7 +186,7 @@ internal class WorktreesSection(private val project: Project, private val scope:
                 selected()?.let(::remove)
             }
         }
-        return DefaultActionGroup(open, reveal, Separator.getInstance(), remove)
+        return DefaultActionGroup(open, showChanges, reveal, Separator.getInstance(), remove)
     }
 
     /** Opens a thread in [row]'s worktree ([openKept]); a folder git does not list is no worktree to open. */
@@ -260,9 +274,10 @@ internal class WorktreesSection(private val project: Project, private val scope:
  * One row of the Worktrees section, with the History row's anatomy ([TwoLineRow]): a branch glyph (a folder for one
  * git does not list), the worktree's name and its counts on line 1 ([WorktreeBadge], as on a worktree thread's row),
  * and on line 2 its branch, "detached HEAD" or "not a git worktree" ([WorktreeBadge.kind]). The tooltip is the folder,
- * then the counts' lines. No I/O: the look read everything.
+ * named from the project's [projectBase] when it lies inside the project ([WorktreeBadge.folder]), then the counts'
+ * lines, wrapped ([WorktreeBadge.sectionTooltip]). No I/O: the look read everything.
  */
-internal class KeptWorktreeRowRenderer : ListCellRenderer<KeptWorktree> {
+internal class KeptWorktreeRowRenderer(private val projectBase: String? = null) : ListCellRenderer<KeptWorktree> {
     private val row = TwoLineRow()
 
     /** The list font the small one was taken with; it is taken again only when that changes (theme, font size). */
@@ -295,7 +310,8 @@ internal class KeptWorktreeRowRenderer : ListCellRenderer<KeptWorktree> {
             label.foreground = grey
         }
         ThreadRowRenderer.showBadge(row, WorktreeBadge.of(item.counts), smallFont, grey, if (selected && focused) foreground else null)
-        row.toolTipText = RowText.escapedTooltip(listOf(item.path), WorktreeBadge.hint(item.kind, item.path) + WorktreeBadge.tooltip(item.counts))
+        val folder = WorktreeBadge.folder(item.repository, item.name, item.path, projectBase)
+        row.toolTipText = WorktreeBadge.sectionTooltip(folder, WorktreeBadge.hint(item.kind, item.path), WorktreeBadge.tooltip(item.counts))
         row.accessibleContext.accessibleName = listOfNotNull(item.name, second, WorktreeBadge.spoken(item.counts)).joinToString(", ")
         row.invalidate() // the next validate lays the row out for this folder, whatever the last one was
         return row

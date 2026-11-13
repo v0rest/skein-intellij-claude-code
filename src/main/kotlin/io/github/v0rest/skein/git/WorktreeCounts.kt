@@ -198,7 +198,11 @@ class WorktreeReader(private val git: GitRunner, private val exists: (Path) -> B
         return BaseOrder.first(BaseOrder.candidates(recorded = null, originHead = origin)) { probe(repository, it) }
     }
 
-    private fun base(worktree: Path, recorded: String?, fallback: () -> BaseLookup): BaseLookup {
+    /**
+     * The base of [worktree]: the branch [recorded] for its thread while it exists, else the repository's [fallback].
+     * Show Changes compares with the same base as the row's counts.
+     */
+    fun base(worktree: Path, recorded: String?, fallback: () -> BaseLookup): BaseLookup {
         val own = BaseOrder.recorded(recorded) ?: return fallback()
         return when (val state = probe(worktree, own)) {
             RefState.Found -> BaseLookup.Found(own)
@@ -217,7 +221,8 @@ class WorktreeReader(private val git: GitRunner, private val exists: (Path) -> B
         }
     }
 
-    private sealed interface Probe {
+    /** What [operation] found: no operation, the one stopped half way, or why git could not tell. */
+    sealed interface Probe {
         data object None : Probe
 
         data class Running(val operation: Operation) : Probe
@@ -229,7 +234,7 @@ class WorktreeReader(private val git: GitRunner, private val exists: (Path) -> B
      * The operation in progress in [worktree]: git names where each of its marker files would be (relative to the
      * worktree in the main one, absolute in a linked one), and the first that exists says which.
      */
-    private fun operation(worktree: Path): Probe {
+    fun operation(worktree: Path): Probe {
         val args = Operation.MARKERS.flatMap { (marker, _) -> listOf("--git-path", marker) }
         val result = git.run(worktree, "rev-parse", *args.toTypedArray())
         if (!result.ok) return Probe.Failed(failure(result))

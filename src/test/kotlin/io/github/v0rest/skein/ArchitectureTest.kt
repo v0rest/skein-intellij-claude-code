@@ -273,10 +273,11 @@ class ArchitectureTest {
      */
     @Test
     fun gitStatusNeverStartsAnFsmonitorAndTheLookWaitsForTrust() {
-        // every git call that reads the work tree: status, ls-files, ls-tree and worktree remove (which runs a status)
-        val readers = listOf("\"status\"", "\"ls-files\"", "\"ls-tree\"", "\"worktree\", \"remove\"")
+        // every git call that reads the work tree: status, ls-files, ls-tree, diff against it and worktree remove (which runs a status)
+        val readers = listOf("\"status\"", "\"ls-files\"", "\"ls-tree\"", "\"diff\"", "\"worktree\", \"remove\"")
         val status = SourceRules.kotlinFiles(mainRoot).flatMap { f ->
-            SourceRules.codeLines(f).filter { line -> line.contains(".run(") && readers.any { line.contains(it) } }.map { mainRoot.relativize(f).toString() to it }
+            SourceRules.codeLines(f).filter { line -> (line.contains(".run(") || line.contains(".bytes(")) && readers.any { line.contains(it) } }
+                .map { mainRoot.relativize(f).toString() to it }
         }
         assertTrue(status.toString(), status.isNotEmpty())
         assertEquals(emptyList<Pair<String, String>>(), status.filterNot { it.second.contains("NO_FSMONITOR") })
@@ -284,6 +285,46 @@ class ArchitectureTest {
         val trust = lines.indexOfFirst { it.contains("TrustedProjects.isProjectTrusted(project)") }
         val look = lines.indexOfFirst { it.contains("sweep.run(") }
         assertTrue("the trust check comes before the look", trust in 0 until look)
+    }
+
+    /**
+     * Show Changes reads a worktree and writes nothing: its `git diff` against the working tree runs without colour and
+     * without an external diff program, git's bytes are read in three places only, the two `-z` lists and a blob at the
+     * merge-base by its object name, and nothing of it runs before the check that the owner trusts the project. The one
+     * thing it saves is the editor's unsaved changes to files in that worktree, right before git reads it.
+     */
+    @Test
+    fun showChangesOnlyReadsAndOnlyInATrustedProject() {
+        val changes = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/git/WorktreeChanges.kt"))
+        val diff = changes.single { it.contains("\"diff\"") }
+        assertTrue(diff, listOf("NO_FSMONITOR", "\"--no-ext-diff\"", "\"--no-color\"", "\"--raw\"").all { diff.contains(it) })
+        assertEquals(
+            listOf("io/github/v0rest/skein/git/Git.kt", "io/github/v0rest/skein/git/WorktreeChanges.kt"),
+            filesContaining(".bytes(").sorted(),
+        )
+        assertEquals(
+            listOf(
+                "val diff = git.bytes(worktree, *WorktreeGit.NO_FSMONITOR, \"diff\", \"--no-color\", \"--no-ext-diff\", \"--raw\", \"-z\", \"-M\", " +
+                    "\"--no-abbrev\", mergeBase, \"--\")",
+                "val untracked = git.bytes(worktree, *WorktreeGit.NO_FSMONITOR, \"ls-files\", \"--others\", \"--exclude-standard\", \"-z\")",
+                "val content = git.bytes(worktree, \"cat-file\", \"blob\", id)",
+            ),
+            SourceRules.offenders(changes, listOf(".bytes(")),
+        )
+        val view = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/ui/WorktreeDiff.kt"))
+        val trust = view.indexOfFirst { it.contains("TrustedProjects.isProjectTrusted(project)") }
+        val read = view.indexOfFirst { it.contains("reader.read(") }
+        assertTrue("the trust check comes before git runs", trust in 0 until read)
+        // and that view, behind the check, is the one place that makes the reader
+        val made = SourceRules.kotlinFiles(mainRoot).flatMap { f ->
+            SourceRules.codeLines(f).filter { it.contains("WorktreeChangesReader(") && !it.startsWith("class ") }.map { mainRoot.relativize(f).toString() }
+        }
+        assertEquals(listOf("io/github/v0rest/skein/ui/WorktreeDiff.kt"), made)
+        // the one save of the editor's documents: before the list is read, only those of files in that worktree
+        assertEquals(listOf("io/github/v0rest/skein/ui/WorktreeDiff.kt"), filesContaining("saveDocument", "saveAllDocuments"))
+        val saves = view.filter { it.contains("saveDocument") }
+        assertEquals(saves.toString(), 1, saves.size)
+        assertTrue(saves.single(), saves.single().contains("documents.saveDocuments {") && saves.single().contains("ShowChanges.inWorktree("))
     }
 
     /** Typing into a shell happens in one place, behind ClaudeCommand, with no way to widen what gets through. */

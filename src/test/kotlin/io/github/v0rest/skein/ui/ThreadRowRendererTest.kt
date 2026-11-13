@@ -244,7 +244,7 @@ class ThreadRowRendererTest {
     @Test
     fun theTooltipListsTheChangedPathsEscaped() {
         val tip = render(thread(worktree = "acme"), worktreeCounts = dirty).toolTipText
-        assertTrue(tip, tip.endsWith("<br>a.kt<br>b &lt;c&gt;.kt<br>d.kt<br>2 commits not in main"))
+        assertTrue(tip, tip.endsWith("<br>1. a.kt<br>2. b &lt;c&gt;.kt<br>3. d.kt<br>2 commits not in main"))
     }
 
     @Test
