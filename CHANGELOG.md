@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.2.0](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.1.0...v1.2.0) (2026-11-13)
+
+
+### Features
+
+* show a worktree's changes against its base in the IDE's diff viewer ([#13](https://github.com/v0rest/skein-intellij-claude-code/issues/13)) ([83d69b7](https://github.com/v0rest/skein-intellij-claude-code/commit/83d69b7d65c8740a19beb21682ea0461d42bb986))
+* show whether a waiting thread waits for a permission or an answer ([#10](https://github.com/v0rest/skein-intellij-claude-code/issues/10)) ([57eee93](https://github.com/v0rest/skein-intellij-claude-code/commit/57eee93e2de8f66d08dd46c1f252d2bd130e245e))
+* start a thread in a folder from the Project view with New Thread Here ([#11](https://github.com/v0rest/skein-intellij-claude-code/issues/11)) ([3d85617](https://github.com/v0rest/skein-intellij-claude-code/commit/3d856171911b777895d617a5482af54271efb63d))
+* warn when a new worktree would start from a branch behind its remote ([#12](https://github.com/v0rest/skein-intellij-claude-code/issues/12)) ([3495dcf](https://github.com/v0rest/skein-intellij-claude-code/commit/3495dcf46bb6b81d69f2b1e4bf94cecbc908fc1d))
+
+
+### Bug Fixes
+
+* keep file names from being read as HTML in Show Changes ([#15](https://github.com/v0rest/skein-intellij-claude-code/issues/15)) ([6b98162](https://github.com/v0rest/skein-intellij-claude-code/commit/6b98162e223cef74f3ec3cc745fcf796f59e37de))
+
 ## [1.1.0](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.0.1...v1.1.0) (2026-11-12)
 
 
