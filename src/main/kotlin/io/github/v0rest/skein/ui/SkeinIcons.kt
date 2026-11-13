@@ -14,7 +14,11 @@ import java.awt.Font
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.RenderingHints
+import java.awt.geom.Arc2D
 import java.awt.geom.Ellipse2D
+import java.awt.geom.Line2D
+import java.awt.geom.RoundRectangle2D
+import java.awt.Polygon
 import javax.swing.Icon
 import javax.swing.UIManager
 
@@ -37,8 +41,17 @@ object SkeinIcons {
 
     private val QUIET_COLOR = JBColor(Color(0xA8ADBD), Color(0x6F737A))
 
-    /** The orange dot inside a ring of a thread that waits for the user: the most visible glyph of the list. */
-    val NEEDS_YOU: Icon = RingDotIcon(NEEDS_YOU_COLOR)
+    /** One ring icon per shape, the only place a [WaitGlyph] becomes an icon. All of them are [NEEDS_YOU_COLOR]. */
+    private val WAIT_ICONS: Map<WaitGlyph, Icon> = WaitGlyph.entries.associateWith { RingIcon(NEEDS_YOU_COLOR, it) }
+
+    /**
+     * The orange dot inside a ring, the glyph of a thread that waits for the user for any reason other than a
+     * permission or a question. A notification and the toolbar counter use it for every reason.
+     */
+    val NEEDS_YOU: Icon = WAIT_ICONS.getValue(WaitGlyph.DOT)
+
+    /** The orange ring with [glyph] in it. */
+    internal fun forGlyph(glyph: WaitGlyph): Icon = WAIT_ICONS.getValue(glyph)
 
     /** The grey question mark of a thread whose state is not known. */
     private val UNKNOWN: Icon = QuestionIcon(QUIET_COLOR)
@@ -48,14 +61,17 @@ object SkeinIcons {
     private val QUIET: Icon = DotIcon(QUIET_COLOR, filled = true)
     private val OFF: Icon = DotIcon(QUIET_COLOR, filled = false)
 
-    /** The dot a notification carries: the same one the list shows for the state the event leads to. */
+    /**
+     * The icon a notification carries. For a thread that needs you it is always the plain dot, while the row may show
+     * a lock or a bubble.
+     */
     fun forKind(kind: NotificationKind): Icon = when (kind) {
         NotificationKind.NEEDS_YOU -> NEEDS_YOU
         NotificationKind.TURN_FINISHED -> YOUR_TURN
     }
 
     fun forState(state: ThreadState): Icon = when (state) {
-        is ThreadState.NeedsYou -> NEEDS_YOU
+        is ThreadState.NeedsYou -> forGlyph(WaitGlyph.of(state.reason))
         is ThreadState.YourTurn -> YOUR_TURN
         ThreadState.Working, ThreadState.WorkingUnknown, ThreadState.Background, ThreadState.Starting -> AnimatedIcon.Default.INSTANCE
         ThreadState.Idle -> QUIET
@@ -82,7 +98,8 @@ object SkeinIcons {
         }
     }
 
-    private class RingDotIcon(private val color: Color) : Icon {
+    /** A ring with [inside] in it, the dot, a lock or a speech bubble, all in [color]. */
+    private class RingIcon(private val color: Color, private val inside: WaitGlyph) : Icon {
         override fun getIconWidth(): Int = JBUI.scale(16)
 
         override fun getIconHeight(): Int = JBUI.scale(16)
@@ -98,12 +115,50 @@ object SkeinIcons {
                 val ring = JBUI.scale(14).toFloat() - stroke
                 val ringOffset = (iconWidth - ring) / 2f
                 g2.draw(Ellipse2D.Float(x + ringOffset, y + ringOffset, ring, ring))
-                val d = JBUI.scale(8).toFloat()
-                val offset = (iconWidth - d) / 2f
-                g2.fill(Ellipse2D.Float(x + offset, y + offset, d, d))
+                when (inside) {
+                    WaitGlyph.DOT -> {
+                        val d = JBUI.scale(8).toFloat()
+                        val offset = (iconWidth - d) / 2f
+                        g2.fill(Ellipse2D.Float(x + offset, y + offset, d, d))
+                    }
+                    WaitGlyph.PERMISSION -> paintLock(g2, x, y)
+                    WaitGlyph.QUESTION -> paintBubble(g2, x, y)
+                }
             } finally {
                 g2.dispose()
             }
+        }
+
+        /** A padlock about 6 px wide inside the 14 px ring, a filled body with a shackle arc over it. */
+        private fun paintLock(g2: Graphics2D, x: Int, y: Int) {
+            val cx = x + iconWidth / 2f
+            val bodyW = JBUI.scale(6).toFloat()
+            val bodyH = JBUIScale.scale(4.5f)
+            val bodyTop = y + iconHeight / 2f - JBUIScale.scale(0.5f)
+            g2.fill(RoundRectangle2D.Float(cx - bodyW / 2f, bodyTop, bodyW, bodyH, JBUIScale.scale(1f), JBUIScale.scale(1f)))
+            val shackleW = JBUIScale.scale(3.6f)
+            g2.stroke = BasicStroke(JBUIScale.scale(1.2f), BasicStroke.CAP_BUTT, BasicStroke.JOIN_ROUND)
+            val left = cx - shackleW / 2f
+            val right = cx + shackleW / 2f
+            val arcTop = bodyTop - JBUIScale.scale(1f) - shackleW / 2f
+            g2.draw(Arc2D.Float(left, arcTop, shackleW, shackleW, 0f, 180f, Arc2D.OPEN))
+            g2.draw(Line2D.Float(left, arcTop + shackleW / 2f, left, bodyTop))
+            g2.draw(Line2D.Float(right, arcTop + shackleW / 2f, right, bodyTop))
+        }
+
+        /** A speech bubble about 8 px wide inside the ring, a rounded body with a tail at the lower left. */
+        private fun paintBubble(g2: Graphics2D, x: Int, y: Int) {
+            val left = x + iconWidth / 2f - JBUIScale.scale(4f)
+            val top = y + iconHeight / 2f - JBUIScale.scale(4f)
+            val w = JBUIScale.scale(8f)
+            val h = JBUIScale.scale(5.5f)
+            g2.fill(RoundRectangle2D.Float(left, top, w, h, JBUIScale.scale(2.5f), JBUIScale.scale(2.5f)))
+            val tail = Polygon()
+            val bottom = top + h
+            tail.addPoint(Math.round(left + JBUIScale.scale(1.5f)), Math.round(bottom - JBUIScale.scale(1f)))
+            tail.addPoint(Math.round(left + JBUIScale.scale(4f)), Math.round(bottom - JBUIScale.scale(1f)))
+            tail.addPoint(Math.round(left + JBUIScale.scale(1.5f)), Math.round(bottom + JBUIScale.scale(2.5f)))
+            g2.fill(tail)
         }
     }
 
