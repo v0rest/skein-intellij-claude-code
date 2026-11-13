@@ -45,4 +45,11 @@ class DiffTabsTest {
         tabs.closed("diff-1")
         assertEquals("diff-2", current("task-1"))
     }
+
+    @Test
+    fun theTabShowDiffOpenedIsTheOneNewFile() {
+        assertEquals("diff-1", DiffTabs.newTab(setOf("a.kt", "b.kt"), listOf("a.kt", "diff-1", "b.kt")))
+        assertNull("no new tab: a diff window, or an external diff tool", DiffTabs.newTab(setOf("a.kt"), listOf("a.kt")))
+        assertNull("two new files: no telling which", DiffTabs.newTab(setOf("a.kt"), listOf("a.kt", "x", "y")))
+    }
 }

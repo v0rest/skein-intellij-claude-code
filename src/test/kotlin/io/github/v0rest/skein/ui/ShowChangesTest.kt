@@ -119,32 +119,29 @@ class ShowChangesTest {
         assertEquals("worktree task-1", ShowChanges.worktreeTitle("task-1"))
     }
 
-    /** The tab names the worktree and how many files it holds; each block is titled by the file alone. */
+    /** The window's title, and its tab's, names the worktree and where in the list the file is, before the file. */
     @Test
-    fun theTabNamesTheWorktreeAndTheCount() {
-        assertEquals("Changes in task-old (6 files)", ShowChanges.tabTitle("task-old", 6))
-        assertEquals("Changes in task-1 (1 file)", ShowChanges.tabTitle("task-1", 1))
-        assertEquals("Changes in task-1 (4,800 files)", ShowChanges.tabTitle("task-1", 4800))
+    fun theTitleNamesTheWorktreeAndThePosition() {
+        assertEquals(
+            "task-old · 1/6 · docs/new-idea.md (untracked)",
+            ShowChanges.requestTitle("task-old", 0, 6, ChangedFile(ChangeKind.UNTRACKED, "docs/new-idea.md")),
+        )
+        assertEquals(
+            "task-1 · 3/3 · src/b.c (renamed from src/a.c)",
+            ShowChanges.requestTitle("task-1", 2, 3, ChangedFile(ChangeKind.RENAMED, "src/b.c", "src/a.c", blob)),
+        )
+        assertEquals("task-1 · 2/2 · src/a.c", ShowChanges.requestTitle("task-1", 1, 2, modified))
     }
 
-    /** A block lays out a header and a viewer per file: past the cap the rest is one note, so the tab stays usable. */
+    /** A refreshed window opens on the file the old one showed while it is still in the list, else on the first. */
     @Test
-    fun pastTheCapTheRestIsOneNote() {
-        val files = (1..5).map { ChangedFile(ChangeKind.UNTRACKED, "f$it.c") }
-        assertEquals(ShowChanges.Shown(files, 0), ShowChanges.capped(files, max = 5))
-        assertEquals(ShowChanges.Shown(files.take(3), 2), ShowChanges.capped(files, max = 3))
-        assertEquals("2 more files are not shown here, past the 3 Show Changes lists.", ShowChanges.moreNote(2, 3))
-        assertEquals("1 more file is not shown here, past the 200 Show Changes lists.", ShowChanges.moreNote(1, 200))
-    }
-
-    /** A block's path is the file's own path in the worktree, a folder's without its trailing slash. */
-    @Test
-    fun aBlockIsTheFilesOwnPath() {
-        val wt = "/w/acme/.claude/worktrees/task-1"
-        assertEquals("$wt/src/a.c", ShowChanges.blockPath(wt, modified))
-        assertEquals("$wt/nested", ShowChanges.blockPath(wt, ChangedFile(ChangeKind.UNTRACKED, "nested/")))
-        assertEquals(true, ShowChanges.isFolder(ChangedFile(ChangeKind.UNTRACKED, "nested/")))
-        assertEquals(false, ShowChanges.isFolder(modified))
+    fun aRefreshOpensOnTheFileShownBefore() {
+        val files = listOf(ChangedFile(ChangeKind.ADDED, "a.c"), modified, ChangedFile(ChangeKind.UNTRACKED, "z.c"))
+        assertEquals(1, ShowChanges.startAt(files, "src/a.c"))
+        assertEquals(2, ShowChanges.startAt(files, "z.c"))
+        assertEquals(0, ShowChanges.startAt(files, "gone.c"))
+        assertEquals(0, ShowChanges.startAt(files, null))
+        assertEquals(0, ShowChanges.startAt(emptyList(), "a.c"))
     }
 
     /**
@@ -161,6 +158,19 @@ class ShowChangesTest {
         assertEquals(false, ShowChanges.inWorktree("/w/acme/.claude/worktrees/task-10/a.c", null, dirs))
         assertEquals(setOf("/w/acme/.claude/worktrees/task-1", "/private/w/acme/.claude/worktrees/task-1"), ShowChanges.worktreeDirs("/w/acme/", "task-1", "/private/w/acme"))
         assertEquals(setOf("/w/acme/.claude/worktrees/task-1"), ShowChanges.worktreeDirs("/w/acme", "task-1", null))
+    }
+
+    /** Past the cap of 1,000 the chain holds the first files and one note for the rest; git runs once all the same. */
+    @Test
+    fun pastTheCapTheRestIsOneNote() {
+        val files = (1..5).map { ChangedFile(ChangeKind.UNTRACKED, "f$it.c") }
+        assertEquals(1000, ShowChanges.MAX_FILES)
+        assertEquals(ShowChanges.Shown(files, 0), ShowChanges.capped(files, max = 5))
+        assertEquals(ShowChanges.Shown(files.take(3), 2), ShowChanges.capped(files, max = 3))
+        assertEquals(ShowChanges.Shown(files, 0), ShowChanges.capped(files))
+        assertEquals("2 more files are not in this list, past the first 3 Show Changes holds.", ShowChanges.moreNote(2, 3))
+        assertEquals("1 more file is not in this list, past the first 1,000 Show Changes holds.", ShowChanges.moreNote(1, 1000))
+        assertEquals("task-old · 1001/1001 · … and 4,000 more", ShowChanges.moreTitle("task-old", 1001, 4000))
     }
 
     @Test
