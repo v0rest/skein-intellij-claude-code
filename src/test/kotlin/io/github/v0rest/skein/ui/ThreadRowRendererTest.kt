@@ -34,10 +34,11 @@ class ThreadRowRendererTest {
         contexts: Map<String, ContextUse> = emptyMap(),
         showContext: Boolean = true,
         worktreeCounts: Map<String, WorktreeCounts> = emptyMap(),
+        base: String? = "/w/acme",
     ): TwoLineRow {
         // the list gives every row its own width, as it does in the tool window
         list.setSize(width, 400)
-        val renderer = ThreadRowRenderer(inFront = { inFront }, showAge = { showAge }, previews = { previews }, showPreview = { showPreview }, contexts = { contexts }, showContext = { showContext }, worktreeCounts = { worktreeCounts }, now = { now })
+        val renderer = ThreadRowRenderer(inFront = { inFront }, showAge = { showAge }, previews = { previews }, showPreview = { showPreview }, contexts = { contexts }, showContext = { showContext }, worktreeCounts = { worktreeCounts }, base = { base }, now = { now })
         val row = renderer.getListCellRendererComponent(list, thread, 0, selected, false) as TwoLineRow
         row.setSize(width, row.preferredSize.height)
         row.doLayout()
@@ -124,6 +125,21 @@ class ThreadRowRendererTest {
         assertEquals("worktree feat-x · idle", render(worktree, previews = preview, showPreview = false).detail.text)
         val firstLine = row.components.filterIsInstance<JLabel>().filter { it !== row.detail && it.isVisible }
         assertTrue("line 1 has no worktree mark", firstLine.none { it.text.orEmpty().contains("worktree") })
+    }
+
+    /** A thread started in a folder inside the project names that folder where a worktree thread names its worktree. */
+    @Test
+    fun theFolderOfASubfolderThreadLeadsTheSecondLine() {
+        val inSrc = thread(name = "Fix login").copy(folder = "/w/acme/web/src")
+        val preview = mapOf("t1" to "Tests are green.")
+        assertEquals("web/src · Tests are green.", render(inSrc, previews = preview).detail.text)
+        assertEquals("web/src · idle", render(inSrc).detail.text)
+        assertTrue(render(inSrc).accessibleContext.accessibleName.startsWith("Fix login, idle, web/src"))
+        assertEquals("the project folder itself names nothing", "idle", render(thread(name = "Fix login")).detail.text)
+        assertEquals("without a base folder nothing either", "idle", render(inSrc, base = null).detail.text)
+        // a worktree thread keeps its worktree mark
+        val worktree = thread(name = "Fix login", worktree = "feat-x").copy(folder = "/w/acme/web")
+        assertEquals("worktree feat-x · idle", render(worktree).detail.text)
     }
 
     @Test

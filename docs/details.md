@@ -12,7 +12,13 @@ area, or in the Terminal tool window when Open threads in the editor area is off
 also counts for the threads a restart brings back; threads already open stay where they are when you change it. A
 thread's tab can move afterwards, by Move to Editor or by dragging it between the editor and the Terminal tool window,
 and Skein follows it there, so the thread stays in the list until its tab really closes. The chevron next to it also
-offers New Thread in Worktree… (see below). A thread is orange when it waits for you (a permission prompt, a
+offers New Thread in Worktree… (see below). New Thread Here, in the right-click menu of a folder or a file in the
+Project view and of an editor tab, starts a thread the same way in that folder, or in the file's folder. It shows only
+for a folder of the project on the local disk, the project folder, one of its content roots or anything inside them,
+so not on a library jar, a scratch file, a folder outside the project or a folder in a worktree, which the Worktrees
+section opens unless the project itself is that worktree, and with several items selected only while they all lead
+to the same folder.
+A thread is orange when it waits for you (a permission prompt, a
 question, any other dialog), blue when it finished its turn and you have not looked yet, and shows a spinner while it
 works, each with its own glyph. The orange one is a ring with a lock in it for a permission prompt, a ring with a
 speech bubble for a question and a ring with a dot for any other dialog, all three orange because all three need you,
@@ -25,7 +31,9 @@ window, counts as seen and gets no balloon.
 
 A row has two lines. The first holds the state glyph, the name, a pin when the thread is pinned, the counts of a
 worktree thread (see Worktree threads) and the age on the right, and the name is bold while the thread is unread or
-needs you. The second line starts with the worktree mark when there is one, then a preview of what happened last, the
+needs you. The second line starts with the worktree mark when there is one, or for a thread started in a folder inside
+the project folder with that folder's path from the project folder unless the name already says just that,
+then a preview of what happened last, the
 answer, the tool a permission prompt waits on or what a working thread is doing, and at its right end the model and
 the context in use once claude has answered, like Opus · 385k, with the full model id, the exact token count and the
 time of the last answer in the tooltip, and no percentage because the transcript does not say how big the window is. A
@@ -51,7 +59,8 @@ name on its own line to the system notification centre, unless you turned system
 Settings | Appearance & Behavior | Notifications.
 
 When the IDE restarts, Skein reopens the same thread tabs and runs `claude --resume <id>` in each one only when you
-first open it. The history under the threads lists the project's past sessions, including those started elsewhere,
+first open it. The history under the threads lists the project's past sessions, including those started elsewhere and
+those started in a folder inside the project, which show that folder after their title,
 but leaves out the runs a program made through the Agent SDK on its own, so they do not bury yours; a run you went on
 with in a terminal stays, and a session that moved to another folder shows up where it moved to. A click selects a
 session, and a double click on it, Enter or Open in its right-click menu resumes it in a new tab; a session still
@@ -254,6 +263,11 @@ the worktree, as it would with git itself.
   real Claude home and an unmarked one, and that a fake left waiting ends once its test is gone. These tests are skipped
   where python3 3.8 or newer or `/bin/sh` is missing, the git worktree tests also without git, and the close test
   outside macOS and Linux.
+- Unit tests for New Thread Here as well, the folder a selection leads to (a file its folder, a folder itself, several
+  items only when they lead to one folder, none outside the project, off the local disk or in a worktree), the folder
+  a subfolder thread's row names, a subfolder thread tied to its own claude and restored to its folder, and the
+  History listing sessions deep inside the project and in a subfolder of another root, scripted ones left out, without
+  reading the transcripts of a project whose folder name does not start with the project's own.
 - The IntelliJ Plugin Verifier against IntelliJ IDEA 2026.3 (263.7307.200): compatible, no internal API usage (the
   build fails on any), no deprecated API usage.
 - In a sandbox IDE: the terminal tab opens in the editor area, the typed command reaches the shell (0.4 to 0.9 s),
@@ -297,6 +311,10 @@ the worktree, as it would with git itself.
   to another tab while it works (working, the permission prompt with its balloon, the finished turn in blue with the
   model and the context on its row), the History listing the session, a restart resuming a thread that got its prompt,
   and a worktree thread in a git repository.
+  New Thread Here waits for its checks too, in the Project view on a folder, a file and several files of one folder,
+  hidden on a library jar, a scratch file, a folder outside the project, a worktree folder and a thread's own tab, in
+  an editor tab's menu, and a subfolder thread end to end, its row's folder, its session in the History and its
+  resume there after a restart.
 
 ## Releasing
 
