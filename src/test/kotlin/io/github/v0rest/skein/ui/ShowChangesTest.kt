@@ -6,6 +6,7 @@ import io.github.v0rest.skein.git.ChangedFile
 import io.github.v0rest.skein.threads.SkeinThread
 import io.github.v0rest.skein.threads.ThreadState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -193,5 +194,13 @@ class ShowChangesTest {
         assertNull(ShowChanges.worktreeThread(listOf(wt, thread("t3", "task-3"))))
         assertNull(ShowChanges.worktreeThread(emptyList()))
         assertNull("a name Claude Code would not take", ShowChanges.worktreeThread(listOf(thread("t4", "../x"))))
+    }
+
+    /** A file name in a worktree is whatever the repository's author chose, and one that opens with <html> must stay text. */
+    @Test
+    fun aTextThatWouldOpenAsMarkupIsShownAsText() {
+        val note = ShowChanges.plan(ChangedFile(ChangeKind.UNTRACKED, "<html><img src=http://example.invalid/x.png>"), DiskSide.Folder, 1000)
+        assertFalse(ShowChanges.plain((note as DiffPlan.Note).text).startsWith("<"))
+        assertEquals("src/a.c is a folder", ShowChanges.plain("src/a.c is a folder"))
     }
 }

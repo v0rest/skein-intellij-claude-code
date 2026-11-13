@@ -359,4 +359,15 @@ class ArchitectureTest {
     fun mainSourcesExist() {
         assertTrue(SourceRules.kotlinFiles(mainRoot).isNotEmpty())
     }
+
+    /**
+     * A Swing label shows a text that starts with <html> as HTML, remote images included, and Show Changes' messages can
+     * start with a worktree file's name - every one of them goes through ShowChanges.plain.
+     */
+    @Test
+    fun showChangesMessagesNeverReachSwingAsMarkup() {
+        val lines = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/ui/WorktreeDiff.kt")).filter { "MessageDiffRequest(" in it }
+        assertTrue(lines.isNotEmpty())
+        assertEquals(emptyList<String>(), lines.filter { "plain(" !in it })
+    }
 }
