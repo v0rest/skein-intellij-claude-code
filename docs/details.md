@@ -115,6 +115,24 @@ the Claude home, such as a dotfiles repository in your home folder, since Claude
 its own home there. The tab and the row carry the worktree name, History lists the worktree sessions as
 "worktree <name>", and after a restart the thread comes back and resumes into its worktree.
 
+When the new worktree starts from the repository's local branch, the name dialog warns under the name field if that
+branch is behind its remote-tracking branch or has diverged from it, with the counts and "as of your last fetch", since
+Skein never fetches and only reads what your last fetch left. That is the case when Claude Code's `worktree.baseRef`
+is `head`, and also when the repository has no `origin` at all, since Claude Code's default `fresh` then falls back to
+the local HEAD. OK goes on as before and Cancel stops, the warning never blocks. With the default `fresh` and an
+`origin`, Claude Code starts from the remote's default branch and fetches it itself when it is old, so Skein says
+nothing, and it says nothing either when `origin` has no cached default branch, since what happens then depends on
+Claude Code's own fetch. A level or ahead-only branch, a branch with no upstream or one that tracks a local branch, a
+detached HEAD and a git error give no warning, and the dialog looks as it always did. In a shallow repository the
+counts cannot be trusted, so the warning says the branch differs from the remote and leaves the numbers out. Typing the
+name of an existing worktree, which reopens it, hides the warning too.
+
+Skein reads `worktree.baseRef` from the project's `.claude/settings.local.json` and `.claude/settings.json` and the
+user's `settings.json`, in that order and as strict JSON, so a file Claude Code would reject (a comment, a trailing
+comma) is skipped and the next one decides. For a repository that is a linked worktree it reads the project files from
+the main checkout's root, as Claude Code does. It never writes them. It does not see managed settings or `--settings`,
+so a `fresh` set there over a `head` in a file can give a warning that is not needed, which is rare.
+
 A worktree thread's row shows how its worktree stands, right before the age. `✎3` in amber counts what `git status`
 lists as changed, staged, unstaged and untracked alike, one per path, and `↑2` counts the commits on the worktree's
 branch that its base does not have. A clean worktree level with its base shows nothing, a rebase, merge or cherry-pick
@@ -268,6 +286,11 @@ the worktree, as it would with git itself.
   a subfolder thread's row names, a subfolder thread tied to its own claude and restored to its folder, and the
   History listing sessions deep inside the project and in a subfolder of another root, scripted ones left out, without
   reading the transcripts of a project whose folder name does not start with the project's own.
+- Unit tests for the base warning before a worktree thread (the `worktree.baseRef` precedence over the three settings
+  files read as strict JSON, when behind or diverged warns and the words, no warning for a level or ahead-only branch,
+  `fresh` with an origin, no upstream, a local upstream, a detached HEAD, a gone upstream and no remote, a shallow
+  clone's wording and a linked worktree's main checkout), the git parts against real git in a temporary clone of a
+  local remote, and a tripwire that no source hands git a command that talks to a remote.
 - The IntelliJ Plugin Verifier against IntelliJ IDEA 2026.3 (263.7307.200): compatible, no internal API usage (the
   build fails on any), no deprecated API usage.
 - In a sandbox IDE: the terminal tab opens in the editor area, the typed command reaches the shell (0.4 to 0.9 s),
@@ -300,6 +323,8 @@ the worktree, as it would with git itself.
   wait for theirs too, a dirty worktree thread, a rebase stopped half way, a kept worktree opened from the section,
   Remove… of a dirty one through its second question, a folder git does not list, and the amber in a light and a dark
   theme.
+  The base warning in the name dialog waits too, in a real clone that is behind its remote with `worktree.baseRef`
+  set to `head`. Its look and its wrapping, and that it goes away when an existing worktree's name is typed.
   The ending before a close waits for its checks in a sandbox IDE as well: the × and the menu's Close on a working
   thread (claude and its shell gone, the History no longer showing the session as running, the worktree question
   after), a Close All with a thread and other files, a session that outlives the five seconds, a drag of a thread tab

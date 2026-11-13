@@ -29,6 +29,13 @@ object Worktrees {
 
     const val GUARD_TEXT: String = "*\n"
 
+    /** The folder of Claude Code's project settings, inside the repository Claude Code starts in. */
+    const val PROJECT_SETTINGS_DIR: String = ".claude"
+
+    /** Claude Code's project settings files of [repository], the winning one first - `settings.local.json`, then `settings.json`. */
+    fun projectSettingsFiles(repository: String): List<String> =
+        listOf("settings.local.json", "settings.json").map { repository.trimEnd('/') + "/" + PROJECT_SETTINGS_DIR + "/" + it }
+
     fun parentOf(repository: String): String = repository.trimEnd('/') + PARENT
 
     fun dirOf(repository: String, name: String): String = parentOf(repository) + "/" + name

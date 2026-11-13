@@ -1,6 +1,10 @@
 package io.github.v0rest.skein.ui
 
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.text.StringUtil
+import com.intellij.ui.DocumentAdapter
+import com.intellij.ui.dsl.builder.RightGap
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.ValidationInfo
 import com.intellij.ui.components.JBList
@@ -10,17 +14,20 @@ import com.intellij.ui.dsl.builder.panel
 import javax.swing.JComponent
 import javax.swing.JTextField
 import javax.swing.ListSelectionModel
+import javax.swing.event.DocumentEvent
 
 /**
  * Asks for the name of the worktree a new thread starts in; an existing name reopens that worktree. The field starts
  * with the first `task-N` that neither git ([existing]) nor one of the project's threads ([inUse]) has and whose
  * `worktree-<name>` branch is not left among the repository's [branches], and left empty it stands for that name.
+ * A [baseWarning] (the base is behind its remote) shows under the field for a new name, and OK goes on all the same.
  */
 class WorktreeNameDialog(
     project: Project,
     private val existing: Set<String>,
     inUse: Set<String>,
     branches: Set<String>,
+    private val baseWarning: String? = null,
 ) : DialogWrapper(project) {
     private val suggested = WorktreeStart.defaultName(existing, inUse, branches)
     private val nameField = JTextField(suggested, 24)
@@ -28,11 +35,20 @@ class WorktreeNameDialog(
     val name: String
         get() = WorktreeStart.chosenName(nameField.text, suggested)
 
+    private var warningRow: com.intellij.ui.dsl.builder.Row? = null
+
     init {
         title = "New Thread in Worktree"
         init()
+        nameField.document.addDocumentListener(object : DocumentAdapter() {
+            override fun textChanged(e: DocumentEvent) = showWarning()
+        })
         // checks the field as it is typed in, shows the rule next to it, and keeps OK disabled while it does not hold
         initValidation()
+    }
+
+    private fun showWarning() {
+        warningRow?.visible(WorktreeStart.baseWarningFor(nameField.text, suggested, existing, baseWarning) != null)
     }
 
     override fun getPreferredFocusedComponent(): JComponent = nameField
@@ -43,6 +59,13 @@ class WorktreeNameDialog(
     override fun createCenterPanel(): JComponent = panel {
         row("Name:") {
             cell(nameField).align(AlignX.FILL).comment(if (existing.isEmpty()) null else "An existing name reopens that worktree")
+        }
+        if (baseWarning != null) {
+            warningRow = row {
+                icon(AllIcons.General.Warning).gap(RightGap.SMALL)
+                // the HTML wrapper lets a long sentence wrap inside the dialog
+                text(StringUtil.escapeXmlEntities(baseWarning)).align(AlignX.FILL)
+            }
         }
         if (existing.isNotEmpty()) {
             row {

@@ -43,6 +43,13 @@ object WorktreeStart {
     /** The name typed, or the [suggested] one when the field was left empty. */
     fun chosenName(text: String, suggested: String): String = text.trim().ifEmpty { suggested }
 
+    /**
+     * The base warning the dialog shows for the name being typed: none for an existing name, since that reopens a worktree
+     * that already has its base, and none when there is nothing to say.
+     */
+    fun baseWarningFor(text: String, suggested: String, existing: Set<String>, warning: String?): String? =
+        if (chosenName(text, suggested) in existing) null else warning
+
     /** An empty field (the suggested name) or a name Claude Code accepts. */
     fun isAcceptable(text: String): Boolean = text.isBlank() || Worktrees.isValidName(text.trim())
 
