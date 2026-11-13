@@ -68,7 +68,8 @@ describes, not in an issue.
 
 `./gradlew buildPlugin` builds `build/distributions/skein-intellij-<version>.zip`, `./gradlew test verifyPlugin`
 runs the tests and the verifier (with `-PverifyNewestIdes=true` against the newest IDEs instead of 2026.3), and
-`./gradlew runIde` starts a sandbox IDE with the plugin.
+`./gradlew runIde` starts a sandbox IDE with the plugin. `tools/fake-claude` holds a fake `claude` for the end-to-end
+tests, which also drives a sandbox IDE without a Claude Code login, as its README describes.
 
 ## License
 

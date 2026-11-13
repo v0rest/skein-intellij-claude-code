@@ -40,6 +40,10 @@ dependencies {
 tasks.test {
     // a test JVM that touches Swing would otherwise become a macOS app and pull the screen over to its own desktop
     systemProperty("java.awt.headless", "true")
+    // the end-to-end tests run the fake claude from here, so a change to it alone must run them again
+    inputs.dir(layout.projectDirectory.dir("tools/fake-claude"))
+        .withPropertyName("fakeClaude")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
 }
 
 tasks.runIde {

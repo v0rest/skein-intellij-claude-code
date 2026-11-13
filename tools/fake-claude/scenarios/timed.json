@@ -1,0 +1,19 @@
+{
+  "steps": [
+    {"sleep": 3},
+    {"prompt": "Rename the acme order model"},
+    {"status": "busy"},
+    {"sleep": 4},
+    {"toolUse": "Edit", "input": {"file_path": "src/acme/Order.kt"}},
+    {"status": "waiting", "waitingFor": "permission prompt"},
+    {"sleep": 8},
+    {"toolResult": "The file has been updated."},
+    {"status": "busy"},
+    {"sleep": 4},
+    {"answer": "The order model is now called Purchase everywhere.",
+     "usage": {"input_tokens": 5, "cache_creation_input_tokens": 1200, "cache_read_input_tokens": 22000, "output_tokens": 260}},
+    {"aiTitle": "Rename the acme order model"},
+    {"status": "idle"},
+    {"wait": "exit"}
+  ]
+}

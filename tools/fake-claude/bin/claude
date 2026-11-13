@@ -1,0 +1,607 @@
+#!/usr/bin/env python3
+"""A fake `claude` for Skein's end-to-end tests and the runIde sandbox.
+
+It behaves, as far as Skein can see, like the Claude Code CLI in a terminal. It writes its status file
+<CLAUDE_CONFIG_DIR>/sessions/<pid>.json and appends transcript lines to
+<CLAUDE_CONFIG_DIR>/projects/<slug of its folder>/<session id>.jsonl, step by step as a scenario says, then removes its
+status file and exits, on a normal exit and on SIGHUP, SIGTERM and SIGINT alike. Every shape it writes is one Skein's
+own parsers and test fixtures accept (claude/SessionFile.kt, claude/Transcripts.kt, claude/History.kt,
+threads/ContextUse.kt, notify/NotificationContent.kt), and nothing here comes from Claude Code's program.
+
+It never touches the real ~/.claude and writes only into a CLAUDE_CONFIG_DIR that holds the marker file
+.fake-claude-home. Python 3.8 or newer, standard library only. The scenario format and how to use it in a sandbox IDE
+are in ../README.md.
+"""
+
+import json
+import os
+import pwd
+import re
+import signal
+import subprocess
+import sys
+import time
+import uuid
+from datetime import datetime, timezone
+
+# taken first, so it falls shortly after the process start, as the watcher checks
+STARTED_AT = int(time.time() * 1000)
+
+UUID = re.compile(r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
+# a worktree name as Skein's Worktrees.kt allows one, and gate names follow the same rule, so they are plain file names
+NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$")
+DEFAULT_MODEL = "claude-opus-5-5"
+DEFAULT_VERSION = "2.1.318"
+GATE_TIMEOUT = 120.0
+MARKER = ".fake-claude-home"
+DEFAULT_SCENARIO = os.path.join(os.path.dirname(os.path.realpath(__file__)), os.pardir, "scenarios", "default.json")
+SIGNALS = (signal.SIGHUP, signal.SIGTERM, signal.SIGINT)
+TITLES = {"customTitle": "custom-title", "aiTitle": "ai-title", "agentName": "agent-name", "lastPrompt": "last-prompt"}
+
+USAGE = """usage: claude [--resume <session id> | --worktree <name>] [--scenario <file>]
+       claude --fake-check-scenario <file>
+
+The fake claude for Skein's tests (tools/fake-claude/README.md). It needs CLAUDE_CONFIG_DIR, a Claude home of its own
+marked by the file .fake-claude-home, and follows the scenario from --scenario, else FAKE_CLAUDE_SCENARIO, else
+scenarios/default.json. Its wait steps wait for a file in FAKE_CLAUDE_GATES when that is set, giving up after
+FAKE_CLAUDE_GATE_TIMEOUT seconds (120 by default), else for Enter."""
+
+
+class Refused(Exception):
+    """Something the fake will not do. It says why, writes nothing and exits with 2."""
+
+
+class Failed(Exception):
+    """Something that went wrong after the checks. It says why and exits with 1."""
+
+
+class Signalled(BaseException):
+    def __init__(self, signum):
+        BaseException.__init__(self, signum)
+        self.signum = signum
+
+
+class InputEnded(Exception):
+    """stdin closed while a wait step waited for Enter. The terminal went away, so the fake ends."""
+
+
+def say(text):
+    try:
+        sys.stdout.write("fake claude: %s\n" % text)
+        sys.stdout.flush()
+    except (OSError, ValueError):
+        pass
+
+
+def complain(text):
+    try:
+        sys.stderr.write("fake claude: %s\n" % text)
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass
+
+
+# --- the scenario ------------------------------------------------------------------------------------------------
+
+
+def is_text(value):
+    return isinstance(value, str)
+
+
+def is_seconds(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+
+
+def is_gate(value):
+    return isinstance(value, str) and NAME.match(value) is not None
+
+
+def is_true(value):
+    return value is True
+
+
+def is_object(value):
+    return isinstance(value, dict)
+
+
+def is_int(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def is_usage(value):
+    return isinstance(value, dict) and all(isinstance(k, str) and is_int(v) for k, v in value.items())
+
+
+# each action with the check of its value and the keys it takes besides, each with its own check
+ACTIONS = {
+    "status": (is_text, {"waitingFor": is_text}),
+    "sleep": (is_seconds, {}),
+    "wait": (is_gate, {}),
+    "prompt": (is_text, {}),
+    "answer": (is_text, {"usage": is_usage, "model": is_text}),
+    "toolUse": (is_text, {"input": is_object, "id": is_text, "usage": is_usage, "model": is_text}),
+    "toolResult": (is_text, {"id": is_text}),
+    "customTitle": (is_text, {}),
+    "aiTitle": (is_text, {}),
+    "agentName": (is_text, {}),
+    "lastPrompt": (is_text, {}),
+    "compact": (is_true, {}),
+    "entry": (is_object, {}),
+    "name": (is_text, {"nameSource": is_text}),
+    "clear": (is_true, {}),
+    "exit": (is_int, {}),
+}
+TOP_LEVEL = {"steps": None, "model": is_text, "sessionId": lambda v: is_text(v) and UUID.match(v) is not None,
+             "name": is_text, "nameSource": is_text, "version": is_text}
+
+
+def action_of(step):
+    return next(key for key in step if key in ACTIONS)
+
+
+def check_scenario(data, where):
+    """The scenario as a dict with its steps, or Refused naming the first thing wrong."""
+    if isinstance(data, list):
+        data = {"steps": data}
+    if not isinstance(data, dict):
+        raise Refused("%s: a scenario is a list of steps or an object with steps" % where)
+    unknown = sorted(set(data) - set(TOP_LEVEL))
+    if unknown:
+        raise Refused("%s: unknown keys %s" % (where, ", ".join(unknown)))
+    for key, check in TOP_LEVEL.items():
+        if check is not None and key in data and not check(data[key]):
+            raise Refused("%s: %r is not a valid %s" % (where, data[key], key))
+    steps = data.get("steps")
+    if not isinstance(steps, list):
+        raise Refused("%s: steps must be a list" % where)
+    open_tools = 0
+    for number, step in enumerate(steps, 1):
+        here = "%s, step %d" % (where, number)
+        if not isinstance(step, dict):
+            raise Refused("%s is not an object" % here)
+        actions = [key for key in step if key in ACTIONS]
+        if len(actions) != 1:
+            raise Refused("%s needs exactly one of %s, it has %s" % (here, ", ".join(sorted(ACTIONS)), ", ".join(sorted(step)) or "none"))
+        action = actions[0]
+        check, extras = ACTIONS[action]
+        if not check(step[action]):
+            raise Refused("%s: %r is not a valid %s" % (here, step[action], action))
+        for key, value in step.items():
+            if key == action:
+                continue
+            if key not in extras:
+                raise Refused("%s: %s takes no %s" % (here, action, key))
+            if not extras[key](value):
+                raise Refused("%s: %r is not a valid %s" % (here, value, key))
+        if action == "toolUse":
+            open_tools += 1
+        elif action == "toolResult" and "id" not in step:
+            if open_tools == 0:
+                raise Refused("%s: a toolResult without an id needs a toolUse before it" % here)
+            open_tools -= 1
+        elif action == "clear":
+            open_tools = 0
+    return data
+
+
+def load_scenario(path):
+    try:
+        with open(path, encoding="utf-8") as source:
+            data = json.load(source)
+    except OSError as e:
+        raise Refused("cannot read the scenario %s: %s" % (path, e.strerror or e))
+    except ValueError as e:
+        raise Refused("the scenario %s is not JSON: %s" % (path, e))
+    return check_scenario(data, path)
+
+
+# --- where it may write --------------------------------------------------------------------------------------------
+
+
+def inside(path, folder):
+    return path == folder or path.startswith(folder.rstrip(os.sep) + os.sep)
+
+
+def real_claude_homes():
+    """~/.claude by HOME and by the user database, links resolved, the folders the fake never writes into."""
+    homes = {os.path.expanduser("~")}
+    try:
+        homes.add(pwd.getpwuid(os.getuid()).pw_dir)
+    except KeyError:
+        pass
+    return {os.path.realpath(os.path.join(home, ".claude")) for home in homes if home and os.path.isabs(home)}
+
+
+def claude_home(env):
+    raw = env.get("CLAUDE_CONFIG_DIR", "").strip()
+    if not raw:
+        raise Refused("CLAUDE_CONFIG_DIR is not set: the fake never uses ~/.claude, give it a Claude home of its own")
+    if not os.path.isabs(raw):
+        raise Refused("CLAUDE_CONFIG_DIR must be an absolute path, as Skein ignores a relative one: %s" % raw)
+    home = os.path.realpath(raw)
+    for real in real_claude_homes():
+        if inside(home, real) or inside(real, home):
+            raise Refused("CLAUDE_CONFIG_DIR %s is, holds or lies in the real Claude home %s" % (raw, real))
+    # a CLAUDE_CONFIG_DIR of the user's own, exported in a shell's rc files, may win over the one a test or the sandbox
+    # recipe gave, so the fake writes only into a folder marked as its own
+    if not os.path.isfile(os.path.join(home, MARKER)):
+        raise Refused("CLAUDE_CONFIG_DIR %s has no %s, so it may be someone's own Claude home. The fake writes only into "
+                      "a folder marked as its own (mkdir it, then touch %s in it)" % (raw, MARKER, MARKER))
+    return home
+
+
+class Gates:
+    """The folder whose files open the wait steps, and when a fake waiting there gives up."""
+
+    def __init__(self, folder, timeout):
+        self.folder = folder
+        self.timeout = timeout
+        # a fake whose shell or test went is no child of it any more, and nobody will open its gate
+        self.parent = os.getppid()
+
+
+def gate_timeout(env):
+    raw = env.get("FAKE_CLAUDE_GATE_TIMEOUT", "").strip()
+    if not raw:
+        return GATE_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0
+    if not 0 < value < float("inf"):
+        raise Refused("FAKE_CLAUDE_GATE_TIMEOUT must be a number of seconds above 0, not %s" % raw)
+    return value
+
+
+def gates_of(env, home):
+    raw = env.get("FAKE_CLAUDE_GATES", "").strip()
+    if not raw:
+        return None
+    if not os.path.isabs(raw):
+        raise Refused("FAKE_CLAUDE_GATES must be an absolute path: %s" % raw)
+    gates = os.path.realpath(raw)
+    # where it lies counts before whether it exists, since a wait step removes the file it names, settings.json say
+    for claude in real_claude_homes() | {home}:
+        if inside(gates, claude) or inside(claude, gates):
+            raise Refused("FAKE_CLAUDE_GATES %s must lie outside the Claude home %s, the fake removes files there" % (raw, claude))
+    if not os.path.isdir(gates):
+        raise Refused("FAKE_CLAUDE_GATES must be a folder that exists: %s" % raw)
+    return Gates(gates, gate_timeout(env))
+
+
+def git(args, cwd):
+    try:
+        return subprocess.run(["git"] + args, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, universal_newlines=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def git_toplevel(cwd):
+    result = git(["rev-parse", "--show-toplevel"], cwd)
+    if result is None or result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def worktree_folder(name, home):
+    """
+    `<repository>/.claude/worktrees/<name>`, where Skein expects `claude --worktree <name>` to start. In a repository it
+    is a git worktree on the branch `worktree-<name>`, elsewhere a plain folder, made when missing, never in a Claude home.
+    """
+    cwd = os.getcwd()
+    top = git_toplevel(cwd)
+    folder = os.path.join(top or cwd, ".claude", "worktrees", name)
+    target = os.path.realpath(folder)
+    for claude in real_claude_homes() | {home}:
+        if inside(target, claude) or inside(claude, target):
+            raise Refused("the worktree %s would lie in the Claude home %s" % (folder, claude))
+    if not os.path.isdir(folder):
+        if top is None:
+            os.makedirs(folder)
+        else:
+            branch = "worktree-" + name
+            known = git(["rev-parse", "--verify", "--quiet", "refs/heads/" + branch], top)
+            if known is not None and known.returncode == 0:
+                args = ["worktree", "add", "--", folder, branch]
+            else:
+                args = ["worktree", "add", "-b", branch, "--", folder]
+            made = git(args, top)
+            if made is None or made.returncode != 0:
+                raise Failed("git could not make the worktree %s: %s" % (folder, made.stderr.strip() if made else "git did not run"))
+    return folder
+
+
+def find_transcript(home, session_id):
+    projects = os.path.join(home, "projects")
+    try:
+        folders = sorted(os.listdir(projects))
+    except OSError:
+        return None
+    for folder in folders:
+        path = os.path.join(projects, folder, session_id + ".jsonl")
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def recorded_cwd(transcript):
+    """The first `cwd` a transcript recorded, as Skein's History reads it."""
+    try:
+        with open(transcript, encoding="utf-8") as lines:
+            for line in lines:
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                cwd = entry.get("cwd") if isinstance(entry, dict) else None
+                if isinstance(cwd, str) and cwd.strip():
+                    return cwd
+    except OSError:
+        pass
+    return None
+
+
+def slug(path):
+    """Claude Code's folder name for a path, as Skein's Slug has it, every UTF-16 unit outside [A-Za-z0-9] made a -."""
+    out = []
+    for ch in path:
+        if "a" <= ch <= "z" or "A" <= ch <= "Z" or "0" <= ch <= "9":
+            out.append(ch)
+        else:
+            out.append("--" if ord(ch) > 0xFFFF else "-")
+    return "".join(out)
+
+
+def now_iso():
+    now = datetime.now(timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (now.microsecond // 1000)
+
+
+# --- the session ---------------------------------------------------------------------------------------------------
+
+
+class Session:
+    def __init__(self, home, scenario, session_id, transcript=None):
+        self.home = home
+        self.pid = os.getpid()
+        self.cwd = os.getcwd()
+        self.model = scenario.get("model", DEFAULT_MODEL)
+        self.version = scenario.get("version", DEFAULT_VERSION)
+        self.name = scenario.get("name")
+        self.name_source = scenario.get("nameSource")
+        self.session_id = session_id
+        self.transcript = transcript or self.transcript_of(session_id)
+        self.status = "idle"
+        self.waiting_for = None
+        self.open_tools = []
+        self.tools = 0
+        self.status_path = os.path.join(home, "sessions", "%d.json" % self.pid)
+
+    def transcript_of(self, session_id):
+        return os.path.join(self.home, "projects", slug(self.cwd), session_id + ".jsonl")
+
+    def write_status(self):
+        data = {"pid": self.pid, "sessionId": self.session_id, "cwd": self.cwd, "startedAt": STARTED_AT,
+                "version": self.version, "kind": "interactive", "status": self.status,
+                "statusUpdatedAt": int(time.time() * 1000)}
+        if self.waiting_for is not None:
+            data["waitingFor"] = self.waiting_for
+        if self.name is not None:
+            data["name"] = self.name
+            if self.name_source is not None:
+                data["nameSource"] = self.name_source
+        os.makedirs(os.path.dirname(self.status_path), exist_ok=True)
+        # rewritten in place with one write, as Skein expects, so a reader may still catch it half-written
+        with open(self.status_path, "w", encoding="utf-8") as status:
+            status.write(json.dumps(data, separators=(",", ":")))
+
+    def remove_status(self):
+        try:
+            os.remove(self.status_path)
+        except OSError:
+            pass
+
+    def append(self, entry):
+        os.makedirs(os.path.dirname(self.transcript), exist_ok=True)
+        with open(self.transcript, "a", encoding="utf-8") as transcript:
+            transcript.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+    def message(self, kind, message):
+        return {"type": kind, "isSidechain": False, "entrypoint": "cli", "sessionId": self.session_id,
+                "timestamp": now_iso(), "message": message, "cwd": self.cwd}
+
+    def assistant(self, step, content):
+        message = {"role": "assistant", "model": step.get("model", self.model), "content": content}
+        if "usage" in step:
+            message["usage"] = step["usage"]
+        self.append(self.message("assistant", message))
+
+    def run(self, steps, gates):
+        """Runs the steps and returns the exit code of an exit step, else 0."""
+        for step in steps:
+            action = action_of(step)
+            value = step[action]
+            if action == "status":
+                self.status = value
+                self.waiting_for = step.get("waitingFor")
+                self.write_status()
+                say("status %s%s" % (value, " (%s)" % self.waiting_for if self.waiting_for else ""))
+            elif action == "sleep":
+                time.sleep(value)
+            elif action == "wait":
+                wait(value, gates)
+            elif action == "prompt":
+                self.append(self.message("user", {"role": "user", "content": value}))
+                say("prompt: %s" % value)
+            elif action == "answer":
+                self.assistant(step, [{"type": "text", "text": value}])
+                say("answer: %s" % value)
+            elif action == "toolUse":
+                self.tools += 1
+                tool_id = step.get("id") or "toolu_fake_%04d" % self.tools
+                self.open_tools.append(tool_id)
+                self.assistant(step, [{"type": "tool_use", "id": tool_id, "name": value, "input": step.get("input", {})}])
+                say("tool use: %s" % value)
+            elif action == "toolResult":
+                tool_id = step.get("id") or self.open_tools[0]
+                if tool_id in self.open_tools:
+                    self.open_tools.remove(tool_id)
+                result = {"type": "tool_result", "tool_use_id": tool_id, "content": value}
+                self.append(self.message("user", {"role": "user", "content": [result]}))
+                say("tool result for %s" % tool_id)
+            elif action in TITLES:
+                self.append({"type": TITLES[action], action: value, "sessionId": self.session_id})
+            elif action == "compact":
+                self.append({"type": "system", "subtype": "compact_boundary", "sessionId": self.session_id,
+                             "timestamp": now_iso(), "cwd": self.cwd})
+            elif action == "entry":
+                self.append(value)
+            elif action == "name":
+                self.name = value
+                self.name_source = step.get("nameSource")
+                self.write_status()
+            elif action == "clear":
+                self.session_id = str(uuid.uuid4())
+                self.transcript = self.transcript_of(self.session_id)
+                self.open_tools = []
+                self.write_status()
+                say("cleared, session %s" % self.session_id)
+            elif action == "exit":
+                return value
+        return 0
+
+
+def wait(gate, gates):
+    if gates is not None:
+        path = os.path.join(gates.folder, gate)
+        say("waits for the gate %s" % gate)
+        deadline = time.monotonic() + gates.timeout
+        # the gate is taken away as it opens, so a later run of the same scenario waits again. A fake whose test is gone
+        # must not wait for ever, so it gives up when the gates go, when its parent does, or after the longest wait
+        while True:
+            try:
+                os.remove(path)
+                return
+            except FileNotFoundError:
+                pass
+            if not os.path.isdir(gates.folder):
+                raise Failed("the gates folder %s is gone, so nobody opens the gate %s any more" % (gates.folder, gate))
+            if os.getppid() != gates.parent:
+                raise Failed("its parent process %d is gone, so nobody opens the gate %s any more" % (gates.parent, gate))
+            if time.monotonic() >= deadline:
+                raise Failed("waited %g s for the gate %s, the longest it waits for one" % (gates.timeout, gate))
+            time.sleep(0.02)
+    say("waits (%s), press Enter to go on" % gate)
+    if sys.stdin.readline() == "":
+        raise InputEnded()
+
+
+# --- the program ---------------------------------------------------------------------------------------------------
+
+
+def parse_args(args):
+    names = {"--resume": "resume", "-r": "resume", "--worktree": "worktree", "--scenario": "scenario",
+             "--fake-check-scenario": "check"}
+    options = {"resume": None, "worktree": None, "scenario": None, "check": None, "help": False}
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("-h", "--help"):
+            options["help"] = True
+            i += 1
+            continue
+        if arg not in names:
+            raise Refused("unknown argument %s: Skein types only claude, claude --resume <id> and claude --worktree <name>" % arg)
+        if i + 1 >= len(args):
+            raise Refused("%s needs a value" % arg)
+        key = names[arg]
+        if options[key] is not None:
+            raise Refused("%s given twice" % arg)
+        options[key] = args[i + 1]
+        i += 2
+    if options["resume"] is not None and not UUID.match(options["resume"]):
+        raise Refused("--resume takes a session id, not %s" % options["resume"])
+    if options["worktree"] is not None and not NAME.match(options["worktree"]):
+        raise Refused("--worktree takes a plain name, not %s" % options["worktree"])
+    if options["resume"] is not None and options["worktree"] is not None:
+        raise Refused("--resume and --worktree together are nothing Skein types")
+    return options
+
+
+def on_signal(signum, frame):
+    raise Signalled(signum)
+
+
+def start(options, scenario, home, gates):
+    """Runs one session to its end and returns the exit code, or dies of the signal that ended it."""
+    session = None
+    signalled = None
+    code = 0
+    for signum in SIGNALS:
+        signal.signal(signum, on_signal)
+    try:
+        try:
+            transcript = None
+            if options["resume"] is not None:
+                session_id = options["resume"]
+                transcript = find_transcript(home, session_id)
+                if transcript is None:
+                    raise Failed("No conversation found with session ID: %s" % session_id)
+                # a resumed session goes back to the folder it ran in, its worktree for a worktree session
+                folder = recorded_cwd(transcript)
+                if folder and os.path.isdir(folder):
+                    os.chdir(folder)
+            else:
+                session_id = scenario.get("sessionId") or str(uuid.uuid4())
+                if options["worktree"] is not None:
+                    os.chdir(worktree_folder(options["worktree"], home))
+            session = Session(home, scenario, session_id, transcript)
+            session.write_status()
+            say("started, session %s in %s" % (session.session_id, session.cwd))
+            code = session.run(scenario["steps"], gates)
+            say("exits with %d" % code)
+        except InputEnded:
+            code = 0
+        except Refused as e:
+            complain(str(e))
+            code = 2
+        except Failed as e:
+            complain(str(e))
+            code = 1
+    except Signalled as e:
+        signalled = e.signum
+    finally:
+        for signum in SIGNALS:
+            signal.signal(signum, signal.SIG_IGN)
+        if session is not None:
+            session.remove_status()
+    if signalled is not None:
+        # end as a process the signal killed, so the shell sees what it would see of a real one
+        signal.signal(signalled, signal.SIG_DFL)
+        os.kill(os.getpid(), signalled)
+        return 128 + signalled
+    return code
+
+
+def main(argv):
+    try:
+        options = parse_args(argv[1:])
+        if options["help"]:
+            print(USAGE)
+            return 0
+        if options["check"] is not None:
+            scenario = load_scenario(options["check"])
+            print("fake claude: %s is a valid scenario with %d steps" % (options["check"], len(scenario["steps"])))
+            return 0
+        scenario = load_scenario(options["scenario"] or os.environ.get("FAKE_CLAUDE_SCENARIO", "").strip() or DEFAULT_SCENARIO)
+        home = claude_home(os.environ)
+        gates = gates_of(os.environ, home)
+    except Refused as e:
+        complain(str(e))
+        return 2
+    return start(options, scenario, home, gates)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

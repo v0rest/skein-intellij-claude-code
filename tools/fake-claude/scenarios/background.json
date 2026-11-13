@@ -1,0 +1,19 @@
+{
+  "steps": [
+    {"wait": "prompt"},
+    {"prompt": "Start the demo-shop dev server and check the home page"},
+    {"status": "busy"},
+    {"toolUse": "Bash", "input": {"command": "npm run dev", "run_in_background": true}},
+    {"toolResult": "Command running in background"},
+    {"answer": "The dev server is starting, I will check the page once it is up.",
+     "usage": {"input_tokens": 3, "cache_creation_input_tokens": 500, "cache_read_input_tokens": 9000, "output_tokens": 120}},
+    {"status": "shell"},
+    {"sleep": 10},
+    {"status": "busy"},
+    {"sleep": 1},
+    {"answer": "The home page loads and shows the product list.",
+     "usage": {"input_tokens": 3, "cache_creation_input_tokens": 300, "cache_read_input_tokens": 9600, "output_tokens": 80}},
+    {"status": "idle"},
+    {"wait": "exit"}
+  ]
+}
