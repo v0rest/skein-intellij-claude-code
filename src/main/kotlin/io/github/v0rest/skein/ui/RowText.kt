@@ -18,7 +18,7 @@ object RowText {
      * as HTML, remote images included, so none of them can ever be markup.
      */
     fun tooltip(thread: SkeinThread, cutName: String? = null, context: ContextUse? = null, now: Long = 0, lines: List<String> = emptyList()): String {
-        val state = listOfNotNull(StatusText.line(thread.state), context?.let { answered(it, now) }).joinToString(" · ")
+        val state = listOfNotNull(StatusText.tooltipLine(thread.state), context?.let { answered(it, now) }).joinToString(" · ")
         return "<html>" + (listOfNotNull(cutName, state, context?.tooltipBase) + lines).joinToString("<br>") { StringUtil.escapeXmlEntities(it) }
     }
 

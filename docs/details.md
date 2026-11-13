@@ -14,9 +14,13 @@ thread's tab can move afterwards, by Move to Editor or by dragging it between th
 and Skein follows it there, so the thread stays in the list until its tab really closes. The chevron next to it also
 offers New Thread in Worktree… (see below). A thread is orange when it waits for you (a permission prompt, a
 question, any other dialog), blue when it finished its turn and you have not looked yet, and shows a spinner while it
-works, each with its own glyph. Clicking a row opens its tab, in the Terminal tool window by bringing the tool window
-up on it, and Tools | Skein has Jump to Waiting Thread for the keyboard. A thread whose tab you have in front, the
-selected editor or the selected tab of the visible Terminal tool window, counts as seen and gets no balloon.
+works, each with its own glyph. The orange one is a ring with a lock in it for a permission prompt, a ring with a
+speech bubble for a question and a ring with a dot for any other dialog, all three orange because all three need you,
+and the tooltip says "waiting for your permission" or "waiting for your answer". Grouping, the waiting-only filter, the
+counter, Jump to Waiting Thread and the tool window badge treat the three alike. Clicking a row opens its tab, in the
+Terminal tool window by bringing the tool window up on it, and Tools | Skein has Jump to Waiting Thread for the
+keyboard. A thread whose tab you have in front, the selected editor or the selected tab of the visible Terminal tool
+window, counts as seen and gets no balloon.
 
 
 A row has two lines. The first holds the state glyph, the name, a pin when the thread is pinned, the counts of a
@@ -213,8 +217,10 @@ the worktree, as it would with git itself.
 
 - 927 unit tests, among them a lifecycle test that drives a thread from start to restore against a copy of a Claude
   home and proves, byte for byte, that nothing under it changed (and fails as soon as anything does).
-- Unit tests for the thread order with pins, the History arrangement (pinned first, done hidden, a done mark dropping
-  on newer activity), the sections and the waiting-only filter, the toolbar counter, the keep-awake policy and its hold
+- Unit tests for which glyph and tooltip words a waiting thread gets for each reason (and that the three glyphs differ
+  and stay orange in both themes), the thread order with pins, the History arrangement (pinned first, done hidden, a
+  done mark dropping on newer activity), the sections and the waiting-only filter, the toolbar counter, the keep-awake
+  policy and its hold
   and release logic, the colour palette, the session name a notification shows, the line a thread row takes from the
   transcript, the one-balloon-per-thread bookkeeping, the click rules of the thread list and the History, the History
   eye's state to look and tooltip mapping, and for Close which threads count as busy, the question's words, the
@@ -257,6 +263,8 @@ the worktree, as it would with git itself.
   colours and done marks survive a restart, the editor-tab tint, the toolbar counter and the sound. The refreshed tool
   window waits for its checks as well, the tab titles after the move into the editor and after a restart, the badge
   while the Skein window has not been opened yet, the split "+" in the title bar and the spinner in the new row.
+  The lock and speech-bubble glyphs of a waiting thread, in a light and a dark theme at 100 % and 200 % scale (the
+  headless paint is checked, not how they look in the row).
   For worktree threads: the `cwd` in the status file of a first worktree session, a restored worktree thread
   resuming into its worktree, the notice about the worktrees `.gitignore` and the exclude line on a first worktree
   thread, the close question and its Keep-only answer for an unsaved editor change, and the exclude rule in a window
