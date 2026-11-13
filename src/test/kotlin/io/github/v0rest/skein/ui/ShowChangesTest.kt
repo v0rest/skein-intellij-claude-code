@@ -119,6 +119,47 @@ class ShowChangesTest {
         assertEquals("worktree task-1", ShowChanges.worktreeTitle("task-1"))
     }
 
+    /** The window's title, and its tab's, names the worktree and where in the list the file is, before the file. */
+    @Test
+    fun theTitleNamesTheWorktreeAndThePosition() {
+        assertEquals(
+            "task-old · 1/6 · docs/new-idea.md (untracked)",
+            ShowChanges.requestTitle("task-old", 0, 6, ChangedFile(ChangeKind.UNTRACKED, "docs/new-idea.md")),
+        )
+        assertEquals(
+            "task-1 · 3/3 · src/b.c (renamed from src/a.c)",
+            ShowChanges.requestTitle("task-1", 2, 3, ChangedFile(ChangeKind.RENAMED, "src/b.c", "src/a.c", blob)),
+        )
+        assertEquals("task-1 · 2/2 · src/a.c", ShowChanges.requestTitle("task-1", 1, 2, modified))
+    }
+
+    /** A refreshed window opens on the file the old one showed while it is still in the list, else on the first. */
+    @Test
+    fun aRefreshOpensOnTheFileShownBefore() {
+        val files = listOf(ChangedFile(ChangeKind.ADDED, "a.c"), modified, ChangedFile(ChangeKind.UNTRACKED, "z.c"))
+        assertEquals(1, ShowChanges.startAt(files, "src/a.c"))
+        assertEquals(2, ShowChanges.startAt(files, "z.c"))
+        assertEquals(0, ShowChanges.startAt(files, "gone.c"))
+        assertEquals(0, ShowChanges.startAt(files, null))
+        assertEquals(0, ShowChanges.startAt(emptyList(), "a.c"))
+    }
+
+    /**
+     * Before the list is read, the editor's unsaved changes to the worktree's files are saved: a file at or under one of
+     * the worktree's folders, by its path or its path with links resolved, and nothing else, not even a worktree whose
+     * name starts the same.
+     */
+    @Test
+    fun theEditsSavedFirstAreTheWorktreesOwn() {
+        val dirs = setOf("/w/acme/.claude/worktrees/task-1", "/private/w/acme/.claude/worktrees/task-1")
+        assertEquals(true, ShowChanges.inWorktree("/w/acme/.claude/worktrees/task-1/src/a.c", null, dirs))
+        assertEquals(true, ShowChanges.inWorktree("/link/a.c", "/private/w/acme/.claude/worktrees/task-1/a.c", dirs))
+        assertEquals(false, ShowChanges.inWorktree("/w/acme/src/a.c", "/w/acme/src/a.c", dirs))
+        assertEquals(false, ShowChanges.inWorktree("/w/acme/.claude/worktrees/task-10/a.c", null, dirs))
+        assertEquals(setOf("/w/acme/.claude/worktrees/task-1", "/private/w/acme/.claude/worktrees/task-1"), ShowChanges.worktreeDirs("/w/acme/", "task-1", "/private/w/acme"))
+        assertEquals(setOf("/w/acme/.claude/worktrees/task-1"), ShowChanges.worktreeDirs("/w/acme", "task-1", null))
+    }
+
     @Test
     fun theBalloonsSayWhy() {
         assertEquals(

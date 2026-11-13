@@ -278,7 +278,8 @@ class ArchitectureTest {
     /**
      * Show Changes reads a worktree and writes nothing: its `git diff` against the working tree runs without colour and
      * without an external diff program, git's bytes are read in three places only, the two `-z` lists and a blob at the
-     * merge-base by its object name, and nothing of it runs before the check that the owner trusts the project.
+     * merge-base by its object name, and nothing of it runs before the check that the owner trusts the project. The one
+     * thing it saves is the editor's unsaved changes to files in that worktree, right before git reads it.
      */
     @Test
     fun showChangesOnlyReadsAndOnlyInATrustedProject() {
@@ -307,6 +308,11 @@ class ArchitectureTest {
             SourceRules.codeLines(f).filter { it.contains("WorktreeChangesReader(") && !it.startsWith("class ") }.map { mainRoot.relativize(f).toString() }
         }
         assertEquals(listOf("io/github/v0rest/skein/ui/WorktreeDiff.kt"), made)
+        // the one save of the editor's documents: before the list is read, only those of files in that worktree
+        assertEquals(listOf("io/github/v0rest/skein/ui/WorktreeDiff.kt"), filesContaining("saveDocument", "saveAllDocuments"))
+        val saves = view.filter { it.contains("saveDocument") }
+        assertEquals(saves.toString(), 1, saves.size)
+        assertTrue(saves.single(), saves.single().contains("documents.saveDocuments {") && saves.single().contains("ShowChanges.inWorktree("))
     }
 
     /** Typing into a shell happens in one place, behind ClaudeCommand, with no way to widen what gets through. */
