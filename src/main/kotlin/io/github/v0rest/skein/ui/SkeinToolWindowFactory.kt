@@ -9,7 +9,6 @@ import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.components.JBPanelWithEmptyText
 import com.intellij.ui.content.ContentFactory
 import io.github.v0rest.skein.threads.ThreadService
-import io.github.v0rest.skein.ui.actions.NewThreadSplitButton
 import io.github.v0rest.skein.ui.actions.SkeinSettingsAction
 import io.github.v0rest.skein.ui.actions.ViewOptionsGroup
 
@@ -37,7 +36,8 @@ class SkeinToolWindowFactory : ToolWindowFactory, DumbAware {
                 // both are registered in plugin.xml; a missing one is a packaging bug, not something to hide
                 val newThread = checkNotNull(actions.getAction(NEW_THREAD_ACTION_ID)) { "$NEW_THREAD_ACTION_ID is not registered" }
                 val newWorktreeThread = checkNotNull(actions.getAction(NEW_WORKTREE_THREAD_ACTION_ID)) { "$NEW_WORKTREE_THREAD_ACTION_ID is not registered" }
-                toolWindow.setTitleActions(listOf(NewThreadSplitButton(newThread, newWorktreeThread, it), ViewOptionsGroup()))
+                // two buttons side by side, "+" and the branch, so a worktree thread is one click away too
+                toolWindow.setTitleActions(listOf(newThread, newWorktreeThread, ViewOptionsGroup()))
             }
         }
         toolWindow.contentManager.addContent(ContentFactory.getInstance().createContent(component, null, false))

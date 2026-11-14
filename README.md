@@ -41,8 +41,8 @@ through Settings | Plugins | ⚙ | Install Plugin from Disk.
 
 ## Using it
 
-"+" in the Skein tool window starts a thread in the project folder, and the chevron next to it offers New Thread in
-Worktree…. New Thread Here in the right-click menu of a folder or a file in the Project view, or of an editor tab,
+"+" in the Skein tool window starts a thread in the project folder, and the branch button next to it starts New Thread
+in Worktree…. New Thread Here in the right-click menu of a folder or a file in the Project view, or of an editor tab,
 starts one in that folder, or in the file's folder.
 A thread opens as an editor tab, or as a tab in the Terminal tool window if you turn off Open threads in the
 editor area in Settings | Tools | Skein, and you can drag its tab between the two. A thread turns orange when it waits
