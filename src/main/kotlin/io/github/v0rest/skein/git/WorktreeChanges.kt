@@ -1,5 +1,7 @@
 package io.github.v0rest.skein.git
 
+import io.github.v0rest.skein.paths.PathRules
+import io.github.v0rest.skein.paths.PathStyle
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
@@ -126,9 +128,13 @@ sealed interface BlobRead {
  * folder git would answer for the repository around it. Every call goes through [git], one after the other, and
  * nothing is written. Never throws for git's sake. Blocking: off the EDT.
  */
-class WorktreeChangesReader(private val git: GitRunner, private val exists: (Path) -> Boolean = { Files.exists(it) }) {
+class WorktreeChangesReader(
+    private val git: GitRunner,
+    private val exists: (Path) -> Boolean = { Files.exists(it) },
+    private val style: PathStyle = PathStyle.current,
+) {
     private val reader = WorktreeReader(git, exists)
-    private val worktrees = WorktreeGit(git)
+    private val worktrees = WorktreeGit(git, style)
 
     /**
      * The changes of [worktree], a worktree of [repository] (both with their links resolved, as git lists them), against
@@ -139,7 +145,7 @@ class WorktreeChangesReader(private val git: GitRunner, private val exists: (Pat
         when (val listing = worktrees.listing(repository)) {
             is WorktreeListing.Failed -> return ChangesLookup.Refused(listing.reason)
             is WorktreeListing.Listed -> {
-                val entry = listing.worktrees.firstOrNull { it.path.trimEnd('/') == worktree.toString() }
+                val entry = listing.worktrees.firstOrNull { PathRules.same(it.path, worktree.toString(), style) }
                 if (entry == null || entry.prunable || entry.bare) return ChangesLookup.Refused(notListed(worktree))
             }
         }

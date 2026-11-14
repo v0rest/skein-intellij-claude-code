@@ -1,6 +1,9 @@
 package io.github.v0rest.skein.git
 
 import io.github.v0rest.skein.claude.Worktrees
+import io.github.v0rest.skein.paths.PathStyle
+import io.github.v0rest.skein.testutil.CanonicalTemporaryFolder
+import io.github.v0rest.skein.testutil.Fixture
 import io.github.v0rest.skein.ui.WorktreeStart
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -10,7 +13,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
-import org.junit.rules.TemporaryFolder
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Collections
@@ -20,7 +22,7 @@ import java.util.concurrent.TimeUnit
 /** [WorktreeExcludes] with a made-up git: the order of its steps, its file handling and what it leaves behind. */
 class WorktreeExcludesTest {
     @get:Rule
-    val tmp = TemporaryFolder()
+    val tmp = CanonicalTemporaryFolder()
 
     private val line = "/.claude/worktrees/"
     /** Something git already tracks in the folder. */
@@ -426,7 +428,7 @@ class WorktreeExcludesTest {
     /** The guard holds when, read the way git reads it, its only rule is `*`. */
     @Test
     fun theGuardMustHoldOnlyTheStarLine() {
-        for (text in listOf("*", "*\n", "# notes\n*\n", "*\n# trailing\n", "\n   \n*\n", "*\r\n", "*  \n", "\n\n*")) {
+        for (text in listOf("*", "*\n", "# notes\n*\n", "*\n# trailing\n", "\n   \n*\n", "*\r\n", "# notes\r\n*\r\n", "*  \n", "\n\n*")) {
             assertTrue(text, WorktreeExcludes.guardHolds(text))
         }
         for (text in listOf("*\n!.gitignore\n", "# only a comment\n", "", "x\n", " *\n", "/*\n", "*\n*\n", "**\n", "*\\ \n", "\uFEFF*\n", "*\tx\n")) {
@@ -451,6 +453,26 @@ class WorktreeExcludesTest {
         Files.createSymbolicLink(worktrees(beta), outside)
         assertEquals(ExcludeResult.Failed("${worktrees(beta)} is a link, and Skein writes nothing through it"), WorktreeExcludes(FakeGit(beta)).ensureExcluded(beta))
         assertEquals(0L, Files.list(outside).use { it.count() })
+    }
+
+    /**
+     * On Windows a junction (`mklink /J`, no privilege needed) is no symbolic link to java.nio, and it would take the
+     * writes out of the repository all the same: refused before anything is written, nothing lands behind it.
+     */
+    @Test
+    fun aJunctionInPlaceOfTheClaudeFolderIsRefusedOnWindows() {
+        Fixture.assumeWindows("NTFS junctions exist on Windows only")
+        val outside = tmp.newFolder("outside").toPath()
+        val repo = repository()
+        val junction = ProcessBuilder("cmd", "/c", "mklink", "/J", repo.resolve(".claude").toString(), outside.toString())
+            .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
+        assertTrue(junction.waitFor(30, TimeUnit.SECONDS) && junction.exitValue() == 0)
+        assertFalse("java.nio takes no junction for a symbolic link", Files.isSymbolicLink(repo.resolve(".claude")))
+        val git = FakeGit(repo)
+        assertEquals(ExcludeResult.Failed("${repo.resolve(".claude")} is a link, and Skein writes nothing through it"), WorktreeExcludes(git).ensureExcluded(repo))
+        assertEquals(emptyList<List<String>>(), git.calls)
+        assertEquals(0L, Files.list(outside).use { it.count() })
+        assertFalse(Files.exists(repo.resolve(".git/info")))
     }
 
     @Test
@@ -526,20 +548,25 @@ class WorktreeExcludesTest {
         assertTrue(WorktreeExcludes.withExcludeLine(current).startsWith(current))
     }
 
-    /** The balloon says what Skein wrote; nothing written, no balloon. */
+    /**
+     * The balloon says what Skein wrote; nothing written, no balloon. A path inside the repository is named from its
+     * top as git names it, with `/` like the exclude line next to it, a path elsewhere and the repository as the
+     * system writes them.
+     */
     @Test
     fun theStartMessageSaysWhatWasWritten() {
-        val repo = Path.of("/w/acme")
+        val repo = Fixture.path("w/acme")
         fun result(line: Boolean, guard: Boolean, file: Path = repo.resolve(".git/info/exclude")) =
             ExcludeResult.Ok(line, guard, file, repo.resolve(".claude/worktrees/.gitignore"))
         assertEquals(
-            "Skein added .claude/worktrees/.gitignore and the line /.claude/worktrees/ to .git/info/exclude so git ignores the worktrees in /w/acme.",
+            "Skein added .claude/worktrees/.gitignore and the line /.claude/worktrees/ to .git/info/exclude so git ignores the worktrees in $repo.",
             WorktreeStart.excludeAdded(repo, result(line = true, guard = true)),
         )
-        assertEquals("Skein added .claude/worktrees/.gitignore so git ignores the worktrees in /w/acme.", WorktreeStart.excludeAdded(repo, result(line = false, guard = true)))
+        assertEquals("Skein added .claude/worktrees/.gitignore so git ignores the worktrees in $repo.", WorktreeStart.excludeAdded(repo, result(line = false, guard = true)))
+        val main = Fixture.path("w/main/.git/info/exclude")
         assertEquals(
-            "Skein added the line /.claude/worktrees/ to /w/main/.git/info/exclude so git ignores the worktrees in /w/acme.",
-            WorktreeStart.excludeAdded(repo, result(line = true, guard = false, file = Path.of("/w/main/.git/info/exclude"))),
+            "Skein added the line /.claude/worktrees/ to $main so git ignores the worktrees in $repo.",
+            WorktreeStart.excludeAdded(repo, result(line = true, guard = false, file = main)),
         )
         assertNull(WorktreeStart.excludeAdded(repo, result(line = false, guard = false)))
         assertEquals("Skein could not keep the worktree out of git: busy", WorktreeStart.excludeFailed("busy"))
@@ -550,14 +577,19 @@ class WorktreeExcludesTest {
     fun theResumeWarningNamesTheRepositoryAndTheReason() {
         assertEquals(
             "Skein could not keep the worktrees of /w/acme out of git, so git add -A could pick the worktree up: busy",
-            WorktreeStart.excludeWarning("/w/acme", "busy"),
+            WorktreeStart.excludeWarning("/w/acme/", "busy", PathStyle.UNIX),
+        )
+        // a thread on Windows may name it as the IDE does: said as the other messages say it
+        assertEquals(
+            "Skein could not keep the worktrees of C:\\w\\acme out of git, so git add -A could pick the worktree up: busy",
+            WorktreeStart.excludeWarning("c:/w/acme", "busy", PathStyle.WINDOWS),
         )
     }
 
     /** A guard kept after a refusal is said where the text is made: in the start's refusal and in the warning's reason. */
     @Test
     fun aKeptGuardIsSaidInTheText() {
-        val guard = Path.of("/w/acme/.claude/worktrees/.gitignore")
+        val guard = Fixture.path("w/acme/.claude/worktrees/.gitignore")
         val kept = ExcludeResult.Failed("busy", keptGuard = guard)
         val said = "busy; Skein kept the guard $guard it wrote, since worktrees live in that folder and it changes nothing git tracks"
         assertEquals(said, WorktreeStart.excludeReason(kept))

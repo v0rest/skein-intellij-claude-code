@@ -1,5 +1,7 @@
 package io.github.v0rest.skein.git
 
+import com.intellij.openapi.util.SystemInfo
+import io.github.v0rest.skein.testutil.CanonicalTemporaryFolder
 import io.github.v0rest.skein.testutil.RealGit
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -8,7 +10,6 @@ import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
-import org.junit.rules.TemporaryFolder
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -19,7 +20,7 @@ import java.nio.file.Path
  */
 class WorktreeChangesRealGitTest {
     @get:Rule
-    val folder = TemporaryFolder()
+    val folder = CanonicalTemporaryFolder()
 
     private lateinit var git: RealGit
     private lateinit var reader: WorktreeChangesReader
@@ -95,11 +96,13 @@ class WorktreeChangesRealGitTest {
 
     /**
      * Names git writes as they are with `-z`: a CR before a LF, a backspace, a tab, a leading colon, non-ASCII. They come
-     * back byte for byte, untracked and tracked alike, so each names a file that is there.
+     * back byte for byte, untracked and tracked alike, so each names a file that is there. Windows holds no control
+     * character and no colon in a name, so there only the non-ASCII one is made.
      */
     @Test
     fun oddNamesComeBackAsTheyAreOnDisk() {
         val odd = listOf("cr\r\nlf.c", "bs\bx.c", "tab\there.c", ":colon.c", "ünïcode файл.c")
+            .filter { name -> !SystemInfo.isWindows || name.none { it < ' ' || it == ':' } }
         for (name in odd) commit(repo, "tracked-$name", "base\n")
         ok(wt, "merge", "-q", "--ff-only", "main")
         for (name in odd) {

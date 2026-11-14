@@ -1,5 +1,6 @@
 package io.github.v0rest.skein.git
 
+import io.github.v0rest.skein.testutil.CanonicalTemporaryFolder
 import io.github.v0rest.skein.testutil.RealGit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -9,14 +10,13 @@ import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
-import org.junit.rules.TemporaryFolder
 import java.nio.file.Files
 import java.nio.file.Path
 
 /** [WorktreeGit.upstreamCounts] against the real git, in a clone of a local "remote" as Skein runs it, and skipped without git. */
 class BaseWarningRealGitTest {
     @get:Rule
-    val folder = TemporaryFolder()
+    val folder = CanonicalTemporaryFolder()
 
     private lateinit var git: RealGit
     private lateinit var wtGit: WorktreeGit

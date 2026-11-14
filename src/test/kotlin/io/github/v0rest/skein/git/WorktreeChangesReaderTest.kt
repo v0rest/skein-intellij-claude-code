@@ -1,5 +1,6 @@
 package io.github.v0rest.skein.git
 
+import io.github.v0rest.skein.paths.PathStyle
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -106,6 +107,23 @@ class WorktreeChangesReaderTest {
         val git = FakeGit(answers(list = ok("worktree /w/acme\nHEAD $blob\nbranch refs/heads/main\n\n")))
         assertEquals(ChangesLookup.Refused(WorktreeChangesReader.notListed(wt)), reader(git).read(repo, wt, "main"))
         assertEquals(listOf("worktree list --porcelain @$repo"), git.calls)
+    }
+
+    /**
+     * Windows on any system: git lists the worktree as `C:/w/acme/...`, Skein names it `C:\w\acme\...` - the folder
+     * git lists, so its changes are read; another folder still is not.
+     */
+    @Test
+    fun aWorktreeGitListsWithForwardSlashesIsReadOnWindows() {
+        val wt = Path.of("C:\\w\\acme\\.claude\\worktrees\\task-1")
+        val list = ok("worktree C:/w/acme\nHEAD $blob\nbranch refs/heads/main\n\nworktree c:/w/acme/.claude/worktrees/Task-1\nHEAD $blob\nbranch refs/heads/worktree-task-1\n\n")
+        val read = WorktreeChangesReader(FakeGit(answers(list = list)), { it == wt }, PathStyle.WINDOWS).read(Path.of("C:\\w\\acme"), wt, "main")
+        assertTrue(read.toString(), read is ChangesLookup.Found)
+        val other = Path.of("C:\\w\\acme\\.claude\\worktrees\\task-2")
+        assertEquals(
+            ChangesLookup.Refused(WorktreeChangesReader.notListed(other)),
+            WorktreeChangesReader(FakeGit(answers(list = list)), { it == other }, PathStyle.WINDOWS).read(Path.of("C:\\w\\acme"), other, "main"),
+        )
     }
 
     @Test

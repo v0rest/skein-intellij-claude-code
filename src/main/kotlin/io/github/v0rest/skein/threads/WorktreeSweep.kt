@@ -10,6 +10,8 @@ import io.github.v0rest.skein.git.WorktreeCounts
 import io.github.v0rest.skein.git.WorktreeGit
 import io.github.v0rest.skein.git.WorktreeListing
 import io.github.v0rest.skein.git.WorktreeReader
+import io.github.v0rest.skein.paths.PathRules
+import io.github.v0rest.skein.paths.PathStyle
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -46,9 +48,9 @@ sealed interface KeptKind {
 
 /** A folder under a repository's worktrees folder, as the Worktrees section lists it. */
 data class KeptWorktree(
-    /** The repository as the project or a thread names it: a thread opened on the worktree starts there. */
+    /** The repository as the project or a thread names it, as [PathRules.canonical] text: a thread opened on the worktree starts there. */
     val repository: String,
-    /** The worktree folder as git reports it, the repository's links resolved. */
+    /** The worktree folder under the repository's real path, the links resolved, as [PathRules.canonical] text. */
     val path: String,
     val name: String,
     val kind: KeptKind,
@@ -60,9 +62,15 @@ data class KeptWorktree(
  * worktrees folder of each repository Skein knows. Each repository is looked at once, by its real path; git runs only
  * where there is a worktrees folder with something in it or a worktree thread, and only in folders git lists as
  * worktrees (in any other folder it would answer for the repository around it). One git process at a time. A
- * repository that holds the Claude home is left alone, as everywhere else. Blocking: off the EDT.
+ * repository that holds the Claude home is left alone, as everywhere else. Paths are compared by the rules of [style]
+ * ([PathRules]), so git's `C:/w/acme` and the disk's `C:\w\acme` are one folder on Windows. Blocking: off the EDT.
  */
-class WorktreeSweep(private val git: WorktreeGit, private val reader: WorktreeReader, private val disk: Disk) {
+class WorktreeSweep(
+    private val git: WorktreeGit,
+    private val reader: WorktreeReader,
+    private val disk: Disk,
+    private val style: PathStyle = PathStyle.current,
+) {
     /** What a look needs from the disk, all of it blocking. */
     interface Disk {
         /** [folder] with its links resolved, or null when it cannot be. */
@@ -81,6 +89,9 @@ class WorktreeSweep(private val git: WorktreeGit, private val reader: WorktreeRe
         fun gitEntry(folder: Path): GitEntry?
 
         fun exists(path: Path): Boolean
+
+        /** Whether the disk says [cwd] lies in the folder [dir] ([SameFolder.holds]); none of the fakes needs to say so. */
+        fun sameFolder(dir: String, cwd: String): Boolean = false
     }
 
     /** The disk as a look reads it. Blocking. */
@@ -105,6 +116,8 @@ class WorktreeSweep(private val git: WorktreeGit, private val reader: WorktreeRe
         override fun gitEntry(folder: Path): GitEntry? = GitToplevel.entryOf(folder)
 
         override fun exists(path: Path): Boolean = Files.exists(path)
+
+        override fun sameFolder(dir: String, cwd: String): Boolean = SameFolder.holds(dir, cwd)
     }
 
     /**
@@ -132,13 +145,13 @@ class WorktreeSweep(private val git: WorktreeGit, private val reader: WorktreeRe
      */
     fun run(repositories: List<String>, threads: List<SkeinThread>, keptCounts: Boolean = true): Result {
         val resolved = LinkedHashMap<String, String>()
-        fun real(folder: String): String = resolved.getOrPut(folder) { isolated { disk.realPath(folder) } ?: folder.trimEnd('/') }
-        val worktreeThreads = threads.filter { it.worktree?.let(Worktrees::isValidName) == true }
+        fun real(folder: String): String = resolved.getOrPut(folder) { isolated { disk.realPath(folder) } ?: PathRules.canonical(folder, style) }
+        val worktreeThreads = threads.filter { thread -> thread.worktree?.let { Worktrees.isValidName(it, style) } == true }
         val counts = HashMap<String, WorktreeCounts>()
         val kept = ArrayList<KeptWorktree>()
-        val repos = WorktreeWatch.distinct(repositories + worktreeThreads.map { it.folder }) { real(it) }
+        val repos = WorktreeWatch.distinct(repositories + worktreeThreads.map { it.folder }, style) { real(it) }
         for ((repository, named) in repos) {
-            val here = worktreeThreads.filter { real(it.folder) == repository }
+            val here = worktreeThreads.filter { PathRules.same(real(it.folder), repository, style) }
             val rows = ArrayList<KeptWorktree>()
             try {
                 look(repository, named, here, threads, keptCounts, counts, rows, ::real)
@@ -167,7 +180,7 @@ class WorktreeSweep(private val git: WorktreeGit, private val reader: WorktreeRe
             for (thread in here) counts[thread.id] = WorktreeCounts.NotShown
             return
         }
-        val names = disk.folders(Path.of(Worktrees.parentOf(repository))).filter(Worktrees::isValidName).sorted()
+        val names = disk.folders(Path.of(Worktrees.parentOf(repository, style))).filter { Worktrees.isValidName(it, style) }.sorted()
         if (names.isEmpty() && here.isEmpty()) return
         val listing = git.listing(top)
         val fallback = lazy { reader.fallbackBase(top) }
@@ -181,9 +194,9 @@ class WorktreeSweep(private val git: WorktreeGit, private val reader: WorktreeRe
             if (entry == null || entry.prunable || entry.bare) return WorktreeCounts.NotShown
             return reader.read(Path.of(dir), recorded, fallback::value)
         }
-        for (thread in here) counts[thread.id] = countsOf(Worktrees.dirOf(repository, thread.worktree!!), thread.base)
+        for (thread in here) counts[thread.id] = countsOf(Worktrees.dirOf(repository, thread.worktree!!, style), thread.base)
         for (name in names) {
-            val dir = Worktrees.dirOf(repository, name)
+            val dir = Worktrees.dirOf(repository, name, style)
             val kind = when (listing) {
                 is WorktreeListing.Failed -> KeptKind.Unknown(listing.reason)
                 is WorktreeListing.Listed -> entryAt(listing.worktrees, dir)?.let { KeptKind.Registered(it.branch, it.locked) } ?: unlisted(Path.of(dir))
@@ -192,14 +205,19 @@ class WorktreeSweep(private val git: WorktreeGit, private val reader: WorktreeRe
                 kind is KeptKind.Unknown -> WorktreeCounts.Failed(kind.reason)
                 kind !is KeptKind.Registered || !keptCounts -> WorktreeCounts.NotShown
                 // its thread row shows the counts, against the base the thread recorded
-                KeptWorktrees.held(dir, threads, real) -> WorktreeCounts.NotShown
+                KeptWorktrees.held(dir, threads, real, style, disk::sameFolder) -> WorktreeCounts.NotShown
                 else -> countsOf(dir, recorded = null)
             }
-            kept += KeptWorktree(named.trimEnd('/'), dir, name, kind, rowCounts)
+            kept += KeptWorktree(PathRules.canonical(named, style), dir, name, kind, rowCounts)
         }
     }
 
-    private fun entryAt(worktrees: List<GitWorktree>, dir: String): GitWorktree? = worktrees.firstOrNull { it.path.trimEnd('/') == dir }
+    /**
+     * The entry git lists for the folder [dir], by [PathRules.same]: strict, so on Windows a name Win32 would trim
+     * (`task-1.`) never matches the folder it opens, and such a folder reads as not listed - which Skein never deletes
+     * either, its `.git` file makes it [KeptKind.Unlinked]. Skein does not take such a name for a worktree there anyway.
+     */
+    private fun entryAt(worktrees: List<GitWorktree>, dir: String): GitWorktree? = worktrees.firstOrNull { PathRules.same(it.path, dir, style) }
 
     /** A folder git does not list: a leftover, unless a `.git` of its own makes it a worktree linked elsewhere or a repository. */
     private fun unlisted(folder: Path): KeptKind = when (disk.gitEntry(folder)) {
@@ -225,31 +243,73 @@ object KeptWorktrees {
      * opened on a kept worktree takes its row away at once, not at the next look. [resolved] maps a folder to its real
      * path as the look found it; a folder it did not resolve counts as it is named.
      */
-    fun visible(kept: List<KeptWorktree>, threads: List<SkeinThread>, resolved: Map<String, String>): List<KeptWorktree> {
-        val real = { folder: String -> resolved[folder] ?: folder.trimEnd('/') }
-        return kept.filter { !held(it.path, threads, real) }
+    fun visible(kept: List<KeptWorktree>, threads: List<SkeinThread>, resolved: Map<String, String>, style: PathStyle = PathStyle.current): List<KeptWorktree> {
+        val real = { folder: String -> resolved[folder] ?: folder }
+        return kept.filter { !held(it.path, threads, real, style) }
     }
 
     /**
      * Whether one of [threads] holds the worktree folder [dir]: a worktree thread whose worktree it is, whichever path
      * to the repository the thread names ([real] gives a folder's real path), or any thread whose claude runs in it or
-     * below it, or whose folder lies in it.
+     * below it, or whose folder lies in it. A yes keeps the folder from going, so a place the text cannot place for sure
+     * ([PathRules.mayBeInside], a `..` say) holds it too, and so does a claude's cwd [sameFolder] finds in it on the disk
+     * (blocking; none by default).
      */
-    fun held(dir: String, threads: List<SkeinThread>, real: (String) -> String?): Boolean =
-        threads.any { thread -> places(thread, real).any { isAtOrUnder(it, dir) } }
-
-    /** The folders [thread] works in: its worktree under the repository as named and as resolved, its claude's cwd, its folder. */
-    private fun places(thread: SkeinThread, real: (String) -> String?): List<String> {
-        val folder = thread.folder.trimEnd('/')
-        val resolved = real(thread.folder)
-        val worktrees = thread.worktree?.let { name -> listOfNotNull(folder, resolved).map { Worktrees.dirOf(it, name) } }.orEmpty()
-        return worktrees + listOfNotNull(thread.sessionCwd?.takeIf(String::isNotBlank), folder, resolved)
+    fun held(
+        dir: String,
+        threads: List<SkeinThread>,
+        real: (String) -> String?,
+        style: PathStyle = PathStyle.current,
+        sameFolder: (dir: String, cwd: String) -> Boolean = { _, _ -> false },
+    ): Boolean = threads.any { thread ->
+        places(thread, real, style).any { PathRules.mayBeInside(it, dir, style) } ||
+            thread.sessionCwd?.takeIf(String::isNotBlank)?.let { sameFolder(dir, it) } == true
     }
 
-    private fun isAtOrUnder(path: String, dir: String): Boolean {
-        val trimmed = path.trimEnd('/')
-        return trimmed == dir || trimmed.startsWith("$dir/")
+    /**
+     * The folders [thread] works in: its worktree under the repository as named and as resolved, its claude's cwd as
+     * written and as resolved (on Windows a cwd may keep a subst drive or a junction), its folder. An empty one names no
+     * place, so it holds nothing, as before.
+     */
+    private fun places(thread: SkeinThread, real: (String) -> String?, style: PathStyle): List<String> {
+        val folder = thread.folder.takeIf(String::isNotBlank)
+        val resolved = real(thread.folder)?.takeIf(String::isNotBlank)
+        val cwd = thread.sessionCwd?.takeIf(String::isNotBlank)
+        val worktrees = thread.worktree?.let { name -> listOfNotNull(folder, resolved).map { Worktrees.dirOf(it, name, style) } }.orEmpty()
+        return worktrees + listOfNotNull(cwd, cwd?.let(real)?.takeIf(String::isNotBlank), folder, resolved)
     }
+}
+
+/**
+ * Whether a session's cwd lies in a folder by the disk's own word. On Windows a subst drive (`W:\acme` for
+ * `C:\work\acme`) is no reparse point, so toRealPath keeps it, while [Files.isSameFile] compares the volume and the
+ * file id and sees through it, as through a junction or a short name. Only ever adds holds.
+ */
+object SameFolder {
+    /**
+     * Whether [dir] is [cwd] or one of its ancestors up to the root, as [isSameFile] says for both while they exist. A
+     * look that throws is no answer, and the walk goes on. Blocking.
+     */
+    fun holds(dir: String, cwd: String, isSameFile: (Path, Path) -> Boolean = Files::isSameFile): Boolean {
+        val folder = path(dir) ?: return false
+        var at = path(cwd)
+        while (at != null) {
+            val here: Path = at
+            if (answer { isSameFile(folder, here) } == true) return true
+            at = here.parent
+        }
+        return false
+    }
+
+    private fun path(text: String): Path? = answer { Path.of(text) }
+
+    private fun <T> answer(block: () -> T): T? =
+        try {
+            block()
+        } catch (e: Exception) {
+            if (e is ControlFlowException || e is CancellationException) throw e
+            null
+        }
 }
 
 /**

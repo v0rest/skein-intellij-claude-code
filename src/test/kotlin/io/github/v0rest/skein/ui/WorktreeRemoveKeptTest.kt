@@ -5,12 +5,16 @@ import io.github.v0rest.skein.git.GitResult
 import io.github.v0rest.skein.git.GitRunner
 import io.github.v0rest.skein.git.WorktreeGit
 import io.github.v0rest.skein.process.ProcessProbe
+import io.github.v0rest.skein.paths.PathStyle
 import io.github.v0rest.skein.testutil.FakeProcessProbe
+import io.github.v0rest.skein.testutil.Fixture
 import io.github.v0rest.skein.testutil.sessionFile
 import io.github.v0rest.skein.threads.SkeinThread
 import io.github.v0rest.skein.threads.ThreadState
 import io.github.v0rest.skein.threads.WorktreeClose
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -26,8 +30,9 @@ import java.util.Collections
  * does not list deleted as a plain folder after its own question.
  */
 class WorktreeRemoveKeptTest {
-    private val repo = "/w/acme"
-    private val dir = "/w/acme/.claude/worktrees/acme"
+    // the system's own folders, git's listing as git writes them (`C:/w/acme` on Windows)
+    private val repo = Fixture.root("w/acme")
+    private val dir = Fixture.root("w/acme/.claude/worktrees/acme")
     private val branch = "worktree-acme"
 
     /** git calls, questions and deletes, in the order they happened. */
@@ -46,7 +51,8 @@ class WorktreeRemoveKeptTest {
     private fun ok(out: String = "") = GitResult(0, out, "", false)
 
     private fun listing(entry: String? = "branch refs/heads/$branch") =
-        "worktree $repo\nHEAD 1111\nbranch refs/heads/main\n\n" + (entry?.let { "worktree $dir\nHEAD 2222\n$it\n\n" } ?: "")
+        "worktree ${Fixture.forwardRoot("w/acme")}\nHEAD 1111\nbranch refs/heads/main\n\n" +
+            (entry?.let { "worktree ${Fixture.forwardRoot("w/acme/.claude/worktrees/acme")}\nHEAD 2222\n$it\n\n" } ?: "")
 
     private val refusal = GitResult(128, "", "fatal: '$dir' contains modified or untracked files, use --force to delete it\n", false)
 
@@ -66,7 +72,7 @@ class WorktreeRemoveKeptTest {
         when {
             "unlock" in args -> unlock()
             args.take(2) == listOf("worktree", "list") -> list()
-            args.firstOrNull() == "ls-files" -> tracked
+            "ls-files" in args -> tracked
             "--untracked-files=all" in args -> nested
             "status" in args -> ok(" M a.kt\n?? b.kt\n")
             args.firstOrNull() == "rev-list" -> ok("1\n")
@@ -88,9 +94,12 @@ class WorktreeRemoveKeptTest {
         isLink: (Path) -> Boolean = { false },
         unsavedEdits: suspend (Set<String>) -> Boolean = { false },
         probe: ProcessProbe = FakeProcessProbe(),
+        style: PathStyle = PathStyle.current,
+        resolve: (String) -> String? = { null },
+        sameFolder: (String, String) -> Boolean = { _, _ -> false },
         ask: suspend () -> Unit = {},
     ) = WorktreeCloseFlow(
-        git = WorktreeGit(FakeGit(answer)),
+        git = WorktreeGit(FakeGit(answer), style),
         snapshots = snapshots,
         threads = threads,
         ask = { message, _ ->
@@ -121,10 +130,14 @@ class WorktreeRemoveKeptTest {
         },
         probe = probe,
         zone = ZoneOffset.UTC,
+        style = style,
+        resolve = resolve,
+        sameFolder = sameFolder,
     )
 
     private val list = "git worktree list --porcelain"
-    private val lsFiles = "git -c core.fsmonitor=false ls-files -- .claude/worktrees/acme"
+    // in any case: with core.ignorecase an index entry under `.Claude/worktrees/acme` lies in this folder
+    private val lsFiles = "git -c core.fsmonitor=false --no-literal-pathspecs ls-files -- :(icase).claude/worktrees/acme"
     private val nestedCheck = "git -c core.fsmonitor=false --no-optional-locks status --porcelain -z --ignored=traditional --untracked-files=all"
     private val reads = listOf(list, "git -c core.fsmonitor=false --no-optional-locks status --porcelain", "git rev-list --count HEAD --not --remotes", nestedCheck)
     private val plainRemove = "git -c core.fsmonitor=false worktree remove -- $dir"
@@ -142,6 +155,64 @@ class WorktreeRemoveKeptTest {
     private val lockedRefusal = GitResult(128, "", "fatal: cannot remove a locked working tree, lock reason: on a stick\nuse 'remove -f -f' to override or unlock first\n", false)
 
     private fun run(flow: WorktreeCloseFlow) = runBlocking { flow.removeKept(repo, "acme") }
+
+    /**
+     * Windows on any system: the section names the repository as the IDE does (`C:/w/acme`) and git lists the worktree
+     * as `C:/w/acme/.claude/worktrees/acme` - a worktree git lists, so it gets the question and git's remove, never the
+     * question for a folder git does not list.
+     */
+    @Test
+    fun aWindowsWorktreeGitListsWithForwardSlashesGetsTheRemoveQuestion() {
+        val list = "worktree C:/w/acme\nHEAD 1111\nbranch refs/heads/main\n\nworktree C:/w/acme/.claude/worktrees/acme\nHEAD 2222\nbranch refs/heads/$branch\n\n"
+        runBlocking { flow(answers(list = { ok(list) }), style = PathStyle.WINDOWS).removeKept("C:/w/acme", "acme") }
+        assertTrue(events.toString(), "ask" in events)
+        assertTrue(events.toString(), "delete?" !in events)
+        assertTrue(events.toString(), "git -c core.fsmonitor=false worktree remove -- C:\\w\\acme\\.claude\\worktrees\\acme" in events)
+        assertEquals(listOf("Worktree acme and its branch $branch were removed"), reports)
+    }
+
+    /**
+     * A claude whose cwd reaches the worktree through a link (a symbolic link here, a junction or a subst drive on
+     * Windows) runs in it all the same: by its real path ([resolve]) or by the disk's own word ([sameFolder]) it holds
+     * the folder git does not list, the worktree git lists, and the tab's close, which waits for it to leave.
+     */
+    @Test(timeout = 30_000)
+    fun aSessionReachingTheWorktreeThroughALinkHoldsIt() {
+        val linked = Fixture.root("link/acme/.claude/worktrees/acme/src")
+        val real = Fixture.root("w/acme/.claude/worktrees/acme/src")
+        fun inside() = MutableStateFlow(SessionSnapshot(mapOf(7L to sessionFile(pid = 7, sessionId = "s-9", cwd = linked)), emptySet()))
+        val ways = listOf<(MutableStateFlow<SessionSnapshot>, (List<String>) -> GitResult) -> WorktreeCloseFlow>(
+            { snapshots, answer -> flow(answer, snapshots = snapshots, resolve = { if (it == linked) real else null }) },
+            { snapshots, answer -> flow(answer, snapshots = snapshots, sameFolder = { dir, cwd -> dir == this.dir && cwd == linked }) },
+        )
+        for (way in ways) {
+            // a folder git does not list: no Delete Folder
+            events.clear()
+            reports.clear()
+            run(way(inside(), answers(list = { ok(listing(entry = null)) })))
+            assertTrue(events.toString(), "delete?" !in events)
+            assertEquals(listOf("Folder acme was not deleted: ${WorktreeClose.SESSION_INSIDE}"), reports)
+            // a worktree git lists: no question
+            events.clear()
+            reports.clear()
+            run(way(inside(), answers()))
+            assertTrue(events.toString(), "ask" !in events)
+            assertEquals(listOf("Worktree acme was not removed: ${WorktreeClose.SESSION_INSIDE}"), reports)
+            // the tab's close waits for that session to leave, then asks
+            events.clear()
+            reports.clear()
+            val snapshots = inside()
+            val thread = SkeinThread("t1", repo, null, "acme", ThreadState.Exited, 0, 0, null, worktree = "acme")
+            runBlocking {
+                launch {
+                    delay(300)
+                    snapshots.value = SessionSnapshot.EMPTY
+                }
+                way(snapshots, answers()).run(thread)
+            }
+            assertTrue(events.toString(), "ask" in events)
+        }
+    }
 
     @Test
     fun aKeptWorktreeIsRemovedThenItsBranchWithDashDOnly() {
@@ -190,7 +261,7 @@ class WorktreeRemoveKeptTest {
         val snapshots = MutableStateFlow(SessionSnapshot.EMPTY)
         run(
             flow(answers(remove = refusal), snapshots = snapshots, force = {
-                snapshots.value = SessionSnapshot(mapOf(7L to sessionFile(pid = 7, sessionId = "s-1", cwd = "$dir/src")), emptySet())
+                snapshots.value = SessionSnapshot(mapOf(7L to sessionFile(pid = 7, sessionId = "s-1", cwd = Fixture.root("w/acme/.claude/worktrees/acme/src"))), emptySet())
                 true
             }),
         )
@@ -209,7 +280,7 @@ class WorktreeRemoveKeptTest {
     @Test
     fun aThreadAnywhereInTheWorktreeKeepsIt() {
         val worktreeThread = SkeinThread("t9", repo, null, "acme", ThreadState.Idle, 0, 0, null, worktree = "acme")
-        val plainInside = SkeinThread("t8", repo, null, "x", ThreadState.Idle, 0, 0, null, sessionCwd = "$dir/src")
+        val plainInside = SkeinThread("t8", repo, null, "x", ThreadState.Idle, 0, 0, null, sessionCwd = Fixture.root("w/acme/.claude/worktrees/acme/src"))
         for (holder in listOf(worktreeThread, plainInside)) {
             events.clear()
             reports.clear()
@@ -244,7 +315,7 @@ class WorktreeRemoveKeptTest {
     @Test
     fun aLeftoverFolderStaysWhileAnythingUsesItOrCouldLoseWork() {
         val inside = SessionSnapshot(mapOf(7L to sessionFile(pid = 7, sessionId = "s-1", cwd = dir)), emptySet())
-        val nested = listing(entry = null) + "worktree $dir/.claude/worktrees/inner\nHEAD 3333\nbranch refs/heads/worktree-inner\n\n"
+        val nested = listing(entry = null) + "worktree ${Fixture.forwardRoot("w/acme/.claude/worktrees/acme/.claude/worktrees/inner")}\nHEAD 3333\nbranch refs/heads/worktree-inner\n\n"
         val holder = SkeinThread("t9", repo, null, "acme", ThreadState.Idle, 0, 0, null, worktree = "acme")
         val cases = listOf(
             WorktreeCloseFlow.LINK to flow(answers(list = { ok(listing(entry = null)) }), isLink = { true }),
@@ -314,7 +385,7 @@ class WorktreeRemoveKeptTest {
     @Test
     fun aRemoveWhileTheSameWorktreeIsBeingClosedSaysSo() {
         val inFlight: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
-        inFlight += dir
+        inFlight += WorktreeCloseFlow.flightKey(repo, "acme")
         val flow = WorktreeCloseFlow(
             git = WorktreeGit(FakeGit(answers())),
             snapshots = MutableStateFlow(SessionSnapshot.EMPTY),
@@ -499,7 +570,8 @@ class WorktreeRemoveKeptTest {
     /** A lock someone else made stays as it is: git refuses, and neither a lift nor the force follows. */
     @Test
     fun aForeignLockIsNeverLifted() {
-        for (reason in listOf("on a stick", "claude session acme (pid 4242)", "claude  session acme (pid 4242 start Tue Nov 10 08:30:41 2026)")) {
+        // `claude session acme (pid 4242)` is Claude Code's own shape on Windows, so the near misses here have more after it
+        for (reason in listOf("on a stick", "claude session acme (pid 4242) x", "claude session acme (pid 4242 start)", "claude  session acme (pid 4242 start Tue Nov 10 08:30:41 2026)")) {
             events.clear()
             reports.clear()
             questions.clear()

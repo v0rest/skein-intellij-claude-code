@@ -26,13 +26,13 @@ import io.github.v0rest.skein.claude.ClaudeHome
 import io.github.v0rest.skein.claude.HistoryEntry
 import io.github.v0rest.skein.claude.HistoryScanner
 import io.github.v0rest.skein.claude.SessionMonitor
-import io.github.v0rest.skein.claude.WorktreeRef
 import io.github.v0rest.skein.claude.Worktrees
 import io.github.v0rest.skein.git.GitToplevel
 import io.github.v0rest.skein.notify.ThreadNotifier
 import io.github.v0rest.skein.threads.KeptKind
 import io.github.v0rest.skein.threads.KeptWorktree
 import io.github.v0rest.skein.threads.KeptWorktrees
+import io.github.v0rest.skein.threads.SameFolder
 import io.github.v0rest.skein.threads.ThreadService
 import io.github.v0rest.skein.threads.WorktreeClose
 import io.github.v0rest.skein.threads.WorktreeHygiene
@@ -246,17 +246,20 @@ internal class WorktreesSection(private val project: Project, private val scope:
         suspend fun openKept(project: Project, row: KeptWorktree) {
             val newest = withContext(Dispatchers.IO) { newestSession(row) }
             if (newest != null) return resumeSession(project, newest)
-            val elsewhere = withContext(Dispatchers.IO) { KeptWorktrees.held(row.path, WorktreeCloseFlow.threadsOfOpenWindows(), GitToplevel::resolved) }
+            val elsewhere = withContext(Dispatchers.IO) { KeptWorktrees.held(row.path, WorktreeCloseFlow.threadsOfOpenWindows(), GitToplevel::resolved, sameFolder = { dir, cwd -> SameFolder.holds(dir, cwd) }) }
             if (elsewhere) return balloon(project, "Skein did not start claude in the worktree ${row.name}: ${WorktreeClose.OTHER_THREAD}")
             withContext(Dispatchers.IO) { NewWorktreeThreadAction.reopen(project, Path.of(row.repository), row.name) }
         }
 
-        /** The newest History session that ran in [row]'s worktree (not one nested inside it), or null. Reads transcripts. */
+        /**
+         * The newest History session that ran in [row]'s worktree (not one nested inside it), or null. A transcript's cwd
+         * and the row name the repository in their own shapes (`C:\w\acme` and `C:/w/acme` on Windows), so they are
+         * compared through [Worktrees.isWorktreeOf]. Reads transcripts.
+         */
         private fun newestSession(row: KeptWorktree): HistoryEntry? {
-            val repositories = setOfNotNull(row.repository.trimEnd('/'), GitToplevel.resolved(row.repository), Worktrees.split(row.path)?.repository)
-            val own = repositories.mapTo(HashSet()) { WorktreeRef(it, row.name) }
+            val repositories = listOfNotNull(row.repository, GitToplevel.resolved(row.repository), Worktrees.split(row.path)?.repository)
             return HistoryScanner(ClaudeHome.default()).scan(listOf(row.path)).entries
-                .filter { Worktrees.split(it.cwd) in own }
+                .filter { Worktrees.isWorktreeOf(Worktrees.split(it.cwd), repositories, row.name) }
                 .maxByOrNull { it.lastActivity }
         }
 

@@ -1,15 +1,15 @@
 package io.github.v0rest.skein.claude
 
+import io.github.v0rest.skein.testutil.CanonicalTemporaryFolder
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
-import org.junit.rules.TemporaryFolder
 import java.nio.file.Files
 import java.nio.file.Path
 
 class WorktreeBaseRefTest {
     @get:Rule
-    val tmp = TemporaryFolder()
+    val tmp = CanonicalTemporaryFolder()
 
     private fun json(ref: String) = """{"worktree": {"baseRef": "$ref"}}"""
 

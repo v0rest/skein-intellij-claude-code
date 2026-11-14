@@ -2,12 +2,15 @@ package io.github.v0rest.skein.git
 
 import com.intellij.openapi.util.io.NioFiles
 import io.github.v0rest.skein.claude.Worktrees
+import io.github.v0rest.skein.paths.PathRules
+import io.github.v0rest.skein.paths.PathStyle
 import java.io.IOException
 import java.nio.file.DirectoryIteratorException
 import java.nio.file.FileSystemException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
+import java.nio.file.attribute.BasicFileAttributes
 
 /**
  * Deletes a folder under a repository's worktrees folder that git does not list as a worktree, once the owner agreed:
@@ -27,9 +30,9 @@ object LeftoverWorktreeFolder {
      * Why [folder] is no plain leftover because of what lies inside it: a `.git` entry at any depth (a clone, a worktree
      * link, a submodule), or a look that could not finish (an unreadable folder, more than [limit] entries), which counts
      * as one. Null when there is none. Links are not followed: one inside is deleted as a link, so what it points to is
-     * not this folder's. Blocking.
+     * not this folder's. On Windows `.Git` counts too, the disk and so git find it by that name. Blocking.
      */
-    fun gitInside(folder: Path, limit: Int = MAX_ENTRIES): String? {
+    fun gitInside(folder: Path, limit: Int = MAX_ENTRIES, style: PathStyle = PathStyle.current): String? {
         val pending = ArrayDeque<Path>()
         pending.add(folder)
         var seen = 0
@@ -39,7 +42,7 @@ object LeftoverWorktreeFolder {
                 Files.newDirectoryStream(dir).use { entries ->
                     for (entry in entries) {
                         if (++seen > limit) return "$folder holds more than $limit files, too many to make sure no repository lies inside"
-                        if (entry.fileName.toString() == ".git") return "${folder.relativize(entry)} lies inside $folder, so it holds a repository or a worktree"
+                        if (PathRules.sameName(entry.fileName.toString(), ".git", style)) return "${folder.relativize(entry)} lies inside $folder, so it holds a repository or a worktree"
                         if (Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS)) pending.add(entry)
                     }
                 }
@@ -52,13 +55,47 @@ object LeftoverWorktreeFolder {
         return null
     }
 
-    /** Null once the folder [name] of [repository] is gone; otherwise why it was not deleted, or not all of it. */
-    fun delete(repository: String, name: String): String? {
+    /**
+     * Whether [step] is a link Skein must not go through or delete through: a symbolic link, or an entry [attributes]
+     * read as "other" without following a link that leads somewhere else - its real path ([realPath]) is not its
+     * parent's real path with its name. java.nio reads every Windows reparse point as "other": an NTFS junction (`mklink
+     * /J`, no privilege needed) leads elsewhere, a OneDrive placeholder resolves to itself and is an ordinary folder
+     * here. A real path that cannot be had counts as a link. Blocking.
+     */
+    fun linkOnTheWay(
+        step: Path,
+        attributes: (Path) -> BasicFileAttributes? = ::attributesOf,
+        realPath: (Path) -> Path = { it.toRealPath() },
+    ): Boolean {
+        if (Files.isSymbolicLink(step)) return true
+        if (attributes(step)?.isOther != true) return false
+        return try {
+            val parent = step.parent ?: return true
+            !PathRules.same(realPath(step).toString(), PathRules.join(realPath(parent).toString(), step.fileName.toString()))
+        } catch (_: Exception) {
+            true
+        }
+    }
+
+    private fun attributesOf(path: Path): BasicFileAttributes? =
+        try {
+            Files.readAttributes(path, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+        } catch (_: IOException) {
+            null
+        }
+
+    /**
+     * Null once the folder [name] of [repository] is gone; otherwise why it was not deleted, or not all of it. The name
+     * must hold by the rule of [style] and by that of the system the disk belongs to - the same rule unless a test asks
+     * for the other one.
+     */
+    fun delete(repository: String, name: String, style: PathStyle = PathStyle.current): String? {
+        if (!Worktrees.isValidName(name, style)) return "$name is not a worktree name"
         if (!Worktrees.isValidName(name)) return "$name is not a worktree name"
         val folder = Path.of(Worktrees.dirOf(repository, name))
         val worktrees = folder.parent
         for (step in listOf(worktrees.parent, worktrees, folder)) {
-            if (Files.isSymbolicLink(step)) return "$step is a link, and Skein deletes nothing through a link"
+            if (linkOnTheWay(step)) return "$step is a link, and Skein deletes nothing through a link"
         }
         if (!Files.isDirectory(folder, LinkOption.NOFOLLOW_LINKS)) return "$folder is not a folder"
         if (Files.exists(folder.resolve(".git"), LinkOption.NOFOLLOW_LINKS)) return "$folder has a .git of its own, so it is no leftover"

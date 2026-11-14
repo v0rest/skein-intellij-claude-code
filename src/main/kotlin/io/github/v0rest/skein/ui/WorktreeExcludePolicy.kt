@@ -3,6 +3,7 @@ package io.github.v0rest.skein.ui
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.impl.DirectoryIndexExcludePolicy
+import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.vfs.VfsUtilCore
 import io.github.v0rest.skein.claude.Worktrees
 
@@ -16,6 +17,7 @@ class WorktreeExcludePolicy(private val project: Project) : DirectoryIndexExclud
     override fun getExcludeUrlsForProject(): Array<String> {
         if (project.isDisposed) return emptyArray()
         val folders = ReadAction.computeBlocking<ProjectFolders, RuntimeException> { ProjectFolders.of(project) }
-        return folders.all.map { VfsUtilCore.pathToUrl(Worktrees.parentOf(it)) }.distinct().toTypedArray()
+        // the folder comes back with the system's separators (`C:\w\acme\.claude\worktrees`), a file URL takes `/`
+        return folders.all.map { VfsUtilCore.pathToUrl(FileUtil.toSystemIndependentName(Worktrees.parentOf(it))) }.distinct().toTypedArray()
     }
 }

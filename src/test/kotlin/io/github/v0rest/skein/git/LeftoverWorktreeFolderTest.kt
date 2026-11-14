@@ -1,5 +1,8 @@
 package io.github.v0rest.skein.git
 
+import io.github.v0rest.skein.paths.PathStyle
+import io.github.v0rest.skein.testutil.CanonicalTemporaryFolder
+import io.github.v0rest.skein.testutil.Fixture
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -8,14 +11,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
-import org.junit.rules.TemporaryFolder
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.attribute.BasicFileAttributes
+import java.nio.file.attribute.FileTime
+import java.util.concurrent.TimeUnit
 
 /** The one recursive delete, on a real disk in a temporary folder. */
 class LeftoverWorktreeFolderTest {
     @get:Rule
-    val folder = TemporaryFolder()
+    val folder = CanonicalTemporaryFolder()
 
     private fun repo(): Path = folder.newFolder("acme").toPath().toRealPath()
 
@@ -70,6 +75,77 @@ class LeftoverWorktreeFolderTest {
         assertTrue(Files.isDirectory(elsewhere.resolve("acme")))
     }
 
+    /** Attributes as java.nio reads them without following a link: a folder, or "other" as for an NTFS junction. */
+    private class Attributes(private val directory: Boolean, private val other: Boolean) : BasicFileAttributes {
+        override fun lastModifiedTime(): FileTime = FileTime.fromMillis(0)
+
+        override fun lastAccessTime(): FileTime = FileTime.fromMillis(0)
+
+        override fun creationTime(): FileTime = FileTime.fromMillis(0)
+
+        override fun isRegularFile() = false
+
+        override fun isDirectory() = directory
+
+        override fun isSymbolicLink() = false
+
+        override fun isOther() = other
+
+        override fun size() = 0L
+
+        override fun fileKey(): Any? = null
+    }
+
+    /**
+     * java.nio does not take an NTFS junction for a symbolic link, it reads it as a folder that is also "other", as it
+     * reads every reparse point. One that leads elsewhere is a link on the way, one that resolves to itself (a OneDrive
+     * placeholder) is an ordinary folder, and one whose real path cannot be had counts as a link. A plain folder is no
+     * link, nor is one that cannot be read at all (it is checked as a folder right after).
+     */
+    @Test
+    fun aJunctionIsALinkOnTheWayAndAPlaceholderIsNot() {
+        val dir = folder.newFolder("plain").toPath()
+        val elsewhere = folder.newFolder("elsewhere").toPath()
+        val reparse: (Path) -> BasicFileAttributes? = { Attributes(directory = true, other = true) }
+        assertTrue("a junction leads elsewhere", LeftoverWorktreeFolder.linkOnTheWay(dir, reparse) { if (it == dir) elsewhere else it.toRealPath() })
+        assertFalse("a placeholder resolves to itself", LeftoverWorktreeFolder.linkOnTheWay(dir, reparse))
+        assertTrue("no real path, no walk", LeftoverWorktreeFolder.linkOnTheWay(dir, reparse) { throw java.io.IOException("cloud file unavailable") })
+        assertFalse(LeftoverWorktreeFolder.linkOnTheWay(dir, { Attributes(directory = true, other = false) }) { error("not asked for a plain folder") })
+        assertFalse(LeftoverWorktreeFolder.linkOnTheWay(dir, { null }))
+        assertFalse(LeftoverWorktreeFolder.linkOnTheWay(dir))
+        val link = Files.createSymbolicLink(folder.root.toPath().resolve("link"), dir)
+        assertTrue(LeftoverWorktreeFolder.linkOnTheWay(link, { Attributes(directory = true, other = false) }))
+    }
+
+    /** On Windows a junction at `.claude` (no privilege needed for one) leads elsewhere: nothing behind it is deleted. */
+    @Test
+    fun aJunctionOnTheWayIsRefusedOnWindows() {
+        Fixture.assumeWindows("NTFS junctions exist on Windows only")
+        val repo = repo()
+        val elsewhere = folder.newFolder("elsewhere").toPath()
+        Files.createDirectories(elsewhere.resolve("worktrees/acme/src"))
+        Files.writeString(elsewhere.resolve("worktrees/acme/src/a.c"), "int a;\n")
+        val junction = ProcessBuilder("cmd", "/c", "mklink", "/J", repo.resolve(".claude").toString(), elsewhere.toString())
+            .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
+        assertTrue(junction.waitFor(30, TimeUnit.SECONDS) && junction.exitValue() == 0)
+        assertFalse("java.nio takes no junction for a symbolic link", Files.isSymbolicLink(repo.resolve(".claude")))
+        assertTrue(LeftoverWorktreeFolder.linkOnTheWay(repo.resolve(".claude")))
+        assertNotNull(LeftoverWorktreeFolder.delete(repo.toString(), "acme"))
+        assertTrue(Files.exists(elsewhere.resolve("worktrees/acme/src/a.c")))
+    }
+
+    /** Win32 opens `task-1.` as `task-1`: by the Windows rule the name is refused, and nothing is deleted. */
+    @Test
+    fun aNameEndingInADotIsRefusedByTheWindowsRule() {
+        Fixture.assumeNotWindows("Windows makes no folder named with a dot at its end")
+        val repo = repo()
+        val dotted = leftover(repo, "task-1.")
+        assertEquals("task-1. is not a worktree name", LeftoverWorktreeFolder.delete(repo.toString(), "task-1.", PathStyle.WINDOWS))
+        assertTrue(Files.exists(dotted.resolve("src/a.c")))
+        assertNull(LeftoverWorktreeFolder.delete(repo.toString(), "task-1.", PathStyle.UNIX))
+        assertFalse(Files.exists(dotted))
+    }
+
     @Test
     fun aNameClaudeCodeWouldNotUseOrAFileIsRefused() {
         val repo = repo()
@@ -108,6 +184,18 @@ class LeftoverWorktreeFolderTest {
         assertNotNull(LeftoverWorktreeFolder.delete(repo.toString(), "linked"))
         assertTrue(Files.exists(clone.resolve("src/a.c")))
         assertTrue(Files.exists(linked.resolve("src/a.c")))
+    }
+
+    /**
+     * On Windows the disk, and so git, finds `.Git` by the name `.git`: by the Windows rule such an entry deeper inside
+     * is a repository too. The Unix rule takes it for an ordinary folder, as git there does on a case-sensitive disk.
+     */
+    @Test
+    fun aGitEntryInAnotherCaseCountsByTheWindowsRule() {
+        val dir = leftover(repo())
+        Files.createDirectories(dir.resolve("src/lib/.Git"))
+        assertNotNull(LeftoverWorktreeFolder.gitInside(dir, style = PathStyle.WINDOWS))
+        assertNull(LeftoverWorktreeFolder.gitInside(dir, style = PathStyle.UNIX))
     }
 
     /** A link inside to a repository elsewhere is not followed: the link goes, the repository stays. */

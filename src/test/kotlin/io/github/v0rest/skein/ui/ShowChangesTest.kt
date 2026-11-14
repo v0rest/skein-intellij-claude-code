@@ -3,6 +3,8 @@ package io.github.v0rest.skein.ui
 import io.github.v0rest.skein.git.BaseObject
 import io.github.v0rest.skein.git.ChangeKind
 import io.github.v0rest.skein.git.ChangedFile
+import io.github.v0rest.skein.paths.PathStyle.UNIX
+import io.github.v0rest.skein.paths.PathStyle.WINDOWS
 import io.github.v0rest.skein.threads.SkeinThread
 import io.github.v0rest.skein.threads.ThreadState
 import org.junit.Assert.assertEquals
@@ -153,12 +155,27 @@ class ShowChangesTest {
     @Test
     fun theEditsSavedFirstAreTheWorktreesOwn() {
         val dirs = setOf("/w/acme/.claude/worktrees/task-1", "/private/w/acme/.claude/worktrees/task-1")
-        assertEquals(true, ShowChanges.inWorktree("/w/acme/.claude/worktrees/task-1/src/a.c", null, dirs))
-        assertEquals(true, ShowChanges.inWorktree("/link/a.c", "/private/w/acme/.claude/worktrees/task-1/a.c", dirs))
-        assertEquals(false, ShowChanges.inWorktree("/w/acme/src/a.c", "/w/acme/src/a.c", dirs))
-        assertEquals(false, ShowChanges.inWorktree("/w/acme/.claude/worktrees/task-10/a.c", null, dirs))
-        assertEquals(setOf("/w/acme/.claude/worktrees/task-1", "/private/w/acme/.claude/worktrees/task-1"), ShowChanges.worktreeDirs("/w/acme/", "task-1", "/private/w/acme"))
-        assertEquals(setOf("/w/acme/.claude/worktrees/task-1"), ShowChanges.worktreeDirs("/w/acme", "task-1", null))
+        assertEquals(true, ShowChanges.inWorktree("/w/acme/.claude/worktrees/task-1/src/a.c", null, dirs, UNIX))
+        assertEquals(true, ShowChanges.inWorktree("/link/a.c", "/private/w/acme/.claude/worktrees/task-1/a.c", dirs, UNIX))
+        assertEquals(false, ShowChanges.inWorktree("/w/acme/src/a.c", "/w/acme/src/a.c", dirs, UNIX))
+        assertEquals(false, ShowChanges.inWorktree("/w/acme/.claude/worktrees/task-10/a.c", null, dirs, UNIX))
+        // saving acts on the file: one the text cannot place for sure is not saved here
+        assertEquals(false, ShowChanges.inWorktree("/w/acme/.claude/worktrees/x/../task-1/a.c", null, dirs, UNIX))
+        assertEquals(setOf("/w/acme/.claude/worktrees/task-1", "/private/w/acme/.claude/worktrees/task-1"), ShowChanges.worktreeDirs("/w/acme/", "task-1", "/private/w/acme", UNIX))
+        assertEquals(setOf("/w/acme/.claude/worktrees/task-1"), ShowChanges.worktreeDirs("/w/acme", "task-1", null, UNIX))
+    }
+
+    /** An editor's file on Windows is `C:/w/...` as the IDE writes it, the worktree's folders `C:\w\...`: one folder all the same. */
+    @Test
+    fun theEditsSavedFirstAreTheWorktreesOwnOnWindows() {
+        val dirs = ShowChanges.worktreeDirs("C:/w/acme", "task-1", "C:\\real\\acme", WINDOWS)
+        assertEquals(setOf("C:\\w\\acme\\.claude\\worktrees\\task-1", "C:\\real\\acme\\.claude\\worktrees\\task-1"), dirs)
+        assertEquals(true, ShowChanges.inWorktree("C:/w/acme/.claude/worktrees/task-1/src/a.c", null, dirs, WINDOWS))
+        assertEquals(true, ShowChanges.inWorktree("c:/W/ACME/.Claude/Worktrees/Task-1/a.c", null, dirs, WINDOWS))
+        assertEquals(true, ShowChanges.inWorktree("C:/link/a.c", "C:/real/acme/.claude/worktrees/task-1/a.c", dirs, WINDOWS))
+        assertEquals(false, ShowChanges.inWorktree("C:/w/acme/src/a.c", "C:/w/acme/src/a.c", dirs, WINDOWS))
+        assertEquals(false, ShowChanges.inWorktree("C:/w/acme/.claude/worktrees/task-10/a.c", null, dirs, WINDOWS))
+        assertEquals(false, ShowChanges.inWorktree("D:/w/acme/.claude/worktrees/task-1/a.c", null, dirs, WINDOWS))
     }
 
     /** Past the cap of 1,000 the chain holds the first files and one note for the rest; git runs once all the same. */

@@ -3,6 +3,7 @@ package io.github.v0rest.skein.git
 import io.github.v0rest.skein.claude.Worktrees
 import java.io.IOException
 import java.nio.charset.StandardCharsets
+import java.nio.file.AccessDeniedException
 import java.nio.file.DirectoryIteratorException
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.FileSystemException
@@ -82,7 +83,8 @@ class WorktreeExcludes(private val git: GitRunner) {
         // a `.claude` that is a repository of its own (or a submodule) holds the folder: the outer one never looks inside
         val claude = worktrees.parent
         val owner = if (Files.exists(claude.resolve(".git"), LinkOption.NOFOLLOW_LINKS)) claude else repository
-        val folder = owner.relativize(worktrees).toString()
+        // as git names it, with `/` on every system: a pathspec, a line of ls-files and a tree path all take that form
+        val folder = owner.relativize(worktrees).joinToString("/")
         val guardPath = "$folder/${Worktrees.GUARD_NAME}"
 
         // git is asked before anything is made in the folder, so the guard is never written over a path git tracks.
@@ -218,7 +220,8 @@ class WorktreeExcludes(private val git: GitRunner) {
 
     /** Why [dir] must not be written into: it is a link, or something other than a folder; null when it is fine or absent. */
     private fun inTheWay(dir: Path): String? = when {
-        Files.isSymbolicLink(dir) -> "$dir is a link, and Skein writes nothing through it"
+        // a junction on Windows is as much a link as a symbolic one
+        LeftoverWorktreeFolder.linkOnTheWay(dir) -> "$dir is a link, and Skein writes nothing through it"
         Files.exists(dir, LinkOption.NOFOLLOW_LINKS) && !Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS) -> "$dir is not a folder"
         else -> null
     }
@@ -270,6 +273,10 @@ class WorktreeExcludes(private val git: GitRunner) {
             Files.newOutputStream(guard, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)
         } catch (_: FileAlreadyExistsException) {
             return false
+        } catch (e: AccessDeniedException) {
+            // Windows refuses a new file over a folder as access denied rather than as one already there
+            if (Files.exists(guard, LinkOption.NOFOLLOW_LINKS)) return false
+            throw e
         }
         try {
             out.use { it.write(Worktrees.GUARD_TEXT.toByteArray(StandardCharsets.UTF_8)) }

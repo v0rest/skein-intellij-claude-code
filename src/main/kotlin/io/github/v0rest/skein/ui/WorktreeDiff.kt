@@ -46,6 +46,8 @@ import io.github.v0rest.skein.git.NoOptionalLocks
 import io.github.v0rest.skein.git.ProcessGitRunner
 import io.github.v0rest.skein.git.WorktreeChangesReader
 import io.github.v0rest.skein.notify.ThreadNotifier
+import io.github.v0rest.skein.paths.PathRules
+import io.github.v0rest.skein.paths.PathStyle
 import io.github.v0rest.skein.threads.SkeinThread
 import io.github.v0rest.skein.threads.WorktreeClose
 import kotlinx.coroutines.CancellationException
@@ -68,7 +70,7 @@ sealed interface DiskSide {
 
     data class File(val size: Long) : DiskSide
 
-    /** A link, by where it points, which is what git stores for one. */
+    /** A link, by where it points, as git stores it ([WorktreeDisk.linkText]). */
     data class Link(val target: String) : DiskSide
 
     data object Folder : DiskSide
@@ -91,6 +93,14 @@ object WorktreeDisk {
     fun pathOf(worktree: Path, relative: String): Path = worktree.toRealPath().resolve(relative.removeSuffix("/"))
 
     /**
+     * Where a link points as git stores it, the text the base side shows. On Windows the link on disk points with `\`,
+     * as git for Windows wrote it, while git keeps `/` in the object and turns the separators back when it reads a link,
+     * so an untouched link must read the same here - on Unix a `\` is a plain character of the name and stays.
+     */
+    fun linkText(target: String, style: PathStyle = PathStyle.current): String =
+        if (style == PathStyle.WINDOWS) target.replace('\\', '/') else target
+
+    /**
      * What [relative] is under [worktree]. A name git never writes (empty, `.` or `..`) and a link on the way make it
      * [DiskSide.Outside], a missing folder or a file on the way [DiskSide.Missing], and a file is one only while its
      * real path still lies in the worktree's.
@@ -107,7 +117,7 @@ object WorktreeDisk {
         }
         at = at.resolve(names.last())
         return when {
-            Files.isSymbolicLink(at) -> DiskSide.Link(Files.readSymbolicLink(at).toString())
+            Files.isSymbolicLink(at) -> DiskSide.Link(linkText(Files.readSymbolicLink(at).toString()))
             Files.isDirectory(at, LinkOption.NOFOLLOW_LINKS) -> DiskSide.Folder
             Files.isRegularFile(at, LinkOption.NOFOLLOW_LINKS) -> if (at.toRealPath().startsWith(root)) DiskSide.File(Files.size(at)) else DiskSide.Outside
             Files.exists(at, LinkOption.NOFOLLOW_LINKS) -> DiskSide.Special
@@ -210,13 +220,15 @@ object ShowChanges {
 
     /**
      * Whether an editor's unsaved change to the file at [path] ([canonical] with its links resolved) is saved before
-     * the list is read: the file lies in one of the worktree's folders [dirs] ([WorktreeCloseFlow.anyInWorktree]).
+     * the list is read: the file surely lies in one of the worktree's folders [dirs] ([PathRules.inside]). Saving acts
+     * on the file, so a path the text cannot place for sure is not saved here.
      */
-    fun inWorktree(path: String, canonical: String?, dirs: Set<String>): Boolean = WorktreeCloseFlow.anyInWorktree(listOf(path to canonical), dirs)
+    fun inWorktree(path: String, canonical: String?, dirs: Set<String>, style: PathStyle = PathStyle.current): Boolean =
+        listOfNotNull(path, canonical).any { p -> dirs.any { PathRules.inside(p, it, style) } }
 
     /** The worktree [name]'s folder under [repository] as named and under its [real] path, the links resolved. */
-    fun worktreeDirs(repository: String, name: String, real: String?): Set<String> =
-        setOfNotNull(Worktrees.dirOf(repository, name), real?.let { Worktrees.dirOf(it, name) })
+    fun worktreeDirs(repository: String, name: String, real: String?, style: PathStyle = PathStyle.current): Set<String> =
+        setOfNotNull(Worktrees.dirOf(repository, name, style), real?.let { Worktrees.dirOf(it, name, style) })
 
     /** The most files a worktree's chain holds; past it the last entry is one note for the rest ([capped]). */
     const val MAX_FILES = 1000
@@ -317,7 +329,8 @@ class WorktreeDiff(private val project: Project, private val scope: CoroutineSco
      */
     fun show(repository: String, name: String, recorded: String?) {
         if (!Worktrees.isValidName(name)) return
-        val key = Worktrees.dirOf(repository, name)
+        // one look per folder, whichever shape of the repository's path the row or the thread names
+        val key = PathRules.key(Worktrees.dirOf(repository, name))
         if (!busy.add(key)) return
         scope.launch {
             try {

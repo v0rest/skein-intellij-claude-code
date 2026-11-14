@@ -79,6 +79,6 @@ class WorktreeNameDialog(
     }
 
     companion object {
-        const val INVALID = "Letters, digits, '.', '_' and '-', up to 64, not starting with '-' or '.'"
+        val INVALID: String = WorktreeStart.nameRule()
     }
 }

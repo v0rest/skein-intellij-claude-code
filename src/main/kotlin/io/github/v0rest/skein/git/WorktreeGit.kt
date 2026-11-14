@@ -1,9 +1,12 @@
 package io.github.v0rest.skein.git
 
+import io.github.v0rest.skein.paths.PathRules
+import io.github.v0rest.skein.paths.PathStyle
 import java.nio.file.Path
 
 /**
- * A worktree as `git worktree list --porcelain` reports it; [branch] has no `refs/heads/` and is null when [detached]
+ * A worktree as `git worktree list --porcelain` reports it, its [path] as [PathRules.canonical] text (git writes
+ * `C:/w/acme` on Windows, Skein `C:\w\acme`); [branch] has no `refs/heads/` and is null when [detached]
  * or [bare]. [locked] and [prunable] say that git marked it so (a locked one stays until it is unlocked, a prunable one
  * has lost its folder or its link to the repository), and [lockReason] is the lock's reason as git wrote it (quoted by
  * git when it holds a byte git does not show as it is), null for a lock without one.
@@ -40,7 +43,7 @@ data class WorktreeState(val changedFiles: Int, val unpushedCommits: Int)
  * those commits are lost then; [detachedCommits] counts them, so the caller can keep such a worktree. The one force
  * ([forceRemove]) and the one unlock ([liftLock]) are for the remove flow alone.
  */
-class WorktreeGit(private val git: GitRunner) {
+class WorktreeGit(private val git: GitRunner, private val style: PathStyle = PathStyle.current) {
     /**
      * `git rev-parse -q --verify HEAD`: exit 0 when the repository has a commit to start a worktree from, 1 (and
      * nothing said) when HEAD names no commit yet, anything else when git could not tell.
@@ -53,7 +56,7 @@ class WorktreeGit(private val git: GitRunner) {
     /** The worktrees git lists for [repository], or why it could not list them. */
     fun listing(repository: Path): WorktreeListing {
         val result = git.run(repository, "worktree", "list", "--porcelain")
-        return if (result.ok) WorktreeListing.Listed(parseList(result.stdout)) else WorktreeListing.Failed(failure(result))
+        return if (result.ok) WorktreeListing.Listed(parseList(result.stdout, style)) else WorktreeListing.Failed(failure(result))
     }
 
     /** The branch [repository] has checked out (`git branch --show-current`); null when HEAD is detached or git cannot say. */
@@ -156,8 +159,14 @@ class WorktreeGit(private val git: GitRunner) {
         return InnerRepositories.Listed(StatusPorcelain.parse(status.stdout).paths.filter { it.endsWith("/") })
     }
 
-    /** `git ls-files -- <path>` in [repository]: the files git tracks at or under [path], relative to the repository. */
-    fun tracked(repository: Path, path: String): GitResult = git.run(repository, *NO_FSMONITOR, "ls-files", "--", path)
+    /**
+     * `git ls-files` in [repository]: the files git tracks at or under [path] (relative to the repository, with `/`), in
+     * any case. A pathspec is compared by case even where the disk is not - with `core.ignorecase` an index entry
+     * `.Claude/worktrees/task-1/f` lies in the folder `.claude/worktrees/task-1` - hence `icase`, and
+     * `--no-literal-pathspecs` keeps a GIT_LITERAL_PATHSPECS in the environment from reading that magic as a name.
+     */
+    fun tracked(repository: Path, path: String): GitResult =
+        git.run(repository, *NO_FSMONITOR, "--no-literal-pathspecs", "ls-files", "--", ":(icase)$path")
 
     /** Why [result] failed: git's reason, that it did not finish in time, or that it could not be started. */
     private fun failure(result: GitResult): String = if (result.ran || result.timedOut) result.reason() else "git could not be run: " + result.reason()
@@ -188,9 +197,10 @@ class WorktreeGit(private val git: GitRunner) {
         /**
          * The blocks of `git worktree list --porcelain`, one per worktree: `worktree <path>`, then `HEAD`, `branch
          * refs/heads/<name>` or `detached`, or `bare`, and `locked` or `prunable` with an optional reason. Lines it does
-         * not know are skipped, so a newer git's additions change nothing.
+         * not know are skipped, so a newer git's additions change nothing. This is where git's paths enter Skein: each
+         * is taken as [PathRules.canonical] text by the rules of [style], so every comparison sees one shape.
          */
-        fun parseList(text: String): List<GitWorktree> {
+        fun parseList(text: String, style: PathStyle = PathStyle.current): List<GitWorktree> {
             val result = mutableListOf<GitWorktree>()
             var current: GitWorktree? = null
             fun flush() {
@@ -202,7 +212,7 @@ class WorktreeGit(private val git: GitRunner) {
                 when {
                     line.startsWith("worktree ") -> {
                         flush()
-                        current = GitWorktree(line.removePrefix("worktree "), null)
+                        current = GitWorktree(PathRules.canonical(line.removePrefix("worktree "), style), null)
                     }
                     line.isBlank() -> flush()
                     entry == null -> Unit
