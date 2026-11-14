@@ -71,6 +71,40 @@ class ArchitectureTest {
         )
     }
 
+    /** The path rules work on text alone, so the macOS suite checks the Windows rules too and no answer hangs on a disk. */
+    @Test
+    fun pathRulesArePure() {
+        val offenders = SourceRules.kotlinFiles(mainRoot.resolve("io/github/v0rest/skein/paths")).flatMap { f ->
+            SourceRules.offenders(SourceRules.codeLines(f), listOf("Files.", "Path(", "Paths.", "java.nio.file", "java.io.", "toRealPath"))
+        }
+        assertEquals(emptyList<String>(), offenders)
+    }
+
+    /**
+     * Paths are compared and taken apart through PathRules, which knows both separators. A `/` by hand stays only where
+     * git's own names are read or built, which use `/` on every system, and in the Unix branch of FolderPaths, so a new
+     * one anywhere else is a Windows bug waiting. The list is per file, so a new use in one of these files is the
+     * reviewer's to catch.
+     */
+    @Test
+    fun slashesAreHandledByHandOnlyWhereGitsOwnNamesAre() {
+        val byHand = filesContaining(
+            "substringAfterLast('/')", "substringAfterLast(\"/\")", "substringBeforeLast('/')", "substringBeforeLast(\"/\")",
+            "lastIndexOf('/')", "lastIndexOf(\"/\")", "split('/')", "split(\"/\")", "trimEnd('/')", "removeSuffix(\"/\")",
+            "startsWith(\"/\")", "endsWith(\"/\")",
+        )
+        assertEquals(
+            listOf(
+                "io/github/v0rest/skein/git/WorktreeCounts.kt", // a branch name's rules
+                "io/github/v0rest/skein/git/WorktreeExcludes.kt", // exclude lines and the guard's path in git's tree
+                "io/github/v0rest/skein/git/WorktreeGit.kt", // git's status names, a folder ending in `/`
+                "io/github/v0rest/skein/ui/FolderPaths.kt", // the Unix branch
+                "io/github/v0rest/skein/ui/WorktreeDiff.kt", // names relative to the repository, as git lists them
+            ),
+            byHand.filterNot { it.startsWith("io/github/v0rest/skein/paths/") }.sorted(),
+        )
+    }
+
     @Test
     fun worktreesIsPure() {
         val lines = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/claude/Worktrees.kt"))
