@@ -51,6 +51,54 @@ tasks.runIde {
     jvmArgs("-Didea.trust.all.projects=true")
 }
 
+// UI tests drive an IDE that runs elsewhere, started with runIdeForUiTests below, through JetBrains' Remote Robot. They
+// are black-box: no plugin classes on their classpath, and neither `test` nor `check` runs them
+val uiTest: SourceSet by sourceSets.creating
+val uiTestImplementation: Configuration by configurations.getting
+dependencies {
+    uiTestImplementation("org.jetbrains.kotlin:kotlin-stdlib")
+    uiTestImplementation("junit:junit:4.13.2")
+    uiTestImplementation("com.intellij.remoterobot:remote-robot:0.11.23")
+    uiTestImplementation("com.intellij.remoterobot:remote-fixtures:0.11.23")
+}
+tasks.register<Test>("uiTest") {
+    description = "Runs the UI tests against an IDE started with runIdeForUiTests (robot server at -ProbotUrl, " +
+        "http://127.0.0.1:8082 by default)."
+    group = "verification"
+    testClassesDirs = uiTest.output.classesDirs
+    classpath = uiTest.runtimeClasspath
+    systemProperty("robot.url", providers.gradleProperty("robotUrl").getOrElse("http://127.0.0.1:8082"))
+    systemProperty("ui.screenshots", layout.buildDirectory.dir("reports/ui-screenshots").get().asFile.absolutePath)
+    // the Remote Robot client reads its answers with Gson, which reaches into Throwable on this JDK
+    jvmArgs("--add-opens=java.base/java.lang=ALL-UNNAMED")
+    outputs.upToDateWhen { false }
+}
+
+// An IDE with JetBrains' robot server, for UI tests driven from outside (Remote Robot). It is started by hand or on a
+// test machine and never by a build, so `test` and `check` do not depend on it
+intellijPlatformTesting {
+    runIde {
+        register("runIdeForUiTests") {
+            task {
+                jvmArgumentProviders += CommandLineArgumentProvider {
+                    listOf(
+                        "-Drobot-server.port=8082",
+                        "-Didea.trust.all.projects=true",
+                        "-Djb.privacy.policy.text=<!--999.999-->",
+                        "-Djb.consents.confirmation.enabled=false",
+                        "-Dide.show.tips.on.startup.default.value=false",
+                        "-Dide.mac.message.dialogs.as.sheets=false",
+                    )
+                }
+            }
+            plugins {
+                // the same version as the Remote Robot client of the UI tests below
+                robotServerPlugin("0.11.23")
+            }
+        }
+    }
+}
+
 // CHANGELOG.md is release-please's: "## [0.5.1](compare link) (date)" headers, "### Features" and "### Bug Fixes"
 // sections, "* " items and no Unreleased section. The build only reads it
 changelog {
