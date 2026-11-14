@@ -411,6 +411,9 @@ class WorktreeExcludesTest {
         )
         assertTrue(Files.isDirectory(guardOf(repo)))
 
+        // a FIFO is a POSIX thing; Git for Windows' mkfifo, on PATH on CI runners, makes something java.nio reads as a
+        // plain file, so there the second half proves nothing
+        Fixture.assumeNotWindows("no FIFOs on Windows")
         val beta = repository("beta")
         Files.createDirectories(worktrees(beta))
         val made = try {
