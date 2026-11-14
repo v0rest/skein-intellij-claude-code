@@ -12,10 +12,13 @@ import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.ui.SystemNotifications
+import com.intellij.util.EnvironmentUtil
 import io.github.v0rest.skein.claude.ClaudeHome
+import io.github.v0rest.skein.claude.ClaudeLocator
 import io.github.v0rest.skein.claude.SessionTitles
 import io.github.v0rest.skein.claude.Transcripts
 import io.github.v0rest.skein.claude.WaitReason
+import io.github.v0rest.skein.paths.PathStyle
 import io.github.v0rest.skein.settings.SkeinSettings
 import io.github.v0rest.skein.threads.DisplayNames
 import io.github.v0rest.skein.threads.NotificationKind
@@ -24,6 +27,8 @@ import io.github.v0rest.skein.threads.SkeinThread
 import io.github.v0rest.skein.threads.ThreadState
 import io.github.v0rest.skein.ui.SkeinIcons
 import java.awt.Toolkit
+import java.nio.file.Files
+import java.nio.file.Path
 
 /** The words of Skein's notifications and whether the user wants them. */
 object NotificationText {
@@ -72,8 +77,19 @@ object NotificationText {
         NotificationKind.TURN_FINISHED -> settings.soundTurnFinished
     }
 
-    fun missingStatusFiles(minVersion: String): String =
-        "Skein could not read session status. Check that claude starts in the IDE terminal and is Claude Code $minVersion or newer."
+    /**
+     * The balloon's content, so a folder name is escaped like the other balloons' text. The installer's folder is a
+     * hint only: Skein knows that no status file came, and PATH it can read is the IDE's, not the terminal's.
+     */
+    fun missingStatusFiles(minVersion: String, found: ClaudeLocator.Result = ClaudeLocator.Result.NotFound): String {
+        val version = "Check that claude starts in the IDE terminal and is Claude Code $minVersion or newer."
+        return when (found) {
+            is ClaudeLocator.Result.OnlyInInstallerFolder ->
+                "Skein could not read session status. claude may not start in the IDE's terminal, because ${StringUtil.escapeXmlEntities(found.directory)} " +
+                    "is not on the PATH the IDE was started with. Add it to your user PATH and restart the IDE (and JetBrains Toolbox, if it started the IDE). $version"
+            else -> "Skein could not read session status. $version"
+        }
+    }
 }
 
 /**
@@ -133,8 +149,15 @@ class ThreadNotifier(private val project: Project, private val open: (threadId: 
     fun dismiss(threadId: String) = onEdt { balloons.dismiss(threadId) }
 
     fun missingStatusFiles(minVersion: String) {
-        group(GROUP_ID).createNotification(NotificationText.missingStatusFiles(minVersion), NotificationType.WARNING).notify(project)
+        // PATH and the disk are read on a pooled thread, the balloon is shown from the EDT like the others
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val text = NotificationText.missingStatusFiles(minVersion, locateClaude())
+            onEdt { group(GROUP_ID).createNotification(text, NotificationType.WARNING).notify(project) }
+        }
     }
+
+    private fun locateClaude(): ClaudeLocator.Result =
+        ClaudeLocator.locateIn(PathStyle.current, EnvironmentUtil.getEnvironmentMap(), System.getProperty("user.home").orEmpty()) { Files.isRegularFile(Path.of(it)) }
 
     /**
      * The session's name as the History shows it: the user's own name from the marks, else the title in the transcript

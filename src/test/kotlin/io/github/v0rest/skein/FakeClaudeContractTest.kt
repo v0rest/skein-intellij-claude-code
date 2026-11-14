@@ -15,6 +15,7 @@ import io.github.v0rest.skein.process.LibcHangUp
 import io.github.v0rest.skein.terminal.ClaudeCommand
 import io.github.v0rest.skein.testutil.FakeClaude
 import io.github.v0rest.skein.testutil.FakeClaudeRig
+import io.github.v0rest.skein.testutil.Fixture
 import io.github.v0rest.skein.testutil.RealGit
 import io.github.v0rest.skein.testutil.awaitValue
 import io.github.v0rest.skein.threads.ContextUse
@@ -54,6 +55,7 @@ class FakeClaudeContractTest {
 
     @Before
     fun aRig() {
+        Fixture.assumeNotWindows("the fake claude is a POSIX shell and python rig and is not ported to Windows")
         rig = FakeClaudeRig(tmp.root.toPath(), FakeClaude.requireRunnable())
         project = tmp.newFolder("demo-shop").toPath().toRealPath()
         watcher = SessionDirectoryWatcher(ClaudeHome(rig.claudeHome), JdkProcessProbe())

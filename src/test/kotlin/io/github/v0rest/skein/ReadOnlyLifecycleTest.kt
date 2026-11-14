@@ -3,9 +3,12 @@ package io.github.v0rest.skein
 import io.github.v0rest.skein.claude.ClaudeHome
 import io.github.v0rest.skein.claude.HistoryScanner
 import io.github.v0rest.skein.claude.SessionDirectoryWatcher
+import io.github.v0rest.skein.claude.Slug
 import io.github.v0rest.skein.claude.WaitReason
 import io.github.v0rest.skein.terminal.ClaudeCommand
+import io.github.v0rest.skein.testutil.CanonicalTemporaryFolder
 import io.github.v0rest.skein.testutil.FakeProcessProbe
+import io.github.v0rest.skein.testutil.Fixture
 import io.github.v0rest.skein.testutil.FakeThreadTerminal
 import io.github.v0rest.skein.testutil.TreeDigest
 import io.github.v0rest.skein.threads.CoordinatorEvents
@@ -20,7 +23,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
-import org.junit.rules.TemporaryFolder
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
@@ -34,7 +36,12 @@ import kotlin.streams.asSequence
  */
 class ReadOnlyLifecycleTest {
     @get:Rule
-    val tmp = TemporaryFolder()
+    val tmp = CanonicalTemporaryFolder()
+
+    /** The project folder of the fixture: `/w/p` on Unix, `C:\w\p` on Windows, where the stored cwd and slug follow it. */
+    private val project = Fixture.root("w/p")
+    private val projectSlug = Slug.of(project)
+    private val projectJson = Fixture.jsonEscaped(project)
 
     private val old = "11111111-1111-4111-8111-111111111111"
     private val first = "22222222-2222-4222-8222-222222222222"
@@ -45,7 +52,7 @@ class ReadOnlyLifecycleTest {
         val root = tmp.root.toPath().resolve(".claude")
         copyFixture(root)
         val before = TreeDigest.of(root)
-        assertTrue("fixture copied", before.keys.containsAll(listOf("settings.json", "sessions/999.json", "projects/-w-p/$old.jsonl")))
+        assertTrue("fixture copied", before.keys.containsAll(listOf("settings.json", "sessions/999.json", "projects/$projectSlug/$old.jsonl")))
 
         val written = mutableSetOf<String>()
         fun claudeWrites(relative: String, content: String) {
@@ -80,11 +87,11 @@ class ReadOnlyLifecycleTest {
         val coordinator = ThreadCoordinator(terminal, ThreadMapper(probe), slot, events) { "t${++n}" }
         fun step(now: Long) = coordinator.onSnapshot(watcher.poll(), viewed = { false }, now = now)
         fun status(status: String, sessionId: String, waitingFor: String? = null) =
-            """{"pid":100,"sessionId":"$sessionId","cwd":"/w/p","name":"lifecycle","status":"$status",""" +
+            """{"pid":100,"sessionId":"$sessionId","cwd":"$projectJson","name":"lifecycle","status":"$status",""" +
                 (waitingFor?.let { "\"waitingFor\":\"$it\"," } ?: "") + """"startedAt":1500}"""
 
         // a new thread: Skein types claude, claude writes its status file
-        coordinator.newThread("/w/p", now = 1_000)
+        coordinator.newThread(project, now = 1_000)
         probe.add(100, parent = 10, start = Instant.ofEpochMilli(1_400))
         claudeWrites("sessions/100.json", status("idle", first))
         step(2_000)
@@ -102,12 +109,12 @@ class ReadOnlyLifecycleTest {
 
         // /clear: the same process now carries a new session id, and claude writes that session's transcript
         claudeWrites("sessions/100.json", status("idle", cleared))
-        claudeWrites("projects/-w-p/$cleared.jsonl", """{"type":"user","cwd":"/w/p","sessionId":"$cleared","message":{"role":"user","content":"x"}}""" + "\n")
+        claudeWrites("projects/$projectSlug/$cleared.jsonl", """{"type":"user","cwd":"$projectJson","sessionId":"$cleared","message":{"role":"user","content":"x"}}""" + "\n")
         step(6_000)
         assertEquals(cleared, coordinator.threads.single().sessionId)
 
         // history lists the old session and the live one
-        val history = HistoryScanner(home).scan(listOf("/w/p")).entries
+        val history = HistoryScanner(home).scan(listOf(project)).entries
         assertEquals(setOf(old, cleared), history.map { it.sessionId }.toSet())
         assertEquals("old work", history.single { it.sessionId == old }.title)
 
@@ -147,8 +154,16 @@ class ReadOnlyLifecycleTest {
         val source = Path.of(requireNotNull(javaClass.getResource("/fixtures/claude-home")) { "fixture missing" }.toURI())
         Files.walk(source).use { paths ->
             paths.asSequence().forEach { path ->
-                val destination = target.resolve(path.relativeTo(source).toString())
-                if (Files.isDirectory(path)) Files.createDirectories(destination) else Files.copy(path, destination)
+                // the fixture is written with `/w/p`, so the folder name and the cwd inside it are made to fit this OS
+                val relative = path.relativeTo(source).toString().replace("-w-p", projectSlug)
+                val destination = target.resolve(relative)
+                when {
+                    Files.isDirectory(path) -> Files.createDirectories(destination)
+                    else -> {
+                        Files.createDirectories(destination.parent)
+                        Files.writeString(destination, Files.readString(path).replace("\"/w/p\"", "\"$projectJson\""))
+                    }
+                }
             }
         }
     }

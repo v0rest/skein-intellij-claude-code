@@ -1,12 +1,12 @@
 package io.github.v0rest.skein.threads
 
+import io.github.v0rest.skein.claude.PhysicalPath
 import io.github.v0rest.skein.claude.SessionFile
+import io.github.v0rest.skein.paths.PathRules
+import io.github.v0rest.skein.paths.PathStyle
 import io.github.v0rest.skein.process.ProcessId
 import io.github.v0rest.skein.process.ProcessList
 import io.github.v0rest.skein.process.ProcessProbe
-import java.io.IOException
-import java.nio.file.InvalidPathException
-import java.nio.file.Path
 import java.time.Instant
 
 /**
@@ -33,7 +33,7 @@ data class LaunchMatch(val anchor: Long, val file: SessionFile)
  * Ties `claude` processes to terminal tabs through the process tree alone. Every process in a tab the IDE opened
  * descends from the IDE, and the ancestor right below the IDE (the shell, or a helper above it) is the tab's anchor.
  */
-class ThreadMapper(private val probe: ProcessProbe) {
+class ThreadMapper(private val probe: ProcessProbe, private val style: PathStyle = PathStyle.current) {
     /** The IDE's direct child processes right now: every terminal shell (and a few helpers) the IDE started. */
     fun ideChildren(): Set<Long> = probe.children(probe.currentPid()).toSet()
 
@@ -91,7 +91,8 @@ class ThreadMapper(private val probe: ProcessProbe) {
             val startedAt = file.startedAt ?: continue
             if (startedAt < pending.typedAt) continue
             if (pending.resumeSessionId != null && file.sessionId == pending.resumeSessionId) return LaunchMatch(anchor, file)
-            if (byFolder == null && file.cwd?.let(::normalize).let { it != null && (it == folder || it == worktreeFolder) }) byFolder = LaunchMatch(anchor, file)
+            // a doubt counts as no here: a wrong match would take another terminal's claude for this thread
+            if (byFolder == null && file.cwd?.let(::normalize).let { it != null && (PathRules.same(it, folder, style) || worktreeFolder != null && PathRules.same(it, worktreeFolder, style)) }) byFolder = LaunchMatch(anchor, file)
         }
         return byFolder
     }
@@ -110,17 +111,7 @@ class ThreadMapper(private val probe: ProcessProbe) {
     private fun SessionFile.isInteractive(): Boolean = kind == null || kind == "interactive"
 
     /** The physical path: Claude Code reports getcwd(), which resolves symlinks (on macOS /tmp is /private/tmp). */
-    private fun normalize(path: String): String =
-        try {
-            val p = Path.of(path).toAbsolutePath().normalize()
-            try {
-                p.toRealPath().toString()
-            } catch (e: IOException) {
-                p.toString()
-            }
-        } catch (e: InvalidPathException) {
-            path
-        }
+    private fun normalize(path: String): String = PhysicalPath.of(path, style)
 
     private val startOrder = compareBy<SessionFile>({ it.startedAt ?: Long.MAX_VALUE }, { it.pid })
 

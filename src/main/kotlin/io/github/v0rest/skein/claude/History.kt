@@ -1,7 +1,7 @@
 package io.github.v0rest.skein.claude
 
-import java.io.IOException
-import java.nio.file.InvalidPathException
+import io.github.v0rest.skein.paths.PathRules
+import io.github.v0rest.skein.paths.PathStyle
 import java.nio.file.Path
 
 /** The folder name Claude Code derives from a working directory: every character outside `[A-Za-z0-9]` becomes `-`. */
@@ -175,7 +175,7 @@ object SessionTitles {
  * ([ScriptedSessions]). Folder names are only a pre-filter (the slug is ambiguous); the `cwd` inside each transcript
  * decides, and a session that moved counts where it moved to. Reads per transcript are bounded and cached.
  */
-class HistoryScanner(private val home: ClaudeHome) {
+class HistoryScanner(private val home: ClaudeHome, private val style: PathStyle = PathStyle.current) {
     private class Parsed(val stamp: FileStamp, val cwd: String?, val title: String?, val continuedIn: String?, val scripted: Boolean)
 
     /**
@@ -188,11 +188,17 @@ class HistoryScanner(private val home: ClaudeHome) {
 
     /** Entries whose `cwd` equals or lies under one of [roots], newest first, without sessions that continued elsewhere in the list. */
     fun scan(roots: List<String>): Scan {
-        val rootPaths = roots.mapNotNull(::normalizedOrNull)
-        val prefixes = rootPaths.map { Slug.of(it.toString()) }
+        // a root that is no absolute path lists nothing: inside() would say no to everything under it anyway
+        val rootPaths = roots.map(::physical).filter { PathRules.isAbsolute(it, style) }.distinct()
+        // Claude Code slugs its own getcwd(), and whether that has a junction resolved is not known on Windows, so the
+        // root as written counts as a prefix too - only a pre-filter, the cwd inside the transcript decides
+        val written = roots.map { PathRules.canonical(it, style) }.filter { PathRules.isAbsolute(it, style) }
+        val prefixes = (rootPaths + written).distinct().map(Slug::of)
         val listed = home.listOrNull(home.projectsDir)
         var complete = listed != null
-        val folders = listed.orEmpty().filter { folder -> prefixes.any { folder.fileName.toString().startsWith(it) } }
+        // Windows file names compare without case, and the folder name is only a pre-filter, the cwd inside decides
+        val ignoreCase = style == PathStyle.WINDOWS
+        val folders = listed.orEmpty().filter { folder -> prefixes.any { folder.fileName.toString().startsWith(it, ignoreCase) } }
         val entries = ArrayList<HistoryEntry>()
         val scripted = HashSet<String>()
         val seen = HashSet<Path>()
@@ -209,8 +215,9 @@ class HistoryScanner(private val home: ClaudeHome) {
                 seen.add(file) // not `+=`: a Path is itself an Iterable<Path>, which makes `+=` ambiguous
                 val parsed = cache[file]?.takeIf { it.stamp == stamp } ?: parse(file, stamp).also { cache[file] = it }
                 val cwd = parsed.cwd ?: continue
-                val cwdPath = normalizedOrNull(cwd) ?: continue
-                if (rootPaths.none { cwdPath.startsWith(it) }) continue
+                // a session is listed under a project only when its cwd surely is inside a root - a doubtful one stays out
+                val cwdPath = physical(cwd)
+                if (rootPaths.none { PathRules.inside(cwdPath, it, style) }) continue
                 val sessionId = file.fileName.toString().removeSuffix(".jsonl")
                 if (parsed.scripted) scripted.add(sessionId)
                 entries += HistoryEntry(sessionId, cwd, parsed.title ?: sessionId, stamp.modifiedMillis, parsed.continuedIn, file, worktree = Worktrees.split(cwd)?.name)
@@ -263,18 +270,7 @@ class HistoryScanner(private val home: ClaudeHome) {
     private fun linesOf(bytes: ByteArray, dropFirst: Boolean = false, dropLast: Boolean = false): List<String> =
         SessionTitles.linesOf(bytes, dropFirst, dropLast)
 
-    /** The physical path when it exists: Claude Code's cwd (and so its folder slug) comes from getcwd(), which resolves symlinks. */
-    private fun normalizedOrNull(path: String): Path? =
-        try {
-            val p = Path.of(path).toAbsolutePath().normalize()
-            try {
-                p.toRealPath()
-            } catch (e: IOException) {
-                p
-            }
-        } catch (e: InvalidPathException) {
-            null
-        }
+    private fun physical(path: String): String = PhysicalPath.of(path, style, foldMissing = false)
 
     companion object {
         private val SESSION_FILE = Regex("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\\.jsonl$")

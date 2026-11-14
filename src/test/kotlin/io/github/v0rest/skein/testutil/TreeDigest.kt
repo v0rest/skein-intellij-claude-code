@@ -15,7 +15,8 @@ object TreeDigest {
             stream.asSequence()
                 .filter { it != root }
                 .map { path ->
-                    val key = path.relativeTo(root).toString()
+                    // `/` on every OS, so a test can name a file the same way everywhere
+                    val key = path.relativeTo(root).joinToString("/")
                     key to if (path.isDirectory()) "<dir>" else sha256(path.readBytes())
                 }
                 .sortedBy { it.first }

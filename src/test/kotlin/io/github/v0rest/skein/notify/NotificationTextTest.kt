@@ -1,5 +1,6 @@
 package io.github.v0rest.skein.notify
 
+import io.github.v0rest.skein.claude.ClaudeLocator
 import io.github.v0rest.skein.claude.WaitReason.OTHER
 import io.github.v0rest.skein.claude.WaitReason.PERMISSION
 import io.github.v0rest.skein.claude.WaitReason.QUESTION
@@ -131,4 +132,28 @@ class NotificationTextTest {
     @Test
     fun missingStatusFilesNamesTheVersion() =
         assertEquals("Skein could not read session status. Check that claude starts in the IDE terminal and is Claude Code 2.1.0 or newer.", NotificationText.missingStatusFiles("2.1.0"))
+
+    @Test
+    fun theMissingStatusFilesTextHintsAtTheInstallersFolderWhenOnlyThatHoldsClaude() {
+        val text = NotificationText.missingStatusFiles("2.1.162", ClaudeLocator.Result.OnlyInInstallerFolder("C:\\Users\\skein\\.local\\bin"))
+        assertTrue(text, text.contains("claude may not start in the IDE's terminal, because C:\\Users\\skein\\.local\\bin is not on the PATH the IDE was started with"))
+        assertTrue(text, text.contains("user PATH and restart the IDE (and JetBrains Toolbox, if it started the IDE)"))
+        // the other cause stays in the text
+        assertTrue(text, text.endsWith("Check that claude starts in the IDE terminal and is Claude Code 2.1.162 or newer."))
+    }
+
+    @Test
+    fun aFolderNameIsEscapedInTheBalloon() {
+        val text = NotificationText.missingStatusFiles("2.1.162", ClaudeLocator.Result.OnlyInInstallerFolder("C:\\Users\\R&D\\.local\\bin"))
+        assertTrue(text, text.contains("C:\\Users\\R&amp;D\\.local\\bin"))
+        assertFalse(text, text.contains("R&D"))
+    }
+
+    @Test
+    fun theMissingStatusFilesTextOtherwiseAsksToCheckClaude() {
+        val expected = "Skein could not read session status. Check that claude starts in the IDE terminal and is Claude Code 2.1.162 or newer."
+        assertEquals(expected, NotificationText.missingStatusFiles("2.1.162"))
+        assertEquals(expected, NotificationText.missingStatusFiles("2.1.162", ClaudeLocator.Result.OnPath))
+        assertEquals(expected, NotificationText.missingStatusFiles("2.1.162", ClaudeLocator.Result.NotFound))
+    }
 }

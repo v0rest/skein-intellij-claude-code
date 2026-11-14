@@ -27,6 +27,7 @@ import io.github.v0rest.skein.claude.SessionSnapshot
 import io.github.v0rest.skein.claude.Worktrees
 import io.github.v0rest.skein.claude.liveIn
 import io.github.v0rest.skein.git.GitToplevel
+import io.github.v0rest.skein.paths.PathRules
 import io.github.v0rest.skein.threads.ResumeOutcome
 import io.github.v0rest.skein.threads.SessionMarksService
 import io.github.v0rest.skein.threads.SkeinThread
@@ -296,7 +297,7 @@ class HistoryPanel(private val project: Project, private val scope: CoroutineSco
                 null
             }
         }
-        return (folders.all + worktreeParents).distinct()
+        return (folders.all + worktreeParents).distinctBy { PathRules.key(it) }
     }
 
     /** The sessions held by a thread in any open project; cheap, and safe on the EDT. */

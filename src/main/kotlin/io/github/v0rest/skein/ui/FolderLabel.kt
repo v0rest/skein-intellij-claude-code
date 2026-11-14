@@ -1,5 +1,8 @@
 package io.github.v0rest.skein.ui
 
+import io.github.v0rest.skein.paths.PathRules
+import io.github.v0rest.skein.paths.PathStyle
+
 /** The grey note a plain thread's row carries when the thread runs in a folder inside the project, as New Thread Here starts it. */
 object FolderLabel {
     /**
@@ -7,13 +10,9 @@ object FolderLabel {
      * folder inside the base other than the base itself. Null for the base, for a folder outside it (a content root of
      * its own is named after its folder already) and while the row's [shownName] already is that path.
      */
-    fun of(shownName: String, folder: String, base: String?): String? {
-        val b = base?.let(::normalize) ?: return null
-        val f = normalize(folder)
-        val inside = if (b == "/") "/" else "$b/"
-        if (f == b || !f.startsWith(inside)) return null
-        return f.removePrefix(inside).takeIf { it != shownName }
+    fun of(shownName: String, folder: String, base: String?, style: PathStyle = PathStyle.current): String? {
+        val b = base ?: return null
+        val relative = PathRules.relative(folder, b, style)?.takeIf { it.isNotEmpty() } ?: return null
+        return relative.takeIf { it != shownName }
     }
-
-    private fun normalize(path: String): String = if (path.length > 1) path.trimEnd('/') else path
 }

@@ -5,13 +5,14 @@ import io.github.v0rest.skein.claude.SessionFile
 import io.github.v0rest.skein.claude.SessionSnapshot
 import io.github.v0rest.skein.claude.Worktrees
 import io.github.v0rest.skein.claude.liveIn
+import io.github.v0rest.skein.paths.PathRules
+import io.github.v0rest.skein.paths.PathStyle
 import io.github.v0rest.skein.process.ProcessId
 import io.github.v0rest.skein.process.ProcessList
 import io.github.v0rest.skein.terminal.ClaudeCommand
 import io.github.v0rest.skein.terminal.ShellsAtCommand
 import io.github.v0rest.skein.terminal.ThreadTab
 import io.github.v0rest.skein.terminal.ThreadTerminal
-import java.nio.file.Path
 import java.util.UUID
 
 /** One row of the Skein panel. */
@@ -524,7 +525,8 @@ class ThreadCoordinator(
         /** How long after typing a timed-out launch may still be matched to a late status file. */
         const val LATE_MATCH_MILLIS = 120_000L
 
-        private fun folderName(folder: String): String =
-            runCatching { Path.of(folder).fileName?.toString() }.getOrNull()?.takeIf { it.isNotBlank() } ?: folder
+        /** The last name of [folder] for a tab title, the folder itself for a root. Plain text work, so `C:/w/acme` reads the same on any OS. */
+        internal fun folderName(folder: String, style: PathStyle = PathStyle.current): String =
+            PathRules.name(folder, style).takeIf { it.isNotBlank() } ?: folder
     }
 }
