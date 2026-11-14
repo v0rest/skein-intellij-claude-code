@@ -5,6 +5,7 @@ import io.github.v0rest.skein.claude.HistoryEntry
 import io.github.v0rest.skein.claude.SessionFile
 import io.github.v0rest.skein.claude.SessionSnapshot
 import io.github.v0rest.skein.claude.WaitReason
+import io.github.v0rest.skein.paths.PathRules
 import io.github.v0rest.skein.process.HangUp
 import io.github.v0rest.skein.process.ProcessId
 import io.github.v0rest.skein.terminal.ClaudeCommand
@@ -1101,7 +1102,8 @@ class ThreadCoordinatorTest {
     fun resumingAWorktreeEntryOpensTheTabInTheRepository() {
         val e = HistoryEntry(A, "/p/.claude/worktrees/feat-x", "title", 0, null, worktree = "feat-x")
         assertEquals(ResumeOutcome.Opened("t1"), coordinator.resume(e, snap(), now = 1_000))
-        assertEquals("/p", terminal.opened.single().folder)
+        // the repository comes from Worktrees.split, which writes it in the system's own form (`\p` on Windows)
+        assertTrue(PathRules.same("/p", terminal.opened.single().folder))
         assertEquals("title", terminal.opened.single().name)
         assertEquals(listOf("t1" to "claude --resume $A"), terminal.typed)
         assertEquals("feat-x", thread().worktree)

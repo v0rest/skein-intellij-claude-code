@@ -426,7 +426,7 @@ class WorktreeCloseFlow(
     private fun lifts(asked: Check, now: Check): WorktreeLock.Stale? = (now.view.lock as? WorktreeLock.Stale)?.takeIf { it == asked.view.lock }
 
     /** What the worktree's lock means now, as git lists [entry]; none for a worktree git does not list. Blocking. */
-    private fun lockOf(entry: GitWorktree?): WorktreeLock = entry?.let { WorktreeLock.of(it.locked, it.lockReason, probe, zone) } ?: WorktreeLock.None
+    private fun lockOf(entry: GitWorktree?): WorktreeLock = entry?.let { WorktreeLock.of(it.locked, it.lockReason, probe, zone, style) } ?: WorktreeLock.None
 
     /**
      * Everything that decides the offer, in this order: the worktree is there, no session ([settled]) and no other thread
