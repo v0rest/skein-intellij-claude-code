@@ -1,5 +1,6 @@
 package io.github.v0rest.skein.claude
 
+import io.github.v0rest.skein.paths.PathStyle
 import io.github.v0rest.skein.process.ProcessProbe
 import java.time.Instant
 import java.time.LocalDateTime
@@ -13,15 +14,18 @@ import kotlin.math.abs
 
 /**
  * The lock Claude Code puts on a worktree it makes, as `git worktree list --porcelain` shows its reason, all of it:
- * `claude session <session> (pid <pid> start <start>)`, where [start] is when that claude started, written as `ps`
- * writes it ("Tue Nov 10 08:30:41 2026"), and seen written in UTC. Seen from outside, as data git shows; Claude Code
- * can leave the lock behind when its claude ends. Any other reason, odd spacing and a reason git had to quote included,
- * is a lock someone else made.
+ * `claude session <session> (pid <pid> start <start>)` on macOS, where [start] is when that claude started, written as
+ * `ps` writes it ("Tue Nov 10 08:30:41 2026"), and seen written in UTC; on Windows `claude session <session> (pid
+ * <pid>)`, with no [start]. Seen from outside, as data git shows; Claude Code can leave the lock behind when its claude
+ * ends. Any other reason, odd spacing and a reason git had to quote included, is a lock someone else made.
  */
-data class ClaudeWorktreeLock(val session: String, val pid: Long, val start: String) {
+data class ClaudeWorktreeLock(val session: String, val pid: Long, val start: String?) {
     companion object {
-        /** One space between the words, a name and a date with no spaces or brackets at their ends, a pid of up to ten digits. */
-        private val SHAPE = Regex("""claude session ([^\s()]+) \(pid ([1-9][0-9]{0,9}) start ([^\s()]+(?: +[^\s()]+)*)\)""")
+        /**
+         * One space between the words, a name and a date with no spaces or brackets at their ends, a pid of up to ten
+         * digits; the start and the word before it are there or missing together.
+         */
+        private val SHAPE = Regex("""claude session ([^\s()]+) \(pid ([1-9][0-9]{0,9})(?: start ([^\s()]+(?: +[^\s()]+)*))?\)""")
 
         /** `ps`'s start, its day padded or not; the day of the week must fit the date. */
         private const val START_PATTERN = "EEE MMM d HH:mm:ss uuuu"
@@ -30,7 +34,8 @@ data class ClaudeWorktreeLock(val session: String, val pid: Long, val start: Str
         fun parse(reason: String?): ClaudeWorktreeLock? {
             val match = SHAPE.matchEntire(reason ?: return null) ?: return null
             val (session, pid, start) = match.destructured
-            return ClaudeWorktreeLock(session, pid.toLong(), start)
+            // a group that did not take part reads as "", and the shape never lets an empty start through otherwise
+            return ClaudeWorktreeLock(session, pid.toLong(), start.ifEmpty { null })
         }
 
         /**
@@ -63,7 +68,8 @@ sealed interface WorktreeLock {
 
     /**
      * A lock Claude Code left behind: the claude that made it has ended, its pid gone or held by a process that is
-     * neither claude nor started then. Skein may lift it, after the owner's yes.
+     * neither claude nor started then (without a start, one that is clearly not claude). Skein may lift it, after the
+     * owner's yes.
      */
     data class Stale(val lock: ClaudeWorktreeLock) : WorktreeLock
 
@@ -77,20 +83,28 @@ sealed interface WorktreeLock {
         /**
          * The lock of a worktree git lists as [locked] with [reason]. Claude Code's lock is stale when no process has its
          * pid, or when the process that has it is not that claude by both signs: its command, which the system told, is
-         * not claude ([SessionDirectoryWatcher.isClaude]), and its start, which the system told too, lies more than
-         * [START_TOLERANCE_MILLIS] from every instant the lock's start can name, read as UTC and in [zone] (the system's).
-         * Either sign vouches, as for the session files: a claude command whose start reads another time (a zone, a
-         * clock that drifted), or a process started then whose command Skein does not know as claude (a wrapper, a
-         * script). What the system does not tell, or a start that cannot be read, proves nothing. Blocking: asks [probe].
+         * another program ([SessionDirectoryWatcher.identify], by the rules of [style]), and its start, which the system
+         * told too, lies more than [START_TOLERANCE_MILLIS] from every instant the lock's start can name, read as UTC and
+         * in [zone] (the system's). Either sign vouches, as for the session files: a claude command whose start reads
+         * another time (a zone, a clock that drifted), or a process started then whose command Skein does not know as
+         * claude (a wrapper, a script). A lock without a start is Claude Code's only by the rules of Windows, where it
+         * writes no start; there the command is the only witness, so the lock is stale once the pid's process is
+         * clearly another program. On macOS and Linux Claude Code writes the start, so a reason without one is somebody
+         * else's lock there. What the system does not tell - a command, a start, node's script - or a start that cannot
+         * be read, proves nothing. Blocking: asks [probe].
          */
-        fun of(locked: Boolean, reason: String?, probe: ProcessProbe, zone: ZoneId): WorktreeLock {
+        fun of(locked: Boolean, reason: String?, probe: ProcessProbe, zone: ZoneId, style: PathStyle = PathStyle.current): WorktreeLock {
             if (!locked) return None
             val lock = ClaudeWorktreeLock.parse(reason) ?: return Foreign
+            if (lock.start == null && style != PathStyle.WINDOWS) return Foreign
             if (!probe.isAlive(lock.pid)) return Stale(lock)
-            val command = probe.command(lock.pid)
-            if (command.isEmpty() || SessionDirectoryWatcher.isClaude(command)) return Live(lock.pid)
+            when (SessionDirectoryWatcher.identify(probe.command(lock.pid), style)) {
+                ClaudeIdentity.CLI, ClaudeIdentity.UNKNOWN -> return Live(lock.pid)
+                ClaudeIdentity.OTHER -> Unit
+            }
+            val start = lock.start ?: return Stale(lock)
             val started = probe.startInstant(lock.pid) ?: return Live(lock.pid)
-            val written = startsIn(lock.start, zone).ifEmpty { return Live(lock.pid) }
+            val written = startsIn(start, zone).ifEmpty { return Live(lock.pid) }
             val sameStart = written.any { abs(it.toEpochMilli() - started.toEpochMilli()) <= START_TOLERANCE_MILLIS }
             return if (sameStart) Live(lock.pid) else Stale(lock)
         }

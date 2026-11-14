@@ -16,7 +16,10 @@ interface ProcessProbe {
     fun command(pid: Long): List<String>
 }
 
-/** [ProcessProbe] over the JDK's [ProcessHandle]; public API, works on macOS and Linux. */
+/**
+ * [ProcessProbe] over the JDK's [ProcessHandle]; public API, works on macOS, Linux and Windows. On Windows [command] is
+ * the full executable path alone - the JDK reports no arguments for any process there (checked on Windows 11).
+ */
 class JdkProcessProbe : ProcessProbe {
     override fun currentPid(): Long = ProcessHandle.current().pid()
 

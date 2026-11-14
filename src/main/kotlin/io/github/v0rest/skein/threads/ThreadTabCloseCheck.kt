@@ -13,7 +13,8 @@ import kotlinx.coroutines.CancellationException
  * Keeps Skein thread editor tabs open when the user closes them (a ×, Close, Close All, Close Others) while one of them
  * still runs its shell, until Skein has ended those threads and closes the tabs itself, in one batch
  * ([TerminalAdapter.allowsClose], [CloseGate]): closed at once, a tab would leave its shell and claude hanging with a
- * dead terminal.
+ * dead terminal. That is macOS and Linux; on Windows the IDE ends them with the tab, and every close passes
+ * ([CloseGate.closeCanHang]).
  *
  * The IDE (2026.3, javap on 2026-11-09) asks these checks only from `FileEditorManagerImpl.closeFileWithChecks` and
  * `closeFilesWithChecks`. Those are called by the user's closes (the tab's close button, the Close and Close All family

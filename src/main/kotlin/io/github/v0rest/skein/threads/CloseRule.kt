@@ -1,8 +1,9 @@
 package io.github.v0rest.skein.threads
 
 /**
- * When closing a thread's tab could end a claude in the middle of something, so Close asks first. Close hangs up the
- * thread's claude right away ([CloseSequence]) and nothing in the IDE asks about a Skein editor tab, so the thread menu
+ * When closing a thread's tab could end a claude in the middle of something, so Close asks first. Close ends the
+ * thread's claude right away - Skein hangs it up on macOS and Linux ([CloseSequence]), the IDE ends it with the tab on
+ * Windows - and nothing in the IDE asks about a Skein editor tab, so the thread menu
  * asks for every busy thread, and right before the close the coordinator leaves open a thread that turned busy after
  * that question. The editor tab's own × asks nothing: closing it was the user's own act.
  */

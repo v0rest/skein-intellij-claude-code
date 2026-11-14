@@ -1,5 +1,7 @@
 package io.github.v0rest.skein.claude
 
+import io.github.v0rest.skein.paths.PathStyle
+import io.github.v0rest.skein.testutil.Fixture
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -119,5 +121,29 @@ class SessionFileParserTest {
         assertEquals(null, f.cwd)
         assertEquals(null, f.sessionId)
         assertEquals(null, f.statusUpdatedAt)
+        assertEquals(null, f.pidDomain)
+    }
+
+    /**
+     * A status file as Claude Code writes it on Windows: a backslash cwd, procStart as a FILETIME in decimal, and
+     * pidDomain, which says the pid is a Windows one.
+     */
+    @Test
+    fun readsAWindowsStatusFile() {
+        val cwd = Fixture.root("w/demo-shop", PathStyle.WINDOWS)
+        val f = ok(
+            """{"pid":4528,"sessionId":"55555555-5555-4555-8555-555555555555","cwd":"${Fixture.jsonEscaped(cwd)}",""" +
+                """"startedAt":1794609670211,"procStart":"134390832698011131","version":"2.1.325","peerProtocol":1,""" +
+                """"kind":"interactive","entrypoint":"cli","pidDomain":"win32:acme-pc","status":"idle"}""",
+        )
+        assertEquals("C:\\w\\demo-shop", f.cwd)
+        assertEquals("134390832698011131", f.procStart)
+        assertEquals("win32:acme-pc", f.pidDomain)
+        assertEquals(1794609670211L, f.startedAt)
+    }
+
+    @Test
+    fun aPidDomainThatIsNotAStringReadsAsAbsent() {
+        assertEquals(null, ok("""{"pid":7,"status":"idle","pidDomain":5}""").pidDomain)
     }
 }

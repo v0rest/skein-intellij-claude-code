@@ -1,5 +1,6 @@
 package io.github.v0rest.skein.process
 
+import io.github.v0rest.skein.testutil.Fixture
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -50,6 +51,22 @@ class HangUpTest {
             assertEquals(129, sleeper.exitValue())
         } finally {
             sleeper.destroyForcibly()
+        }
+    }
+
+    /**
+     * On Windows the IDE ends claude and its shell itself when a tab closes, so Skein sends nothing there - a
+     * live process gets no hang-up and goes on running, and the close does not wait for it.
+     */
+    @Test
+    fun onWindowsNothingIsSent() {
+        Fixture.assumeWindows("the hang-up is only skipped on Windows; elsewhere this would signal the process")
+        val pinger = ProcessBuilder("ping.exe", "-n", "30", "127.0.0.1").redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
+        try {
+            assertFalse(LibcHangUp().hangUp(pinger.pid()))
+            assertFalse("the process ended though nothing was sent", pinger.waitFor(500, TimeUnit.MILLISECONDS))
+        } finally {
+            pinger.destroyForcibly()
         }
     }
 }

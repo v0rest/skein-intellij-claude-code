@@ -21,6 +21,8 @@ fun waitReasonOf(waitingFor: String?): WaitReason = when (waitingFor) {
 /**
  * One `sessions/<pid>.json` file as Claude Code 2.1.x writes it; only the fields Skein uses. [nameDerived] is true when
  * Claude Code made the [name] up itself (`nameSource: "derived"`, such as "acme-c8") because nobody named the session.
+ * [procStart] is when the process started, `ps`'s local-time text on macOS and Linux and a FILETIME in decimal on
+ * Windows; [pidDomain] says whose pid [pid] is, "win32:<host>" on Windows, and is missing from older files.
  */
 data class SessionFile(
     val pid: Long,
@@ -36,6 +38,7 @@ data class SessionFile(
     val version: String?,
     val kind: String?,
     val nameDerived: Boolean = false,
+    val pidDomain: String? = null,
 )
 
 sealed interface SessionFileParse {
@@ -70,6 +73,7 @@ object SessionFileParser {
                 version = obj.stringOrNull("version"),
                 kind = obj.stringOrNull("kind"),
                 nameDerived = obj.stringOrNull("nameSource") == "derived",
+                pidDomain = obj.stringOrNull("pidDomain"),
             ),
         )
     }
