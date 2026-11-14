@@ -1,5 +1,6 @@
 package io.github.v0rest.skein.claude
 
+import io.github.v0rest.skein.testutil.Fixture
 import io.github.v0rest.skein.testutil.TreeDigest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -94,28 +95,33 @@ class ClaudeHomeTest {
         assertNull(home().stamp(root().resolve("sessions/2.json")))
     }
 
+    // the roots below come from Fixture - /opt/claude-cfg on Unix, C:\opt\claude-cfg on Windows, where "/opt/..." is
+    // no absolute folder and resolveRoot would rightly pass it over
+    private val userFolder = Fixture.root("Users/u")
+
     @Test
     fun resolveRootUsesClaudeConfigDirWhenSet() {
-        val root = ClaudeHome.resolveRoot(mapOf("CLAUDE_CONFIG_DIR" to "/opt/claude-cfg"), userHome = "/Users/u")
-        assertEquals(Path.of("/opt/claude-cfg"), root)
+        val root = ClaudeHome.resolveRoot(mapOf("CLAUDE_CONFIG_DIR" to Fixture.root("opt/claude-cfg")), userHome = userFolder)
+        assertEquals(Fixture.path("opt/claude-cfg"), root)
     }
 
     @Test
     fun resolveRootPrefersTheShellEnvironment() {
-        val root = ClaudeHome.resolveRoot(shellEnv = mapOf("CLAUDE_CONFIG_DIR" to "/from/zshrc"), processEnv = mapOf("CLAUDE_CONFIG_DIR" to "/from/dock"), userHome = "/Users/u")
-        assertEquals(Path.of("/from/zshrc"), root)
-        assertEquals(Path.of("/from/dock"), ClaudeHome.resolveRoot(shellEnv = emptyMap(), processEnv = mapOf("CLAUDE_CONFIG_DIR" to "/from/dock"), userHome = "/Users/u"))
+        val fromShell = mapOf("CLAUDE_CONFIG_DIR" to Fixture.root("from/zshrc"))
+        val fromDock = mapOf("CLAUDE_CONFIG_DIR" to Fixture.root("from/dock"))
+        assertEquals(Fixture.path("from/zshrc"), ClaudeHome.resolveRoot(shellEnv = fromShell, processEnv = fromDock, userHome = userFolder))
+        assertEquals(Fixture.path("from/dock"), ClaudeHome.resolveRoot(shellEnv = emptyMap(), processEnv = fromDock, userHome = userFolder))
     }
 
     @Test
     fun resolveRootFallsBackToUserHome() {
-        assertEquals(Path.of("/Users/u/.claude"), ClaudeHome.resolveRoot(emptyMap(), userHome = "/Users/u"))
+        assertEquals(Fixture.path("Users/u/.claude"), ClaudeHome.resolveRoot(emptyMap(), userHome = userFolder))
     }
 
     @Test
     fun resolveRootIgnoresBlankOrRelativeConfigDir() {
-        assertEquals(Path.of("/Users/u/.claude"), ClaudeHome.resolveRoot(mapOf("CLAUDE_CONFIG_DIR" to "  "), userHome = "/Users/u"))
-        assertEquals(Path.of("/Users/u/.claude"), ClaudeHome.resolveRoot(mapOf("CLAUDE_CONFIG_DIR" to "cfg"), userHome = "/Users/u"))
+        assertEquals(Fixture.path("Users/u/.claude"), ClaudeHome.resolveRoot(mapOf("CLAUDE_CONFIG_DIR" to "  "), userHome = userFolder))
+        assertEquals(Fixture.path("Users/u/.claude"), ClaudeHome.resolveRoot(mapOf("CLAUDE_CONFIG_DIR" to "cfg"), userHome = userFolder))
     }
 
     @Test

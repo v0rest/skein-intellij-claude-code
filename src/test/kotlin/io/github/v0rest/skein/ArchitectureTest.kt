@@ -48,7 +48,7 @@ class ArchitectureTest {
     private fun filesContaining(vararg needles: String): List<String> =
         SourceRules.kotlinFiles(mainRoot)
             .filter { f -> SourceRules.offenders(SourceRules.codeLines(f), needles.toList()).isNotEmpty() }
-            .map { mainRoot.relativize(it).toString() }
+            .map { SourceRules.relative(mainRoot, it) }
 
     /** Skein sends nothing over the network, so no main source hands git a command that talks to a remote. */
     @Test
@@ -58,7 +58,7 @@ class ArchitectureTest {
         )
         val offenders = SourceRules.kotlinFiles(mainRoot)
             .filter { f -> talksToARemote.containsMatchIn(SourceRules.codeLines(f).joinToString("\n")) }
-            .map { mainRoot.relativize(it).toString() }
+            .map { SourceRules.relative(mainRoot, it) }
         assertEquals(emptyList<String>(), offenders)
     }
 
@@ -90,7 +90,7 @@ class ArchitectureTest {
     @Test
     fun noWriteCallsAnywhereInMain() {
         val offenders = SourceRules.kotlinFiles(mainRoot).filter { it != worktreeExcludes && it != leftoverFolder }.flatMap { f ->
-            SourceRules.offenders(SourceRules.codeLines(f), writeApis).map { "${mainRoot.relativize(f)}: $it" }
+            SourceRules.offenders(SourceRules.codeLines(f), writeApis).map { "${SourceRules.relative(mainRoot, f)}: $it" }
         }
         assertEquals(emptyList<String>(), offenders)
     }
@@ -200,7 +200,7 @@ class ArchitectureTest {
     fun skeinNeverTouchesVcsMappings() {
         val needles = listOf("ProjectLevelVcsManager", "VcsDirectoryMapping", "setDirectoryMappings", "vcs.xml")
         val offenders = SourceRules.kotlinFiles(mainRoot).flatMap { f ->
-            SourceRules.offenders(f.toFile().readLines(), needles).map { "${mainRoot.relativize(f)}: ${it.trim()}" }
+            SourceRules.offenders(f.toFile().readLines(), needles).map { "${SourceRules.relative(mainRoot, f)}: ${it.trim()}" }
         }
         assertEquals(emptyList<String>(), offenders)
     }
@@ -277,7 +277,7 @@ class ArchitectureTest {
         val readers = listOf("\"status\"", "\"ls-files\"", "\"ls-tree\"", "\"diff\"", "\"worktree\", \"remove\"")
         val status = SourceRules.kotlinFiles(mainRoot).flatMap { f ->
             SourceRules.codeLines(f).filter { line -> (line.contains(".run(") || line.contains(".bytes(")) && readers.any { line.contains(it) } }
-                .map { mainRoot.relativize(f).toString() to it }
+                .map { SourceRules.relative(mainRoot, f) to it }
         }
         assertTrue(status.toString(), status.isNotEmpty())
         assertEquals(emptyList<Pair<String, String>>(), status.filterNot { it.second.contains("NO_FSMONITOR") })
@@ -317,7 +317,7 @@ class ArchitectureTest {
         assertTrue("the trust check comes before git runs", trust in 0 until read)
         // and that view, behind the check, is the one place that makes the reader
         val made = SourceRules.kotlinFiles(mainRoot).flatMap { f ->
-            SourceRules.codeLines(f).filter { it.contains("WorktreeChangesReader(") && !it.startsWith("class ") }.map { mainRoot.relativize(f).toString() }
+            SourceRules.codeLines(f).filter { it.contains("WorktreeChangesReader(") && !it.startsWith("class ") }.map { SourceRules.relative(mainRoot, f) }
         }
         assertEquals(listOf("io/github/v0rest/skein/ui/WorktreeDiff.kt"), made)
         // the one save of the editor's documents: before the list is read, only those of files in that worktree

@@ -2,6 +2,7 @@ package io.github.v0rest.skein.testutil
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import java.nio.file.Path
 
 /** Proves the scanners used by ArchitectureTest have teeth: each rule catches the forms it is meant to catch. */
 class SourceRulesTest {
@@ -21,5 +22,12 @@ class SourceRulesTest {
     fun wordOffendersMatchWholeWordsOnly() {
         val lines = listOf("val a = bytes.copyOf(3)", "Files.copy(a, b)", "copy(a, b)", "val moved = x", "Files.move(a, b)")
         assertEquals(listOf("Files.copy(a, b)", "copy(a, b)", "Files.move(a, b)"), SourceRules.wordOffenders(lines, listOf("copy", "move")))
+    }
+
+    /** ArchitectureTest names files as `io/github/...` on every OS, Windows' own separator included. */
+    @Test
+    fun relativeNamesAreJoinedWithSlashes() {
+        assertEquals("io/github/a.kt", SourceRules.relative(Path.of("src"), Path.of("src", "io", "github", "a.kt")))
+        assertEquals("a.kt", SourceRules.relative(Path.of("src"), Path.of("src").resolve("a.kt")))
     }
 }
