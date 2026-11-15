@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.0](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.3.1...v1.4.0) (2026-11-15)
+
+
+### Features
+
+* let Rename… also rename the session in Claude Code ([#27](https://github.com/v0rest/skein-intellij-claude-code/issues/27)) ([9bb8288](https://github.com/v0rest/skein-intellij-claude-code/commit/9bb8288361b5335603e6865dee3f077735e92399))
+
+
+### Bug Fixes
+
+* keep the Skein title bar buttons in sight while the tool window is not active ([#25](https://github.com/v0rest/skein-intellij-claude-code/issues/25)) ([c67ca0f](https://github.com/v0rest/skein-intellij-claude-code/commit/c67ca0f8a23fe087b795d42de158a8a2e21c3b91))
+
 ## [1.3.1](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.3.0...v1.3.1) (2026-11-15)
 
 
