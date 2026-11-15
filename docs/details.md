@@ -389,8 +389,8 @@ claude for the end-to-end tests is a POSIX script, so those tests skip on Window
   too: that the keep-awake assertion shows up in `pmset -g assertions` and the JNA module loads, that pins, names,
   colours and done marks survive a restart, the editor-tab tint, a click on the toolbar counter and the sound. The
   refreshed tool window waits for its checks as well, the tab titles after the move into the editor and after a
-  restart, the badge while the Skein window has not been opened yet, the split "+" in the title bar and the spinner
-  in the new row.
+  restart, the badge while the Skein window has not been opened yet, "+" and the branch button in the title bar and
+  the spinner in the new row.
   The lock and speech-bubble glyphs of a waiting thread in a light theme, and at 100 % and 200 % scale side by side.
   For worktree threads: the `cwd` in the status file of a first worktree session, a restored worktree thread
   resuming into its worktree, the notice about the worktrees `.gitignore` and the exclude line on a first worktree
@@ -429,6 +429,25 @@ claude for the end-to-end tests is a POSIX script, so those tests skip on Window
   base warning, a worktree lock while its claude runs, Remove… of a leftover behind a junction at `.claude`, a claude
   started from a `subst` drive, a project opened through a junction and its History, a project under OneDrive, the
   PATH hint with `.local\bin` taken off PATH, and a run on x64 Windows.
+
+## UI tests
+
+`src/uiTest` drives a real IDE through JetBrains' Remote Robot, so a thread's life can be checked on a machine Skein
+does not build on, Windows above all. The IDE under test runs on that machine with `./gradlew runIdeForUiTests`, which
+starts it with the robot server on `127.0.0.1:8082`, in the desktop session of the person logged in there, since an IDE
+started over SSH has no windows. The tests run elsewhere with `./gradlew uiTest`, against `-ProbotUrl` or an SSH tunnel
+to that port, and they need nothing else - whatever they check on that machine, its processes, Claude Code's status
+files and git, they ask from inside the IDE. Each test opens a fresh git repository as a project and closes it again,
+and a failing one leaves a screenshot of that machine under `build/reports/ui-screenshots`. They start the user's real
+`claude` and answer its trust question for the fresh folder, but send it no prompt, so they cost no tokens. Neither
+`test` nor CI runs them.
+
+The tests check that the Skein tool window is on, that a thread started from the empty list starts claude with its
+status file and that the tab's × ends both, and that New Thread in Worktree…, from its own button, starts claude
+with the worktree as its `cwd` while the repository's `git status` stays clean. After each test they end the claude
+processes the IDE under test still has, by pid, and delete the test's repository under `skein-ci/ui-work` in the home
+folder of that machine. The title bar's buttons are reached through a click into the list first, since the new UI
+shows a tool window's title bar buttons only while it has the focus.
 
 ## Releasing
 
