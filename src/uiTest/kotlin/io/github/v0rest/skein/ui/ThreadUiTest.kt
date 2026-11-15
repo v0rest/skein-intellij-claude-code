@@ -159,7 +159,8 @@ class ThreadUiTest {
             frame.findAll(ComponentFixture::class.java, byXpath(WORKTREE_BUTTON)).isNotEmpty()
         }
         frame.find(ComponentFixture::class.java, byXpath(WORKTREE_BUTTON)).click()
-        return RemoteIde.robot.find(CommonContainerFixture::class.java, byXpath("//div[@class='MyDialog']"), Duration.ofSeconds(15))
+        // the dialog comes once Skein has read the repository's trust and git, which takes a while on a slow machine
+        return RemoteIde.robot.find(CommonContainerFixture::class.java, byXpath("//div[@class='MyDialog']"), Duration.ofSeconds(60))
     }
 
     /**
