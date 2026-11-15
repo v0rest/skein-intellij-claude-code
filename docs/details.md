@@ -11,8 +11,8 @@ outside the project folder or separate repositories inside it, it first asks whi
 area, or in the Terminal tool window when Open threads in the editor area is off in Settings | Tools | Skein, which
 also counts for the threads a restart brings back; threads already open stay where they are when you change it. A
 thread's tab can move afterwards, by Move to Editor or by dragging it between the editor and the Terminal tool window,
-and Skein follows it there, so the thread stays in the list until its tab really closes. The chevron next to it also
-offers New Thread in Worktree… (see below). New Thread Here, in the right-click menu of a folder or a file in the
+and Skein follows it there, so the thread stays in the list until its tab really closes. The branch button next to "+"
+starts New Thread in Worktree… (see below). New Thread Here, in the right-click menu of a folder or a file in the
 Project view and of an editor tab, starts a thread the same way in that folder, or in the file's folder. It shows only
 for a folder of the project on the local disk, the project folder, one of its content roots or anything inside them,
 so not on a library jar, a scratch file, a folder outside the project or a folder in a worktree, which the Worktrees
