@@ -370,6 +370,18 @@ class ArchitectureTest {
         assertEquals(emptyList<String>(), SourceRules.offenders(adapter, listOf("allowed:", "(String) -> Boolean")))
     }
 
+    /**
+     * A native library loaded through JNA stays in the IDE until it exits, so a plugin that loads one cannot be unloaded
+     * and must ask for a restart to be installed, updated or removed - or the IDE says it "didn't unload fully".
+     */
+    @Test
+    fun nativeLibrariesMeanTheRestartIsDeclared() {
+        val descriptor = Path.of("src/main/resources/META-INF/plugin.xml").toFile().readText()
+        val loadsNative = filesContaining("Native.load(").isNotEmpty()
+        assertTrue("main loads a native library, so plugin.xml needs require-restart=\"true\"",
+            !loadsNative || Regex("<idea-plugin[^>]*require-restart=\"true\"").containsMatchIn(descriptor))
+    }
+
     /** Developer smoke checks live outside the plugin, so the Marketplace build never carries them. */
     @Test
     fun noDeveloperHooksInThePlugin() {

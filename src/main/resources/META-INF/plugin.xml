@@ -1,4 +1,6 @@
-<idea-plugin>
+<!-- Skein loads native libraries through JNA (libc for the hang-up, IOKit for keep-awake), which the JVM cannot unload,
+     so the IDE cannot unload the plugin either: installing, updating or removing Skein takes a restart -->
+<idea-plugin require-restart="true">
     <id>io.github.v0rest.skein</id>
     <name>Skein - Claude Code Threads</name>
     <vendor url="https://github.com/v0rest/skein-intellij-claude-code">v0rest</vendor>

@@ -39,7 +39,8 @@ For projects opened through WSL and in Remote Development Skein turns itself off
 From the JetBrains Marketplace once Skein is listed there: Settings | Plugins | Marketplace, search for Skein. Until
 then, or for a specific version, download `skein-intellij-<version>.zip` from the
 [releases](https://github.com/v0rest/skein-intellij-claude-code/releases) and install it as it is, without unpacking,
-through Settings | Plugins | ⚙ | Install Plugin from Disk.
+through Settings | Plugins | ⚙ | Install Plugin from Disk. Installing, updating, turning off or removing Skein asks for a
+restart of the IDE, since the native libraries it loads cannot be unloaded while the IDE runs.
 
 ## Using it
 
