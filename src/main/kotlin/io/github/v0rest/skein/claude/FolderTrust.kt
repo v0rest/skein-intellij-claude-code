@@ -9,6 +9,9 @@ import io.github.v0rest.skein.paths.PathStyle
 import java.io.IOException
 import java.io.Reader
 import java.io.StringReader
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.attribute.BasicFileAttributes
 
 /** Whether Claude Code was told to trust a folder, as its global config says ([FolderTrustReader]). */
 enum class FolderTrust {
@@ -152,5 +155,133 @@ object FolderTrustReader {
             }
         }
         return if (doubt) FolderTrust.UNKNOWN else FolderTrust.NOT_TRUSTED
+    }
+}
+
+/**
+ * Whether Claude Code's input is in vim mode (`"editorMode": "vim"`), where text typed in NORMAL mode runs as commands, so
+ * Skein types no `/rename` into it ([io.github.v0rest.skein.threads.RenameGate]). Claude Code 2.1.162 and newer keep the
+ * setting in `settings.json` in its home; older ones kept it in the global config `.claude.json`
+ * ([ClaudeHome.readConfig]), read only when the home's `settings.json` does not set it. A project's
+ * `.claude/settings.json` and `.claude/settings.local.json` ([Worktrees.projectSettingsFiles]) count too, and `vim` in
+ * any of them is vim, the safe side. A file that is missing, unreadable, too large or not strict JSON says nothing, as
+ * without the setting. Lives beside the trust reader since it reads the same global config the same way: it streams
+ * through it, keeps only this one value and logs nothing. Never throws, never writes.
+ */
+object ClaudeEditorMode {
+    private const val EDITOR_MODE = "editorMode"
+    private const val VIM = "vim"
+    const val SETTINGS = "settings.json"
+    const val SETTINGS_MAX_BYTES = 1 shl 20
+
+    /**
+     * The mode the user set: the home's `settings.json` one ([settingsMode], null when it sets none) when there is one,
+     * else the global config's, which [configMode] reads only then.
+     */
+    fun userMode(settingsMode: String?, configMode: () -> String?): String? = settingsMode ?: configMode()
+
+    /** Whether the user's mode ([userMode]) or any project settings file's mode ([projectModes]) is vim. */
+    fun isVim(userMode: String?, projectModes: List<String?>): Boolean = userMode == VIM || VIM in projectModes
+
+    /** The top-level `editorMode` of a settings file's [text], or null for no file, none, or text that is not strict JSON. */
+    fun settingsMode(text: String?): String? = text?.let { modeOf(StringReader(it)) }
+
+    /**
+     * The top-level `editorMode` string of the JSON object [reader] holds, the last of two winning as in JavaScript; null
+     * when there is none or the text is not one strict JSON object. Everything else is skipped without being kept.
+     */
+    fun modeOf(reader: Reader): String? =
+        try {
+            val json = JsonReader(reader).apply { strictness = Strictness.STRICT }
+            var mode: String? = null
+            json.beginObject()
+            while (json.hasNext()) {
+                if (json.nextName() == EDITOR_MODE && json.peek() == JsonToken.STRING) mode = json.nextString() else json.skipValue()
+            }
+            json.endObject()
+            if (json.peek() != JsonToken.END_DOCUMENT) null else mode
+        } catch (e: IOException) {
+            null
+        } catch (e: RuntimeException) {
+            null
+        }
+
+    /** The size and time of [path], a file outside the Claude home too, or null when it is missing or not a regular file. */
+    internal fun stampOf(path: Path): FileStamp? =
+        try {
+            Files.readAttributes(path, BasicFileAttributes::class.java).takeIf { it.isRegularFile }?.let { FileStamp(it.size(), it.lastModifiedTime().toMillis()) }
+        } catch (e: IOException) {
+            null
+        } catch (e: RuntimeException) {
+            null
+        }
+
+    /** A project settings file's text, or null when it is missing, larger than [SETTINGS_MAX_BYTES] or not UTF-8. */
+    internal fun projectText(path: Path): String? =
+        try {
+            if (Files.isRegularFile(path) && Files.size(path) <= SETTINGS_MAX_BYTES) Files.readString(path) else null
+        } catch (e: IOException) {
+            null
+        } catch (e: RuntimeException) {
+            null
+        }
+}
+
+/**
+ * [ClaudeEditorMode] for [home] and the projects of some folders, each file read again only when its size or time
+ * changed since its last read, so a look every few seconds costs a few file stats. The global config is parsed only while
+ * the home's `settings.json` sets no mode, and then only when it changed. Blocking; one caller at a time.
+ */
+class ClaudeEditorModeWatch(private val home: ClaudeHome) {
+    /** One file's mode as last read, with the stamp it had then. */
+    private class Read(val stamp: FileStamp?, val mode: String?)
+
+    private var settings: Read? = null
+    private var config: Read? = null
+    private val projects = HashMap<Path, Read>()
+
+    /** Whether Claude Code is in vim mode for a session in any of [folders] (its project settings) or for the user. */
+    @Synchronized
+    fun vim(folders: Collection<String>): Boolean =
+        try {
+            if (projects.size > MAX_PROJECT_FILES) projects.clear()
+            val userMode = ClaudeEditorMode.userMode(userSettings()) { globalConfig() }
+            val projectModes = folders.distinct().flatMap { Worktrees.projectSettingsFiles(it) }.map { projectMode(Path.of(it)) }
+            ClaudeEditorMode.isVim(userMode, projectModes)
+        } catch (e: RuntimeException) {
+            false
+        }
+
+    private fun userSettings(): String? {
+        val path = home.root.resolve(ClaudeEditorMode.SETTINGS)
+        val stamp = home.stamp(path)
+        val last = settings
+        if (last != null && last.stamp == stamp) return last.mode
+        val mode = ClaudeEditorMode.settingsMode(home.readText(path, ClaudeEditorMode.SETTINGS_MAX_BYTES))
+        settings = Read(stamp, mode)
+        return mode
+    }
+
+    private fun globalConfig(): String? {
+        val stamp = home.configFile?.let(ClaudeEditorMode::stampOf)
+        val last = config
+        if (last != null && last.stamp == stamp) return last.mode
+        val mode = home.readConfig(FolderTrustReader.MAX_BYTES, ClaudeEditorMode::modeOf)
+        config = Read(stamp, mode)
+        return mode
+    }
+
+    private fun projectMode(path: Path): String? {
+        val stamp = ClaudeEditorMode.stampOf(path)
+        val last = projects[path]
+        if (last != null && last.stamp == stamp) return last.mode
+        val mode = ClaudeEditorMode.settingsMode(ClaudeEditorMode.projectText(path))
+        projects[path] = Read(stamp, mode)
+        return mode
+    }
+
+    private companion object {
+        /** Past this many project files remembered, the cache starts over, so it never grows without end. */
+        const val MAX_PROJECT_FILES = 256
     }
 }

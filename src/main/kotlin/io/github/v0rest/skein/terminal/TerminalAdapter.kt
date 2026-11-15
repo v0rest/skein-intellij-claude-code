@@ -5,10 +5,12 @@ import com.intellij.ide.DataManager
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionPlaces
 import com.intellij.openapi.actionSystem.ActionUiKind
+import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.actionSystem.PlatformDataKeys
 import com.intellij.openapi.actionSystem.ex.ActionUtil
+import com.intellij.openapi.actionSystem.ex.AnActionListener
 import com.intellij.openapi.actionSystem.impl.SimpleDataContext
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.EDT
@@ -31,6 +33,9 @@ import com.intellij.terminal.TerminalTitle
 import com.intellij.terminal.frontend.toolwindow.TerminalTabsManagerListener
 import com.intellij.terminal.frontend.toolwindow.TerminalToolWindowTab
 import com.intellij.terminal.frontend.toolwindow.TerminalToolWindowTabsManager
+import com.intellij.terminal.frontend.view.TerminalKeyEvent
+import com.intellij.terminal.frontend.view.TerminalKeyEventsListener
+import com.intellij.terminal.frontend.view.TerminalView
 import com.intellij.terminal.frontend.view.TerminalViewSessionState
 import com.intellij.ui.content.Content
 import com.intellij.ui.content.ContentManager
@@ -41,6 +46,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -49,7 +55,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.jetbrains.plugins.terminal.view.TerminalContentChangeEvent
 import org.jetbrains.plugins.terminal.view.TerminalOutputModelListener
+import java.awt.AWTEvent
 import java.awt.KeyboardFocusManager
+import java.awt.Toolkit
+import java.awt.event.AWTEventListener
 import java.awt.event.FocusAdapter
 import java.awt.event.FocusEvent
 import java.util.Collections
@@ -116,6 +125,21 @@ import javax.swing.SwingUtilities
  *   tab opened out of view has started its shell.
  * - Whether the IDE quits for sure comes from `AppLifecycleListener.appWillBeClosed` (no ApiStatus);
  *   `Application.isExitInProgress` is deprecated.
+ * - The draft guard ([DraftGuard]) hears the keys typed into a thread's tab through `TerminalView.addKeyEventsListener`
+ *   with a `TerminalKeyEventsListener` (both Experimental, javap 2026-11-15): its `beforeKeyEvent` comes for every key
+ *   press and typed key that reaches the terminal, before the terminal sends it on, with the AWT event
+ *   (`TerminalKeyEvent.getAwtEvent`, Experimental), and Skein always answers false, which leaves the key to the terminal.
+ *   The terminal's own key dispatcher (TerminalEventDispatcher, javap 2026-11-15) hands the shortcuts of a list of
+ *   actions to the IDE instead, and those never reach the listener: paste (`Terminal.Paste`, `Terminal.PasteFromHistory`),
+ *   Escape (`Terminal.Escape`) and the completion inserts among them. So `AnActionListener.beforeActionPerformed` (no
+ *   ApiStatus) on the application bus marks the tab dirty for an action run with that tab's view as
+ *   `TerminalView.DATA_KEY`, unless it only looks ([DraftGuard.touchesInput]); the context menu's Paste comes that way
+ *   too; `DATA_KEY` holds the very view the tab has (TerminalViewImpl puts itself there, javap 2026-11-15). An input
+ *   method's text comes as `InputMethodEvent`s on whichever editor the terminal shows, the alternate screen's included,
+ *   so one app-wide `Toolkit.addAWTEventListener` for them ([composedText]) marks the tab whose view component holds the
+ *   event's source. A file dropped on the tab reaches none of these, and neither does text another tool puts into claude.
+ * - `/rename` goes through `TerminalView.createSendTextBuilder` (Experimental) with `shouldExecute`, in
+ *   [ClaudeRename.send] alone ([sendRename]).
  */
 class TerminalAdapter(
     private val project: Project,
@@ -164,6 +188,24 @@ class TerminalAdapter(
         /** The tab's content was disposed: the tab is closed for good. */
         @Volatile
         var disposed = false
+
+        /** The tab's terminal view, set on the EDT once the tab exists. */
+        @Volatile
+        var view: TerminalView? = null
+
+        /**
+         * What the key watch knows of claude's input in the tab ([DraftGuard]), changed on the EDT only; null while the tab
+         * is not watched (not set up yet, or the watch could not be added), which never counts as clean.
+         */
+        @Volatile
+        var draft: DraftGuard.Draft? = null
+
+        /**
+         * The Enter, by its [DraftGuard.Draft.sentAt], that a turn seen right after it showed sent the draft
+         * ([DraftGuard.proven], [claudeSeen]); null before any. Written from one thread at a time.
+         */
+        @Volatile
+        var provenSentAt: Long? = null
     }
 
     /** Where a tab is now ([locate]): [file] for [TabPlaces.Where.EDITOR], [content] for [TabPlaces.Where.TERMINAL_WINDOW]. */
@@ -183,6 +225,26 @@ class TerminalAdapter(
     /** The IDE quits for sure (its own exit checks passed); set once, never cleared. */
     @Volatile
     private var appClosing = false
+
+    /** The threads whose claude is idle, where an Enter on a draft may send it, as Skein last saw them ([claudeSeen]). */
+    @Volatile
+    private var enterMaySend: Set<String> = emptySet()
+
+    /**
+     * An input method's text (a CJK input method, an accent picked from a menu) in any thread's tab, whichever editor the
+     * terminal shows: it marks that tab as typed into. Called on the EDT for every input method event in the IDE, so it
+     * does nothing but find the tab whose view holds the event's source.
+     */
+    private val composedText = AWTEventListener { event ->
+        try {
+            if (!ComposedText.counts(event.id)) return@AWTEventListener
+            val handle = ComposedText.holderOf(event.source, handles.values) { it.view?.component }
+            if (handle != null) onKey(handle, DraftGuard.Key.OTHER)
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            LOG.warn("Skein could not tell which thread an input method typed into", e)
+        }
+    }
 
     /** Selections Skein causes itself (opening, moving, reselecting, closing) are not the user opening a thread. */
     private val own = OwnSelections(QUIET_AFTER_PROGRAMMATIC_MILLIS, ::monotonicMillis)
@@ -237,6 +299,25 @@ class TerminalAdapter(
             object : ProjectCloseListener {
                 override fun projectClosing(project: Project) {
                     if (project == this@TerminalAdapter.project) projectClosing = true
+                }
+            },
+        )
+        Toolkit.getDefaultToolkit().addAWTEventListener(composedText, AWTEvent.INPUT_METHOD_EVENT_MASK)
+        scope.coroutineContext[Job]?.invokeOnCompletion { Toolkit.getDefaultToolkit().removeAWTEventListener(composedText) }
+        ApplicationManager.getApplication().messageBus.connect(scope).subscribe(
+            AnActionListener.TOPIC,
+            object : AnActionListener {
+                // a paste or Escape in a thread's tab is an IDE action, which the key watch never hears
+                override fun beforeActionPerformed(action: AnAction, event: AnActionEvent) {
+                    try {
+                        val view = event.getData(TerminalView.DATA_KEY) ?: return
+                        val handle = handles.values.firstOrNull { it.view === view } ?: return
+                        if (DraftGuard.touchesInput(ActionManager.getInstance().getId(action))) onKey(handle, DraftGuard.Key.OTHER)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        LOG.warn("Skein could not tell whether an action changed the input of a thread", e)
+                    }
                 }
             },
         )
@@ -308,6 +389,7 @@ class TerminalAdapter(
                     LOG.warn("Skein could not name the tab of thread $threadId", e)
                 }
                 watchFocus(threadId, tab)
+                watchKeys(handle, tab)
                 if (!toEditor) {
                     stayInTerminalWindow(handle, tab.content, focus, selectedBefore)
                     return@launch
@@ -388,6 +470,47 @@ class TerminalAdapter(
                 }
             },
         )
+    }
+
+    /**
+     * Follows the keys typed into the tab for the draft guard ([DraftGuard]), for as long as the tab's content lives,
+     * wherever it goes (an input method's text comes through [composedText]). The tab starts dirty until the first turn the person starts
+     * ([DraftGuard.LAUNCHED]). A tab whose watch cannot be added stays unwatched and never counts as clean. EDT only.
+     */
+    private fun watchKeys(handle: Handle, tab: TerminalToolWindowTab) {
+        try {
+            val view = tab.view
+            handle.view = view
+            view.addKeyEventsListener(
+                tab.content,
+                object : TerminalKeyEventsListener {
+                    override fun beforeKeyEvent(event: TerminalKeyEvent): Boolean {
+                        try {
+                            val key = event.awtEvent
+                            onKey(handle, DraftGuard.classify(key.id, key.keyCode, key.keyChar, key.modifiersEx))
+                        } catch (e: Exception) {
+                            // a key the guard could not read may have left a draft
+                            handle.draft = handle.draft?.let { DraftGuard.next(it, DraftGuard.Key.OTHER, enterMaySend = false, at = monotonicMillis(), wallAt = System.currentTimeMillis()) }
+                            if (e is CancellationException) throw e
+                            LOG.warn("Skein could not read a key typed into thread ${handle.id}", e)
+                        }
+                        // never takes the key: the terminal sends it on as always
+                        return false
+                    }
+                },
+            )
+            handle.draft = DraftGuard.LAUNCHED
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            LOG.warn("Skein cannot follow the keys typed into thread ${handle.id}, so it types no rename there", e)
+        }
+    }
+
+    /** One key or input-changing action in [handle]'s tab, for the draft guard, after what claude did meanwhile. EDT only. */
+    private fun onKey(handle: Handle, key: DraftGuard.Key) {
+        val draft = DraftGuard.settled(handle.draft ?: return, handle.provenSentAt)
+        handle.draft = DraftGuard.next(draft, key, enterMaySend = handle.id in enterMaySend, at = monotonicMillis(), wallAt = System.currentTimeMillis())
     }
 
     /**
@@ -602,6 +725,9 @@ class TerminalAdapter(
             }
             // right before the text goes, off the EDT: the tab's shell, which printed the prompt, is among them
             handle.shellsAtCommand = shellsNow(handle)
+            // the claude this starts may ask something first while its status already says idle, so the tab is dirty until
+            // the first turn the person starts (back on the EDT, where the keys arrive too)
+            handle.draft?.let { handle.draft = DraftGuard.LAUNCHED }
             view.sendText(command + "\n")
         }
     }
@@ -915,6 +1041,50 @@ class TerminalAdapter(
         if (!replayFailed) LOG.warn("Skein could not close the other files of a close it held for its threads; they stay open", e)
         replayFailed = true
     }
+
+    override fun inputClean(tab: ThreadTab): Boolean {
+        val handle = tab as Handle
+        return DraftGuard.inputClean(handle.draft, handle.provenSentAt, monotonicMillis())
+    }
+
+    override fun claudeSeen(enterMaySend: Set<String>, atWorkSince: Map<String, Long>) {
+        this.enterMaySend = enterMaySend
+        for ((id, since) in atWorkSince) {
+            val handle = handles[id] ?: continue
+            handle.provenSentAt = DraftGuard.proven(handle.draft, since, handle.provenSentAt)
+        }
+    }
+
+    /**
+     * Checks on the EDT, asks [stillIdle] off it, then checks again, asks [beforeSend] whether the rename still waits and
+     * sends in one turn of the EDT, where the keys typed into the tab arrive too and the Rename dialog applies its answer,
+     * so neither a key nor a newer answer can slip in between the last look and the line. Any modality, like the other
+     * look-ups here: a dialog open elsewhere in the IDE takes no keys from the tab.
+     */
+    override suspend fun sendRename(tab: ThreadTab, name: String, stillIdle: () -> Boolean, beforeSend: () -> Boolean): Boolean {
+        val handle = tab as Handle
+        if (!ClaudeRename.isAllowed(name)) return false
+        val view = handle.view ?: return false
+        val edt = Dispatchers.EDT + ModalityState.any().asContextElement()
+        if (!withContext(edt) { readyForRename(handle) }) return false
+        if (!withContext(Dispatchers.IO) { stillIdle() }) return false
+        return withContext(edt) {
+            if (!readyForRename(handle)) return@withContext false
+            if (!beforeSend()) return@withContext false
+            ClaudeRename.send(view, name)
+            true
+        }
+    }
+
+    /** [ClaudeRename.tabReady] for [handle] as it is now. EDT only. */
+    private fun readyForRename(handle: Handle): Boolean =
+        ClaudeRename.tabReady(
+            disposed = handle.disposed,
+            ending = handle.endingSince != null,
+            released = handle.released,
+            running = handle.session?.value == TerminalViewSessionState.Running,
+            inputClean = inputClean(handle),
+        )
 
     override fun refreshPresentation(threadId: String) {
         val handle = handles[threadId] ?: return

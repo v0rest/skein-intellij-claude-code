@@ -4,17 +4,24 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.actionSystem.Separator
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.DumbAwareToggleAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.ui.PopupHandler
+import io.github.v0rest.skein.settings.SkeinSettings
+import io.github.v0rest.skein.terminal.ClaudeRename
 import io.github.v0rest.skein.threads.CloseRule
 import io.github.v0rest.skein.threads.DisplayNames
+import io.github.v0rest.skein.threads.RenameGate
+import io.github.v0rest.skein.threads.SessionMarks
 import io.github.v0rest.skein.threads.SessionMarksService
 import io.github.v0rest.skein.threads.SkeinThread
 import io.github.v0rest.skein.threads.ThreadColor
 import io.github.v0rest.skein.threads.ThreadService
+import io.github.v0rest.skein.ui.RenameDialog
 import io.github.v0rest.skein.ui.ShowChanges
 import io.github.v0rest.skein.ui.WorktreeDiff
 import javax.swing.JList
@@ -30,7 +37,8 @@ sealed class RenameOutcome {
     /** OK on the pre-filled name: nothing changes, and an automatic name is not frozen into a Skein name. */
     object Keep : RenameOutcome()
 
-    data class Set(val name: String) : RenameOutcome()
+    /** [name] becomes the Skein name, and with [inClaude] it also waits to be typed into the session's claude. */
+    data class Set(val name: String, val inClaude: Boolean = false) : RenameOutcome()
 }
 
 /** The wording of the context menus, which depends on what is selected. */
@@ -54,6 +62,93 @@ object MenuState {
             existing == null && text == fallback -> RenameOutcome.Keep
             else -> RenameOutcome.Set(text)
         }
+    }
+
+    /**
+     * [renameOutcome] with the dialog's "Also rename in Claude Code" box ([inClaude]). OK on an unchanged Skein name still
+     * sends it with the box, since the name may be in Skein and not yet in Claude Code, and without the box lets go of a
+     * rename still waiting. An empty name clears only the Skein name and sends nothing, and an untouched automatic name
+     * (Claude Code's own, an AI title, the folder) is not sent either, since nobody named anything.
+     *
+     * With the box disabled ([boxDisabled], Claude Code in vim mode) the user said nothing about Claude Code: OK on an
+     * unchanged name keeps everything, a rename still waiting included, for when vim mode is gone. A new name is Skein's
+     * only, and a rename still waiting goes then, since it is for the name the new one replaced.
+     */
+    fun renameOutcome(entered: String?, fallback: String, existing: String?, inClaude: Boolean, boxDisabled: Boolean = false): RenameOutcome =
+        when (val plain = renameOutcome(entered, fallback, existing)) {
+            is RenameOutcome.Set -> plain.copy(inClaude = inClaude && !boxDisabled)
+            RenameOutcome.Keep -> if (existing != null && !boxDisabled) RenameOutcome.Set(existing, inClaude) else RenameOutcome.Keep
+            RenameOutcome.Cancel, RenameOutcome.Clear -> plain
+        }
+
+    /** What the session's names were at one moment: its Skein name and the rename waiting for Claude Code, either may be none. */
+    data class SessionNames(val skein: String?, val waiting: String?)
+
+    /**
+     * The answer of a Rename dialog that showed [shown] while the session's names were [before], given that they are
+     * [after] when it is applied. The thread service may type the waiting rename, and Claude Code's record then drop the
+     * Skein name, while the dialog is open; OK on the very text it showed then asks for nothing new, so it is Keep
+     * rather than a second rename. Otherwise as [renameOutcome] on what the dialog showed.
+     */
+    fun renameAnswer(
+        entered: String?,
+        shown: String,
+        fallback: String,
+        before: SessionNames,
+        after: SessionNames,
+        inClaude: Boolean,
+        boxDisabled: Boolean,
+    ): RenameOutcome {
+        if (entered != null && after != before && entered.trim() == shown.trim()) return RenameOutcome.Keep
+        return renameOutcome(entered, fallback, before.skein, inClaude, boxDisabled)
+    }
+
+    /** [marks] with the dialog's answer ([renameAnswer]) applied to [sessionId], judged on what [marks] hold for it now. */
+    fun applyRename(
+        marks: SessionMarks,
+        sessionId: String,
+        entered: String?,
+        shown: String,
+        fallback: String,
+        before: SessionNames,
+        inClaude: Boolean,
+        boxDisabled: Boolean,
+    ): SessionMarks {
+        val after = SessionNames(marks.names[sessionId], marks.claudeRenames[sessionId])
+        return when (val outcome = renameAnswer(entered, shown, fallback, before, after, inClaude, boxDisabled)) {
+            RenameOutcome.Cancel, RenameOutcome.Keep -> marks
+            RenameOutcome.Clear -> marks.rename(sessionId, null)
+            is RenameOutcome.Set -> marks.rename(sessionId, outcome.name, outcome.inClaude)
+        }
+    }
+
+    /** How the dialog's "Also rename in Claude Code" box starts: ticked or not, usable or not, and the words under it. */
+    data class RenameBox(val ticked: Boolean, val enabled: Boolean, val comment: String)
+
+    /**
+     * The box for a session with a rename [waiting] for Claude Code or none, the choice [remembered] from last time, and
+     * Claude Code in [vimMode] or not. It is ticked while a rename waits, also in vim mode, where it cannot be changed
+     * and its words say that the waiting rename goes once vim mode is off and that a changed or cleared name drops it.
+     */
+    fun renameBox(waiting: Boolean, remembered: Boolean, vimMode: Boolean): RenameBox = when {
+        !vimMode -> RenameBox(ticked = waiting || remembered, enabled = true, comment = HOW)
+        waiting -> RenameBox(ticked = true, enabled = false, comment = VIM_MODE_WAITING)
+        else -> RenameBox(ticked = false, enabled = false, comment = VIM_MODE)
+    }
+
+    const val HOW = "Skein types /rename into claude once it is idle and nothing was typed in its tab since your last message " +
+        "went, so claude -r shows the name too."
+
+    const val VIM_MODE = "Claude Code is in vim mode, where typed text runs as commands, so Skein types nothing into it."
+
+    const val VIM_MODE_WAITING = "Claude Code is in vim mode, where typed text runs as commands, so Skein types nothing into it " +
+        "now. The name waiting for Claude Code goes once vim mode is off; changing or clearing the name here drops it."
+
+    /** Why the box cannot be used for what was [entered] ([ClaudeRename.refusal]); null when it can, or nothing would be sent. */
+    fun claudeNameProblem(entered: String, fallback: String, existing: String?, inClaude: Boolean): String? {
+        val outcome = renameOutcome(entered, fallback, existing, inClaude) as? RenameOutcome.Set ?: return null
+        if (!outcome.inClaude) return null
+        return ClaudeRename.refusal(outcome.name)?.let { "$it Untick the box to use this name in Skein only." }
     }
 }
 
@@ -87,24 +182,40 @@ object CloseQuestion {
     }
 }
 
-/** Asks for a Skein name; null when cancelled, blank to clear the name. */
-internal fun askSkeinName(project: Project, current: String): String? = Messages.showInputDialog(
-    project,
-    "Name shown in Skein. Leave it empty to go back to the usual name.\nclaude -r keeps Claude Code's own name.",
-    "Rename",
-    null,
-    current,
-    null,
-)
-
-/** Asks for a Skein name for [sessionId] and applies the answer; [fallback] is the name shown when it has none. */
-internal fun renameSession(project: Project, marks: SessionMarksService, sessionId: String, fallback: String) {
-    val existing = marks.marks.value.names[sessionId]
-    when (val outcome = MenuState.renameOutcome(askSkeinName(project, existing ?: fallback), fallback, existing)) {
-        RenameOutcome.Cancel, RenameOutcome.Keep -> Unit
-        RenameOutcome.Clear -> marks.update { it.rename(sessionId, null) }
-        is RenameOutcome.Set -> marks.update { it.rename(sessionId, outcome.name) }
+/**
+ * Asks for a name for [sessionId] ([RenameDialog]) and applies the answer; [fallback] is the name shown when it has no
+ * Skein name, [folders] where the session's claude runs, whose project settings may put Claude Code in vim mode. The
+ * vim mode is read from files off the EDT first, and only the dialog comes back to it.
+ */
+internal fun renameSession(project: Project, marks: SessionMarksService, sessionId: String, fallback: String, folders: List<String>) {
+    ApplicationManager.getApplication().executeOnPooledThread {
+        if (project.isDisposed) return@executeOnPooledThread
+        val vimMode = ThreadService.getInstance(project).claudeInVimMode(folders)
+        ApplicationManager.getApplication().invokeLater(
+            { askAndRename(project, marks, sessionId, fallback, vimMode) },
+            ModalityState.defaultModalityState(),
+            project.disposed,
+        )
     }
+}
+
+/**
+ * The dialog and its answer, on the EDT. The box starts as [MenuState.renameBox] says: ticked when a rename still waits
+ * for Claude Code, else as it was last left, and greyed out in [vimMode], ticked while a rename waits, where the choice
+ * it was last left with is kept for later. With it the name also waits to be typed into the session's claude, which the thread service does once that is
+ * safe. The answer is applied to the marks as they are once the dialog closed ([MenuState.applyRename]), since the
+ * service may have typed the waiting rename meanwhile.
+ */
+private fun askAndRename(project: Project, marks: SessionMarksService, sessionId: String, fallback: String, vimMode: Boolean) {
+    val current = marks.marks.value
+    val before = MenuState.SessionNames(current.names[sessionId], current.claudeRenames[sessionId])
+    val shown = before.skein ?: fallback
+    val settings = SkeinSettings.getInstance().state
+    val box = MenuState.renameBox(waiting = before.waiting != null, remembered = settings.renameInClaude, vimMode = vimMode)
+    val dialog = RenameDialog(project, shown, box, fallback, before.skein)
+    if (!dialog.showAndGet()) return
+    if (box.enabled) settings.renameInClaude = dialog.inClaude
+    marks.update { MenuState.applyRename(it, sessionId, dialog.entered, shown, fallback, before, dialog.inClaude, boxDisabled = !box.enabled) }
 }
 
 /** The right-click menu of the thread list: pin, rename, colour, a worktree thread's Show Changes and close. */
@@ -141,7 +252,7 @@ class ThreadMenu(private val project: Project, private val list: JList<SkeinThre
         override fun actionPerformed(e: AnActionEvent) {
             val thread = selected().singleOrNull() ?: return
             val sessionId = thread.sessionId ?: return
-            renameSession(project, marks, sessionId, fallback = thread.name)
+            renameSession(project, marks, sessionId, fallback = thread.name, folders = RenameGate.folders(thread))
         }
     }
 

@@ -3,7 +3,6 @@ package io.github.v0rest.skein.ui
 import com.intellij.remoterobot.fixtures.CommonContainerFixture
 import com.intellij.remoterobot.fixtures.ComponentFixture
 import com.intellij.remoterobot.search.locators.byXpath
-import com.intellij.remoterobot.utils.keyboard
 import com.intellij.remoterobot.utils.waitFor
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -49,7 +48,7 @@ class ThreadUiTest {
     fun aNewThreadStartsClaudeAndItsTabsCloseEndsIt() {
         val before = RemoteIde.claudePids()
         val frame = RemoteIde.frame(project)
-        startClaudeFromTheEmptyList(frame)
+        RemoteIde.startClaudeFromTheEmptyList(project)
 
         var started = emptySet<Long>()
         waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "a new claude.exe") {
@@ -58,7 +57,7 @@ class ThreadUiTest {
         }
         val pid = started.single()
         // a fresh folder: claude asks whether to trust it first, and writes no status file while it asks
-        acceptTheTrustDialog()
+        RemoteIde.acceptTheTrustQuestion(project)
         waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "the status file of claude $pid") { pid in RemoteIde.sessionPids() }
 
         closeTheThreadsTab(frame)
@@ -81,7 +80,7 @@ class ThreadUiTest {
         val name = "ui-task"
         val field = dialog.find(ComponentFixture::class.java, byXpath("//div[@class='JBTextField' or @class='JTextField' or @class='ExtendableTextField']"))
         field.click()
-        RemoteIde.robot.keyboard { hotKey(java.awt.event.KeyEvent.VK_CONTROL, java.awt.event.KeyEvent.VK_A); enterText(name) }
+        RemoteIde.replaceTextWith(name)
         dialog.find(ComponentFixture::class.java, byXpath("//div[@class='JButton' and @text='OK']")).click()
 
         val worktree = RemoteIde.child(repo, ".claude", "worktrees", name)
@@ -107,7 +106,7 @@ class ThreadUiTest {
     @Test
     fun aThreadInAFreshFolderShowsTheTrustQuestionOnItsRowUntilItIsAnswered() {
         val before = RemoteIde.claudePids()
-        val list = startClaudeFromTheEmptyList(RemoteIde.frame(project))
+        val list = RemoteIde.startClaudeFromTheEmptyList(project)
         var started = emptySet<Long>()
         waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "a new claude.exe") {
             started = RemoteIde.claudePids() - before
@@ -118,7 +117,7 @@ class ThreadUiTest {
         waitFor(Duration.ofSeconds(90), Duration.ofSeconds(1), "the row saying claude asks about trust") { rowSays(list, ASKS_TRUST) }
         assertTrue("claude $pid wrote its status file before the answer", pid !in RemoteIde.sessionPids())
 
-        acceptTheTrustDialog()
+        RemoteIde.acceptTheTrustQuestion(project)
         waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "the status file of claude $pid") { pid in RemoteIde.sessionPids() }
         waitFor(Duration.ofSeconds(30), Duration.ofSeconds(1), "the row past the trust question") { !rowSays(list, ASKS_TRUST) }
     }
@@ -163,52 +162,20 @@ class ThreadUiTest {
         return RemoteIde.robot.find(CommonContainerFixture::class.java, byXpath("//div[@class='MyDialog']"), Duration.ofSeconds(60))
     }
 
-    /**
-     * Claude Code's "Accessing workspace" question in the thread's tab, which has the focus. Its first answer is "No,
-     * exit", so Down and Enter pick "Yes, I trust this folder" - but only once the question is on screen. Skein's row and
-     * balloon say "asks whether to trust this folder" too, and those are not the question.
-     */
-    private fun acceptTheTrustDialog() {
-        val frame = RemoteIde.frame(project)
-        waitFor(Duration.ofSeconds(30), Duration.ofSeconds(1), "claude's question about trusting the folder") {
-            frame.findAllText().any { it.text.contains("trust this folder") && !it.text.contains(ASKS_TRUST) }
-        }
-        RemoteIde.robot.keyboard {
-            key(java.awt.event.KeyEvent.VK_DOWN)
-            enter()
-        }
-    }
 
     private fun trustTheFolder(frame: CommonContainerFixture) {
         val before = RemoteIde.claudePids()
-        startClaudeFromTheEmptyList(frame)
+        RemoteIde.startClaudeFromTheEmptyList(project)
         var started = emptySet<Long>()
         waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "a new claude.exe") {
             started = RemoteIde.claudePids() - before
             started.size == 1
         }
         val pid = started.single()
-        acceptTheTrustDialog()
+        RemoteIde.acceptTheTrustQuestion(project)
         waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "the status file of claude $pid") { pid in RemoteIde.sessionPids() }
         closeTheThreadsTab(frame)
         waitFor(Duration.ofSeconds(30), Duration.ofSeconds(1), "claude $pid gone") { pid !in RemoteIde.claudePids() }
-    }
-
-    /**
-     * The "Start claude in a new tab" link of an empty list, which runs New Thread like "+" does. "+" itself sits in the
-     * title bar, which the new UI shows only while the IDE's window has the system's focus - something a robot-driven
-     * window on another machine does not reliably get - so the link is the dependable way in. Returns the list, which
-     * then shows the thread's row.
-     */
-    private fun startClaudeFromTheEmptyList(frame: CommonContainerFixture): ComponentFixture {
-        RemoteIde.toFront(project)
-        val list = frame.find(ComponentFixture::class.java, byXpath(EMPTY_LIST), Duration.ofSeconds(30))
-        // the robot reads the text the list paints, with where it painted it
-        waitFor(Duration.ofSeconds(10), Duration.ofSeconds(1), "the link in the empty list") {
-            list.findAllText().any { it.text.contains("Start claude") }
-        }
-        list.findAllText().first { it.text.contains("Start claude") }.click()
-        return list
     }
 
     private fun closeTheThreadsTab(frame: CommonContainerFixture) {

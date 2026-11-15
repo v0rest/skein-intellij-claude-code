@@ -62,7 +62,7 @@ class HistoryMenu(
 
         override fun actionPerformed(e: AnActionEvent) {
             val entry = selected().singleOrNull()?.entry ?: return
-            renameSession(project, marks, entry.sessionId, fallback = entry.title)
+            renameSession(project, marks, entry.sessionId, fallback = entry.title, folders = listOf(entry.cwd))
         }
     }
 

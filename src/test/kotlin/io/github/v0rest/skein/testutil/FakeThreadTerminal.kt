@@ -2,6 +2,7 @@ package io.github.v0rest.skein.testutil
 
 import io.github.v0rest.skein.process.ProcessList
 import io.github.v0rest.skein.terminal.ClaudeCommand
+import io.github.v0rest.skein.terminal.ClaudeRename
 import io.github.v0rest.skein.terminal.CloseOrder
 import io.github.v0rest.skein.terminal.OwnSelections
 import io.github.v0rest.skein.terminal.ShellsAtCommand
@@ -125,6 +126,30 @@ class FakeThreadTerminal : ThreadTerminal {
     override fun refreshPresentation(threadId: String) = Unit
 
     override fun rename(threadId: String, title: String) = Unit
+
+    /** The tabs whose input a test made dirty; every other tab's input is clean. */
+    val dirty = mutableSetOf<String>()
+
+    /** What the coordinator's owner last said about each thread's claude ([ThreadTerminal.claudeSeen]). */
+    var maySend: Set<String> = emptySet()
+    var atWorkSince: Map<String, Long> = emptyMap()
+
+    /** Each `/rename` that went, as the tab's id and the name. */
+    val renamed = mutableListOf<Pair<String, String>>()
+
+    override fun inputClean(tab: ThreadTab): Boolean = tab.id !in dirty
+
+    override fun claudeSeen(enterMaySend: Set<String>, atWorkSince: Map<String, Long>) {
+        maySend = enterMaySend
+        this.atWorkSince = atWorkSince
+    }
+
+    override suspend fun sendRename(tab: ThreadTab, name: String, stillIdle: () -> Boolean, beforeSend: () -> Boolean): Boolean {
+        require(ClaudeRename.isAllowed(name)) { "Skein may only type a plain name after /rename, got: $name" }
+        if (!sessionRunning(tab) || !inputClean(tab) || !stillIdle() || !beforeSend()) return false
+        renamed += tab.id to name
+        return true
+    }
 
     override fun setListener(listener: ThreadTerminalListener) {
         attached = listener

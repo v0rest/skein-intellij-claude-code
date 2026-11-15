@@ -361,13 +361,145 @@ class ArchitectureTest {
         assertTrue(saves.single(), saves.single().contains("documents.saveDocuments {") && saves.single().contains("ShowChanges.inWorktree("))
     }
 
-    /** Typing into a shell happens in one place, behind ClaudeCommand, with no way to widen what gets through. */
+    /**
+     * Skein types into a terminal in two places only: into a shell in TerminalAdapter.type, behind ClaudeCommand, and into
+     * a running claude in ClaudeRename.send, `/rename` and a name its rule let through. Neither can be widened.
+     */
     @Test
-    fun onlyTerminalAdapterTypesIntoAShell() {
-        assertEquals(listOf("io/github/v0rest/skein/terminal/TerminalAdapter.kt"), filesContaining("sendText(", "createSendTextBuilder("))
+    fun onlyTwoPlacesTypeIntoATerminal() {
+        assertEquals(
+            listOf("io/github/v0rest/skein/terminal/ClaudeRename.kt", "io/github/v0rest/skein/terminal/TerminalAdapter.kt"),
+            filesContaining("sendText(", "createSendTextBuilder(").sorted(),
+        )
         val adapter = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/terminal/TerminalAdapter.kt"))
+        assertEquals(listOf("view.sendText(command + \"\\n\")"), SourceRules.offenders(adapter, listOf("sendText(", "createSendTextBuilder(")))
         assertTrue("type() must check ClaudeCommand.isAllowed", adapter.any { it.contains("ClaudeCommand.isAllowed(command)") })
         assertEquals(emptyList<String>(), SourceRules.offenders(adapter, listOf("allowed:", "(String) -> Boolean")))
+        // the rename: one builder line, which sends the line built from a name the rule checked right before
+        val rename = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/terminal/ClaudeRename.kt"))
+        val sends = SourceRules.offenders(rename, listOf("sendText(", "createSendTextBuilder(", ".send("))
+        assertEquals(listOf("view.createSendTextBuilder().shouldExecute().send(line)"), sends)
+        val send = rename.indexOf(sends.single())
+        assertEquals("val line = line(name)", rename[send - 1])
+        assertEquals("internal fun send(view: TerminalView, name: String) {", rename[send - 2])
+        assertTrue("line() must check the rule", rename.any { it.contains("require(isAllowed(name))") })
+        // never bracketed paste or another key in front, which would change what claude takes the line for (a builder
+        // exists only where createSendTextBuilder is called, which the lines above pin)
+        assertEquals(emptyList<String>(), filesContaining("useBracketedPasteMode", "requireBracketedPasteMode", "sendEndKeyBeforeText"))
+    }
+
+    /**
+     * `/rename` is typed into a running claude from one call in TerminalAdapter.sendRename, right after its last look in
+     * the same EDT turn and the clear of the waiting mark, and the command itself is written in ClaudeRename alone. The
+     * look hands every part of the tab's state to ClaudeRename.tabReady, and the look off the EDT before it goes through
+     * RenameGate.lastLook, both unit-tested.
+     */
+    @Test
+    fun theRenameGoesFromOnePlaceRightAfterItsLastLook() {
+        assertEquals(listOf("io/github/v0rest/skein/terminal/ClaudeRename.kt"), filesContaining("\"/rename"))
+        assertEquals(listOf("io/github/v0rest/skein/terminal/TerminalAdapter.kt"), filesContaining("ClaudeRename.send(", "ClaudeRename::send"))
+        val adapter = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/terminal/TerminalAdapter.kt"))
+        val calls = SourceRules.offenders(adapter, listOf("ClaudeRename.send("))
+        assertEquals(listOf("ClaudeRename.send(view, name)"), calls)
+        val send = adapter.indexOf(calls.single())
+        // the look on the EDT, the fresh look off it, and the last look in the very EDT turn of the send, in that order -
+        // on the EDT itself, where the Rename dialog applies its answer, so the claim and the send cannot be split
+        assertEquals(
+            listOf(
+                "val edt = Dispatchers.EDT + ModalityState.any().asContextElement()",
+                "if (!withContext(edt) { readyForRename(handle) }) return false",
+                "if (!withContext(Dispatchers.IO) { stillIdle() }) return false",
+                "return withContext(edt) {",
+                "if (!readyForRename(handle)) return@withContext false",
+                "if (!beforeSend()) return@withContext false",
+            ),
+            adapter.subList(send - 6, send),
+        )
+        // the tab's look: every part of it handed to the tested rule, and nothing else decides
+        val ready = adapter.indexOf("private fun readyForRename(handle: Handle): Boolean =")
+        assertEquals(
+            listOf(
+                "ClaudeRename.tabReady(", "disposed = handle.disposed,", "ending = handle.endingSince != null,", "released = handle.released,",
+                "running = handle.session?.value == TerminalViewSessionState.Running,", "inputClean = inputClean(handle),", ")",
+            ),
+            adapter.subList(ready + 1, ready + 8),
+        )
+        val service = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/threads/ThreadService.kt"))
+        assertEquals(
+            listOf("RenameGate.lastLook(claude, mapper.startOf(claude.pid), anchor, mapper.anchorOf(claude.pid), file, sessionId, vim)"),
+            SourceRules.offenders(service, listOf("RenameGate.lastLook(", "RenameGate.stillIdle(")),
+        )
+        // a tab's input starts dirty when Skein opens it and whenever Skein starts claude in it, never clean by hand
+        assertEquals(
+            listOf("handle.draft = DraftGuard.LAUNCHED", "handle.draft?.let { handle.draft = DraftGuard.LAUNCHED }"),
+            SourceRules.offenders(adapter, listOf("DraftGuard.LAUNCHED", "DraftGuard.Draft(", "clean = true")),
+        )
+    }
+
+    /**
+     * The adapter and the service only gather what they hear and read for the rename; every decision is the tested rules'
+     * (DraftGuard, RenameGate), handed exactly these values, so gutting the glue fails here. The service's state for it
+     * is set up before its init starts the loops that use it.
+     */
+    @Test
+    fun theRenameGlueHandsEveryDecisionToTheTestedRules() {
+        val adapter = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/terminal/TerminalAdapter.kt"))
+        for (line in listOf(
+            "return DraftGuard.inputClean(handle.draft, handle.provenSentAt, monotonicMillis())",
+            "handle.provenSentAt = DraftGuard.proven(handle.draft, since, handle.provenSentAt)",
+            "this.enterMaySend = enterMaySend",
+            "val draft = DraftGuard.settled(handle.draft ?: return, handle.provenSentAt)",
+            "handle.draft = DraftGuard.next(draft, key, enterMaySend = handle.id in enterMaySend, at = monotonicMillis(), wallAt = System.currentTimeMillis())",
+            "Toolkit.getDefaultToolkit().addAWTEventListener(composedText, AWTEvent.INPUT_METHOD_EVENT_MASK)",
+            "if (!ComposedText.counts(event.id)) return@AWTEventListener",
+            "val handle = ComposedText.holderOf(event.source, handles.values) { it.view?.component }",
+            "if (handle != null) onKey(handle, DraftGuard.Key.OTHER)",
+            "if (DraftGuard.touchesInput(ActionManager.getInstance().getId(action))) onKey(handle, DraftGuard.Key.OTHER)",
+            "onKey(handle, DraftGuard.classify(key.id, key.keyCode, key.keyChar, key.modifiersEx))",
+        )) {
+            assertEquals(line, 1, adapter.count { it == line })
+        }
+        val serviceFile = mainRoot.resolve("io/github/v0rest/skein/threads/ThreadService.kt")
+        val service = SourceRules.codeLines(serviceFile)
+        for (line in listOf(
+            "val seen = RenameGate.seen(threads)",
+            "terminal.claudeSeen(seen.enterMaySend, seen.atWorkSince)",
+            "val vimMode = target != null && vimByThread[target.thread.id] == true",
+            "when (RenameGate.decide(name, target?.runsSession == true, target?.thread?.state, target?.claude != null, clean, vimMode)) {",
+            "vimByThread = latest.associate { it.id to editorMode.vim(RenameGate.folders(it)) }",
+            "stillIdle = { claudeStillIdle(claude, anchor, sessionId, RenameGate.folders(target.thread)) },",
+            "val vim = editorMode.vim(folders)",
+            "beforeSend = { SessionMarksService.getInstance(project).claimClaudeRename(sessionId, name) },",
+        )) {
+            assertEquals(line, 1, service.count { it == line })
+        }
+        // the dialog's box and answer go through the tested rules, the answer judged on the marks as they are then
+        val menu = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/ui/actions/ThreadMenu.kt"))
+        for (line in listOf(
+            "val before = MenuState.SessionNames(current.names[sessionId], current.claudeRenames[sessionId])",
+            "val box = MenuState.renameBox(waiting = before.waiting != null, remembered = settings.renameInClaude, vimMode = vimMode)",
+            "marks.update { MenuState.applyRename(it, sessionId, dialog.entered, shown, fallback, before, dialog.inClaude, boxDisabled = !box.enabled) }",
+        )) {
+            assertEquals(line, 1, menu.count { it == line })
+        }
+        val dialog = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/ui/RenameDialog.kt"))
+        for (line in listOf(
+            "private val claudeBox = JBCheckBox(\"Also rename in Claude Code\", box.ticked).apply { isEnabled = box.enabled }",
+            "get() = claudeBox.isSelected && box.enabled",
+            "cell(claudeBox).comment(box.comment)",
+        )) {
+            assertEquals(line, 1, dialog.count { it == line })
+        }
+        // property initialisers run in order with init, whose loops would otherwise meet them still unset
+        val raw = serviceFile.toFile().readLines().map { it.trim() }
+        val init = raw.indexOf("init {")
+        for (declaration in listOf(
+            "private val editorMode = ClaudeEditorModeWatch(ClaudeHome.default())", "private var vimByThread: Map<String, Boolean> = emptyMap()",
+            "private var editorModeFailed = false", "private val renamesOnTheirWay = HashSet<String>()", "private var renameLookFailed = false",
+            "private var claudeSeenFailed = false",
+        )) {
+            assertTrue(declaration, raw.indexOf(declaration) in 0 until init)
+        }
     }
 
     /**

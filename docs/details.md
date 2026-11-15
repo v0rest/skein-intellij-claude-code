@@ -87,9 +87,28 @@ tab in front closes last. A worktree thread then asks whether to keep its worktr
 button. A worktree thread's menu also has Show Changes, see Worktree threads.
 Right-click a history row to open it, pin it, rename it or mark it done. Pinned
 threads and pinned sessions come first, in the threads and in the history. Pins, names, colours and done marks are
-Skein's own, kept by the IDE in the project's workspace file; Skein never writes them into the session or anything
-under the Claude home, so `claude -r` in a terminal still shows Claude Code's own name. The editor tab carries the
-thread's name, follows a rename in Skein and Claude Code's own `/rename`, and so do the panel, the notifications and
+Skein's own, kept by the IDE in the project's workspace file, and Skein never writes them into the session or anything
+under the Claude home. A name can reach Claude Code too - with Also rename in Claude Code ticked in the Rename dialog,
+which is on at first and then stays as you left it, Skein types `/rename <name>` into the session's claude the way you
+would, so `claude -r` shows the name as well, and Claude Code notes the rename in the conversation as it does for
+yours. Skein types it only while claude is idle in that tab and nothing was typed there since your last message went,
+which it knows once claude got to work right after your Enter, and a few seconds after the last key, since otherwise the
+line would answer a permission question, land in a menu such as `/config`, queue behind a turn or go to the model
+together with your draft. A paste and an answer picked with the arrows count as typing, and so does a message whose
+turn Skein sees start only more than five seconds after your Enter, or does not see at all because claude answered
+within a second, so after those the name waits for your next message. A claude Skein has just started may ask
+something before you send anything, so a fresh or resumed thread gets the name after the first message you send there.
+Two things Skein cannot see, a file dropped on the
+tab and text another tool puts into claude's input, such as an @-mention Claude Code's own IDE plugin inserts from the
+editor - in those cases send one message first or untick the box. With Claude Code in vim mode (`editorMode` in its
+settings or in the project's), where typed text runs as commands, the box is greyed out, ticked while a rename waits,
+nothing is typed, and a rename already waiting goes once vim mode is off again, unless you change or clear the name
+meanwhile. A History session gets the name once you open it and send it a message, after an IDE restart too. Because the
+tab is a shell underneath claude, such a name holds letters, digits, spaces and `- _ . , : + # /` only, up to 100
+characters, and the dialog says when a name cannot go. Once the transcript shows Claude Code took the name, Skein drops
+its own, so a later `/rename` in claude is followed again. An empty name clears only the Skein name. The editor tab
+carries the thread's name, follows a rename in Skein and Claude Code's own `/rename`, and so do the panel, the
+notifications and
 the toolbar counter. A name Claude Code made up itself because nobody named the session, such as `acme-c8`, is not
 shown, and the thread keeps the History title it was resumed under or goes by its worktree or folder. A session marked
 done leaves the history unless you turn on the eye in its header. Switched on, the eye takes the theme's accent colour
@@ -360,6 +379,15 @@ claude for the end-to-end tests is a POSIX script, so those tests skip on Window
   bytes that are not UTF-8 and a backspace included. Unit tests for the worktree tooltip too, its numbered paths, a
   long line wrapped after a `/` or at a space under its number, the fixed width only once a line wrapped, and the
   folder named from the project's folder or in full outside it.
+- Unit tests for Rename's way into Claude Code: the name rule (letters of any script, every shell character refused,
+  trimmed, 100 at most), the dialog's answer with its box (an unchanged Skein name still sent, an empty one clearing
+  only Skein's, an untouched automatic name left alone), when `/rename` is typed (every state, only the claude under the
+  tab's shell that runs that session, the draft guard's keys, a just-started claude dirty until its first turn, an Enter
+  that counts only once a turn follows it within five seconds and never with a modifier, after a `\` or while claude is
+  not idle, the pause after the last key, the actions that count as typing, every part of the last look before the line
+  goes, vim mode in either settings file), the waiting renames kept over a restart, replaced,
+  carried along with the name and pruned, and Claude Code's own record dropping the Skein name, with tripwires that
+  Skein types into a terminal in two places only and `/rename` from one call right after its last look.
 - Unit tests for the Windows rules, which run on macOS with Windows-shaped input as well - the path rules over a
   generated corpus (either separator, case, drive letters, UNC and `\\?\` paths, a `..`, names ending in a dot or a
   space, a `ſ` or a Kelvin sign that NTFS keeps apart from s and k), git's forward-slash worktree list, the FILETIME
@@ -447,17 +475,22 @@ started over SSH has no windows. The tests run elsewhere with `./gradlew uiTest`
 to that port, and they need nothing else - whatever they check on that machine, its processes, Claude Code's status
 files and git, they ask from inside the IDE. Each test opens a fresh git repository as a project and closes it again,
 and a failing one leaves a screenshot of that machine under `build/reports/ui-screenshots`. They start the user's real
-`claude` and answer its trust question for the fresh folder, but send it no prompt, so they cost no tokens. Neither
-`test` nor CI runs them.
+`claude` and answer its trust question for the fresh folder, and only the Rename tests send it a prompt, one short
+one each, so the rest cost no tokens. Neither `test` nor CI runs them.
 
 The tests check that the Skein tool window is on, that a thread started from the empty list starts claude with its
 status file and that the tab's × ends both, and that New Thread in Worktree…, from its own button, starts claude
 with the worktree as its `cwd` while the repository's `git status` stays clean. Two more check the trust question of a
 fresh folder - the thread's row says claude asks about trust until the answer, and New Thread in Worktree… warns about
-a repository nobody trusted yet. After each test they end the claude processes the IDE under test still has, by pid,
-and delete the test's repository under `skein-ci/ui-work` in the home folder of that machine. The title bar's buttons
-are reached through a click into the list first, since the new UI shows a tool window's title bar buttons only while it
-has the focus.
+a repository nobody trusted yet. Three check Rename with Also rename in Claude Code - on an idle thread the transcript
+gets the name as its custom title, and with a draft typed or text pasted into the thread's tab nothing reaches the
+transcript while it sits there. Each of them first sends claude one short prompt, since a thread's first rename waits
+for its first message, so these three cost a few tokens. After each test they end the claude
+processes the IDE under test still has, by pid, and delete the test's repository under `skein-ci/ui-work` in the home
+folder of that machine. A thread starts from the empty list's link, after indexing ended, and on a cold IDE, where the
+first click can go unheard, the link is clicked again every 15 seconds while no claude started and no row came, for up
+to a minute. The title bar's buttons are reached through a click into the list first, since the new UI shows a tool
+window's title bar buttons only while it has the focus.
 
 ## Releasing
 

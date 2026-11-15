@@ -19,7 +19,7 @@ Unofficial, for Claude Code, not affiliated with Anthropic.
 - No session waits unseen. Every thread shows whether it waits for you, finished its turn or still works, and Skein
   notifies you, plays a sound if you like and counts the threads waiting for you.
 - Every session of the project in one place. The History lists them by your name for them or Claude Code's title, and
-  you resume, pin, rename or mark them done.
+  you resume, pin, rename or mark them done - a rename can go to Claude Code too, so `claude -r` shows it as well.
 - The model and the context in use on every thread's row.
 - Parallel work in git worktrees. A worktree thread runs `claude --worktree`, its row counts changed files and commits
   not yet merged, and a kept worktree can be opened again or removed safely - Skein never forces a remove without a

@@ -39,6 +39,9 @@ class SkeinSettings : SimplePersistentStateComponent<SkeinSettings.State>(State(
 
         /** New and restored threads open in the editor area; off keeps them as tabs in the Terminal tool window. */
         var threadsInEditor by property(true)
+
+        /** The Rename dialog's "Also rename in Claude Code" box as it was last left with OK. */
+        var renameInClaude by property(true)
     }
 
     /** Told when a setting that changes how the thread list looks was changed; open panels re-apply it. */

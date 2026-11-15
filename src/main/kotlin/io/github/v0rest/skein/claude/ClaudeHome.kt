@@ -75,7 +75,7 @@ open class ClaudeHome(val root: Path, val configFile: Path? = null) {
      * than [maxBytes] (by its size, or by the bytes read, [readAtMost]) or it cannot be opened. Only that one file is opened, read-only. It holds the user's account as
      * well, so a caller keeps only what it needs from it and never logs it. Blocking.
      */
-    fun <T : Any> readConfig(maxBytes: Long, parse: (Reader) -> T?): T? {
+    open fun <T : Any> readConfig(maxBytes: Long, parse: (Reader) -> T?): T? {
         val file = configFile ?: return null
         return try {
             val attributes = Files.readAttributes(file, BasicFileAttributes::class.java)
