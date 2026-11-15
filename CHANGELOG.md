@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.3.0...v1.3.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* ask for an IDE restart on install and update, since Skein loads native libraries ([#23](https://github.com/v0rest/skein-intellij-claude-code/issues/23)) ([925246f](https://github.com/v0rest/skein-intellij-claude-code/commit/925246fb46569d88b8cb5950f44f5cf75d025be0))
+
 ## [1.3.0](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.2.0...v1.3.0) (2026-11-15)
 
 
