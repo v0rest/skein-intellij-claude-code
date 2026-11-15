@@ -6,6 +6,7 @@ import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
+import com.intellij.openapi.wm.impl.content.ToolWindowContentUi
 import com.intellij.ui.components.JBPanelWithEmptyText
 import com.intellij.ui.content.ContentFactory
 import io.github.v0rest.skein.threads.ThreadService
@@ -38,6 +39,9 @@ class SkeinToolWindowFactory : ToolWindowFactory, DumbAware {
                 val newWorktreeThread = checkNotNull(actions.getAction(NEW_WORKTREE_THREAD_ACTION_ID)) { "$NEW_WORKTREE_THREAD_ACTION_ID is not registered" }
                 // two buttons side by side, "+" and the branch, so a worktree thread is one click away too
                 toolWindow.setTitleActions(listOf(newThread, newWorktreeThread, ViewOptionsGroup()))
+                // the new UI shows header buttons only while the tool window is active or hovered; "+" is how a thread
+                // starts, so it stays in sight like the IDE's own "always show tool window header icons" setting does
+                toolWindow.component.putClientProperty(ToolWindowContentUi.DONT_HIDE_TOOLBAR_IN_HEADER, true)
             }
         }
         toolWindow.contentManager.addContent(ContentFactory.getInstance().createContent(component, null, false))
