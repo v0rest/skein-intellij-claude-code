@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.0](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.2.0...v1.3.0) (2026-11-15)
+
+
+### Features
+
+* give New Thread in Worktree its own button next to + ([#18](https://github.com/v0rest/skein-intellij-claude-code/issues/18)) ([1373cc6](https://github.com/v0rest/skein-intellij-claude-code/commit/1373cc6d0631bf107080a2a6168356318922e3e0))
+* run Skein on native Windows ([#19](https://github.com/v0rest/skein-intellij-claude-code/issues/19)) ([4a24215](https://github.com/v0rest/skein-intellij-claude-code/commit/4a242150f0c68e4b172e9068608d30453c73c5df))
+
+
+### Bug Fixes
+
+* show a thread that waits for claude's folder-trust question and warn before a worktree in an untrusted folder ([#21](https://github.com/v0rest/skein-intellij-claude-code/issues/21)) ([8b6c8cd](https://github.com/v0rest/skein-intellij-claude-code/commit/8b6c8cd3015c0f15e8648d98c61d4fc526995009))
+
 ## [1.2.0](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.1.0...v1.2.0) (2026-11-13)
 
 
