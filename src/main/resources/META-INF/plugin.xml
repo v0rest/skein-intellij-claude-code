@@ -23,10 +23,10 @@
     in use, and resuming it warns that it runs elsewhere. Until JetBrains fixes it, Skein sends claude and the tab's
     shell the hangup signal a closing terminal would send, waits up to five seconds for them to exit while the tab is
     still open, and only then closes the tab. A claude you start in a plain terminal tab, outside Skein, is still left
-    behind.</p>
-    <p>Skein adds no hooks or settings to Claude Code. Needs Claude Code 2.1.162 or newer. Tested on macOS, and Linux
-    is supported but has seen less use. Windows is not supported yet - on Windows, and for projects in WSL or Remote
-    Development, Skein turns itself off and says why. Unofficial, not affiliated with Anthropic.</p>
+    behind. On Windows the IDE ends claude itself when a tab closes, so there Skein closes the tab at once.</p>
+    <p>Skein adds no hooks or settings to Claude Code. Needs Claude Code 2.1.162 or newer. Tested on macOS, Windows
+    support is new, and Linux is supported but has seen less use. For projects in WSL or Remote Development Skein turns
+    itself off and says why. Unofficial, not affiliated with Anthropic.</p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>

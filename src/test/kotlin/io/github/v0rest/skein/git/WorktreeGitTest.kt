@@ -1,5 +1,6 @@
 package io.github.v0rest.skein.git
 
+import io.github.v0rest.skein.paths.PathStyle
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -37,7 +38,7 @@ class WorktreeGitTest {
             prunable gitdir file points to non-existent location
 
         """.trimIndent()
-        val list = WorktreeGit(FakeGit { ok(out) }).list(repo)
+        val list = WorktreeGit(FakeGit { ok(out) }, PathStyle.UNIX).list(repo)
         assertEquals(
             listOf(
                 GitWorktree("/w/acme", "main"),
@@ -71,8 +72,44 @@ class WorktreeGitTest {
                 GitWorktree("/w/acme/.claude/worktrees/acme", null, detached = true, locked = true),
                 GitWorktree("/w/acme/.claude/worktrees/gone", "worktree-gone", prunable = true),
             ),
-            WorktreeGit.parseList(out),
+            WorktreeGit.parseList(out, PathStyle.UNIX),
         )
+    }
+
+    /**
+     * git writes its paths with `/` on Windows (`C:/w/acme`), and they enter Skein here as the system writes them, so
+     * every comparison further on sees one shape; Unix paths stay as git wrote them.
+     */
+    @Test
+    fun gitsPathsComeInAsTheSystemWritesThem() {
+        val out = """
+            worktree C:/w/acme
+            HEAD 1111111111111111111111111111111111111111
+            branch refs/heads/main
+
+            worktree C:/w/acme/.claude/worktrees/task-1
+            HEAD 2222222222222222222222222222222222222222
+            branch refs/heads/worktree-task-1
+            locked claude session task-1 (pid 4528)
+
+            worktree //server/share/acme/.claude/worktrees/task-2
+            HEAD 3333333333333333333333333333333333333333
+            detached
+        """.trimIndent()
+        assertEquals(
+            listOf(
+                GitWorktree("C:\\w\\acme", "main"),
+                GitWorktree("C:\\w\\acme\\.claude\\worktrees\\task-1", "worktree-task-1", locked = true, lockReason = "claude session task-1 (pid 4528)"),
+                GitWorktree("\\\\server\\share\\acme\\.claude\\worktrees\\task-2", null, detached = true),
+            ),
+            WorktreeGit.parseList(out, PathStyle.WINDOWS),
+        )
+        assertEquals(
+            listOf("C:\\w\\acme\\.claude\\worktrees\\task-1"),
+            WorktreeGit(FakeGit { ok("worktree C:/w/acme/.claude/worktrees/task-1\nbranch refs/heads/worktree-task-1\n") }, PathStyle.WINDOWS).list(repo).map { it.path },
+        )
+        // on Unix a backslash is part of a name and stays
+        assertEquals(listOf("/w/a\\b"), WorktreeGit.parseList("worktree /w/a\\b\nbare\n", PathStyle.UNIX).map { it.path })
     }
 
     /** The lock's reason as git wrote it, Claude Code's own included, and none for a lock without one. */
@@ -96,9 +133,9 @@ class WorktreeGitTest {
         """.trimIndent()
         assertEquals(
             listOf("claude session demo (pid 9384 start Tue Nov  3 08:30:41 2026)", "\"two\\nlines\"", null),
-            WorktreeGit.parseList(out).map { it.lockReason },
+            WorktreeGit.parseList(out, PathStyle.UNIX).map { it.lockReason },
         )
-        assertTrue(WorktreeGit.parseList(out).all { it.locked })
+        assertTrue(WorktreeGit.parseList(out, PathStyle.UNIX).all { it.locked })
     }
 
     /**
@@ -119,7 +156,7 @@ class WorktreeGitTest {
         assertEquals(WorktreeListing.Failed("not a git repository"), WorktreeGit(FakeGit { GitResult(128, "", "fatal: not a git repository\n", false) }).listing(repo))
         assertEquals(WorktreeListing.Failed("git did not finish in time"), WorktreeGit(FakeGit { GitResult(-1, "", "", true) }).listing(repo))
         assertEquals(WorktreeListing.Failed("git could not be run: No such file"), WorktreeGit(FakeGit { GitResult(-1, "", "No such file", false) }).listing(repo))
-        assertEquals(WorktreeListing.Listed(listOf(GitWorktree("/w/acme", "main"))), WorktreeGit(FakeGit { ok("worktree /w/acme\nbranch refs/heads/main\n") }).listing(repo))
+        assertEquals(WorktreeListing.Listed(listOf(GitWorktree("/w/acme", "main"))), WorktreeGit(FakeGit { ok("worktree /w/acme\nbranch refs/heads/main\n") }, PathStyle.UNIX).listing(repo))
     }
 
     @Test

@@ -1,7 +1,9 @@
 package io.github.v0rest.skein.threads
 
 import io.github.v0rest.skein.claude.ClaudeActivity
+import io.github.v0rest.skein.paths.PathStyle
 import io.github.v0rest.skein.testutil.FakeProcessProbe
+import io.github.v0rest.skein.testutil.Fixture
 import io.github.v0rest.skein.testutil.sessionFile
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -10,14 +12,17 @@ import org.junit.Test
 import java.time.Instant
 
 class ThreadMapperTest {
+    /** A folder portable across OS: `/p` on Unix, `C:\p` on Windows, where a bare `/p` is no absolute path. */
+    private fun r(relative: String) = Fixture.root(relative)
+
     private val t0: Instant = Instant.ofEpochMilli(1_000)
     private val probe = FakeProcessProbe(current = 1)
     private val mapper = ThreadMapper(probe)
 
     // IDE 1 → shell 10 → claude 100 → bash 110 → claude 300 (a nested `claude -p`); iTerm 2 → claude 200
-    private val s100 = sessionFile(pid = 100, activity = ClaudeActivity.IDLE, cwd = "/p", startedAt = 1_500, sessionId = "abc")
-    private val s300 = sessionFile(pid = 300, activity = ClaudeActivity.BUSY, cwd = "/p", startedAt = 1_600, kind = "print")
-    private val s200 = sessionFile(pid = 200, activity = ClaudeActivity.IDLE, cwd = "/p", startedAt = 1_500, sessionId = "zzz")
+    private val s100 = sessionFile(pid = 100, activity = ClaudeActivity.IDLE, cwd = r("p"), startedAt = 1_500, sessionId = "abc")
+    private val s300 = sessionFile(pid = 300, activity = ClaudeActivity.BUSY, cwd = r("p"), startedAt = 1_600, kind = "print")
+    private val s200 = sessionFile(pid = 200, activity = ClaudeActivity.IDLE, cwd = r("p"), startedAt = 1_500, sessionId = "zzz")
 
     @Before
     fun tree() {
@@ -63,7 +68,7 @@ class ThreadMapperTest {
     fun relaunchIsFollowed() {
         probe.kill(100)
         probe.add(101, parent = 10, start = t0.plusSeconds(9))
-        val s101 = sessionFile(pid = 101, cwd = "/p", startedAt = 9_500, sessionId = "def")
+        val s101 = sessionFile(pid = 101, cwd = r("p"), startedAt = 9_500, sessionId = "def")
         assertEquals(101L, mapper.processFor(10, listOf(s101))?.pid)
     }
 
@@ -73,18 +78,18 @@ class ThreadMapperTest {
     @Test
     fun processForPrefersTheEarliestStartedOfTwoOutermost() {
         probe.add(102, parent = 10, start = t0.plusSeconds(5))
-        val s102 = sessionFile(pid = 102, cwd = "/p", startedAt = 5_000)
+        val s102 = sessionFile(pid = 102, cwd = r("p"), startedAt = 5_000)
         assertEquals(100L, mapper.processFor(10, listOf(s102, s100))?.pid)
     }
 
-    private fun pending(resume: String? = null) = PendingLaunch(threadId = "t1", folder = "/p", typedAt = 1_000, resumeSessionId = resume, preexistingAnchors = emptySet())
+    private fun pending(resume: String? = null) = PendingLaunch(threadId = "t1", folder = r("p"), typedAt = 1_000, resumeSessionId = resume, preexistingAnchors = emptySet())
 
     @Test
     fun aShellThatExistedBeforeTheTabIsNotItsShell() {
         // a plain IDE terminal opened before the Skein tab, where the user runs claude by hand
         probe.add(20, parent = 1, start = Instant.ofEpochMilli(-60_000))
         probe.add(120, parent = 20, start = Instant.ofEpochMilli(1_400))
-        val byHand = sessionFile(pid = 120, cwd = "/p", startedAt = 1_500, sessionId = "abc")
+        val byHand = sessionFile(pid = 120, cwd = r("p"), startedAt = 1_500, sessionId = "abc")
         assertNull(mapper.matchLaunch(pending().copy(preexistingAnchors = setOf(20)), listOf(byHand), emptySet()))
         assertNull(mapper.matchLaunch(pending(resume = "abc").copy(preexistingAnchors = setOf(20)), listOf(byHand), emptySet()))
         assertEquals("without that knowledge it would match", 20L, mapper.matchLaunch(pending(), listOf(byHand), emptySet())?.anchor)
@@ -98,20 +103,20 @@ class ThreadMapperTest {
 
     @Test
     fun matchNormalisesTheFolder() =
-        assertEquals(LaunchMatch(10, s100), mapper.matchLaunch(pending().copy(folder = "/p/./sub/.."), listOf(s100), emptySet()))
+        assertEquals(LaunchMatch(10, s100), mapper.matchLaunch(pending().copy(folder = r("p/./sub/..")), listOf(s100), emptySet()))
 
     @Test
-    fun ignoresOtherFolder() = assertNull(mapper.matchLaunch(pending(), listOf(s100.copy(cwd = "/q")), emptySet()))
+    fun ignoresOtherFolder() = assertNull(mapper.matchLaunch(pending(), listOf(s100.copy(cwd = r("q"))), emptySet()))
 
     /** A thread New Thread Here started in a subfolder takes the claude that runs there, not one in the project folder. */
     @Test
     fun aThreadInASubfolderTakesTheClaudeThere() {
         probe.add(30, parent = 1, start = Instant.ofEpochMilli(0))
         probe.add(130, parent = 30, start = Instant.ofEpochMilli(1_400))
-        val inDocs = sessionFile(pid = 130, cwd = "/p/docs", startedAt = 1_500, sessionId = "def")
-        assertEquals(LaunchMatch(30, inDocs), mapper.matchLaunch(pending().copy(folder = "/p/docs"), listOf(s100, inDocs), emptySet()))
+        val inDocs = sessionFile(pid = 130, cwd = r("p/docs"), startedAt = 1_500, sessionId = "def")
+        assertEquals(LaunchMatch(30, inDocs), mapper.matchLaunch(pending().copy(folder = r("p/docs")), listOf(s100, inDocs), emptySet()))
         assertEquals(LaunchMatch(10, s100), mapper.matchLaunch(pending(), listOf(inDocs, s100), emptySet()))
-        assertNull(mapper.matchLaunch(pending().copy(folder = "/p/docs"), listOf(s100), emptySet()))
+        assertNull(mapper.matchLaunch(pending().copy(folder = r("p/docs")), listOf(s100), emptySet()))
     }
 
     @Test
@@ -135,7 +140,7 @@ class ThreadMapperTest {
 
     @Test
     fun resumeMatchesBySessionIdEvenInAnotherFolder() =
-        assertEquals(LaunchMatch(10, s100.copy(cwd = "/elsewhere")), mapper.matchLaunch(pending(resume = "abc"), listOf(s100.copy(cwd = "/elsewhere")), emptySet()))
+        assertEquals(LaunchMatch(10, s100.copy(cwd = r("elsewhere"))), mapper.matchLaunch(pending(resume = "abc"), listOf(s100.copy(cwd = r("elsewhere"))), emptySet()))
 
     @Test
     fun resumeDoesNotAdoptAnOlderProcessWithTheSameId() {
@@ -177,16 +182,49 @@ class ThreadMapperTest {
     fun matchAcceptsTheExpectedWorktreeCwd() {
         probe.add(30, parent = 1, start = Instant.ofEpochMilli(0))
         probe.add(130, parent = 30, start = Instant.ofEpochMilli(1_400))
-        val inWorktree = sessionFile(pid = 130, cwd = "/p/.claude/worktrees/feat-x", startedAt = 1_500, sessionId = "abc")
+        val inWorktree = sessionFile(pid = 130, cwd = r("p/.claude/worktrees/feat-x"), startedAt = 1_500, sessionId = "abc")
         assertNull(mapper.matchLaunch(pending(), listOf(inWorktree), emptySet()))
-        assertEquals(30L, mapper.matchLaunch(pending().copy(worktreeCwd = "/p/.claude/worktrees/feat-x"), listOf(inWorktree), emptySet())?.anchor)
+        assertEquals(30L, mapper.matchLaunch(pending().copy(worktreeCwd = r("p/.claude/worktrees/feat-x")), listOf(inWorktree), emptySet())?.anchor)
     }
 
     @Test
     fun matchIgnoresAnotherWorktree() {
         probe.add(30, parent = 1, start = Instant.ofEpochMilli(0))
         probe.add(130, parent = 30, start = Instant.ofEpochMilli(1_400))
-        val other = sessionFile(pid = 130, cwd = "/p/.claude/worktrees/other", startedAt = 1_500, sessionId = "abc")
-        assertNull(mapper.matchLaunch(pending().copy(worktreeCwd = "/p/.claude/worktrees/feat-x"), listOf(other), emptySet()))
+        val other = sessionFile(pid = 130, cwd = r("p/.claude/worktrees/other"), startedAt = 1_500, sessionId = "abc")
+        assertNull(mapper.matchLaunch(pending().copy(worktreeCwd = r("p/.claude/worktrees/feat-x")), listOf(other), emptySet()))
+    }
+
+    /** A folder that exists on no machine, so the VM judges the text and the disk is never asked. */
+    private val winBase = "C:\\w\\0c3b7a1e-5d2f-4e8a-9b61-7f4d2a9c1e55"
+    private val winIde = winBase.replace('\\', '/')
+
+    private val windows = ThreadMapper(probe, PathStyle.WINDOWS)
+
+    private fun windowsPending(folder: String, worktree: String? = null) =
+        PendingLaunch(threadId = "t1", folder = folder, typedAt = 1_000, resumeSessionId = null, preexistingAnchors = emptySet(), worktreeCwd = worktree)
+
+    /** The IDE says `C:/Users/skein/demo-shop`, claude's status file says `C:\Users\skein\demo-shop`: one folder. */
+    @Test
+    fun aWindowsFolderMatchesAcrossSeparatorsAndCase() {
+        val running = sessionFile(pid = 100, cwd = "$winBase\\demo-shop", startedAt = 1_500, sessionId = "abc")
+        for (folder in listOf("$winIde/demo-shop", "$winBase\\demo-shop".lowercase(), "$winIde/demo-shop/")) {
+            assertEquals(folder, LaunchMatch(10, running), windows.matchLaunch(windowsPending(folder), listOf(running), emptySet()))
+        }
+    }
+
+    @Test
+    fun aWindowsSiblingOrParentDoesNotMatch() {
+        val running = sessionFile(pid = 100, cwd = "$winBase\\demo-shop", startedAt = 1_500, sessionId = "abc")
+        for (folder in listOf("$winIde/demo-shop2", "$winIde", "$winIde/demo-shop/web", "D" + "$winIde/demo-shop".drop(1))) {
+            assertNull(folder, windows.matchLaunch(windowsPending(folder), listOf(running), emptySet()))
+        }
+    }
+
+    @Test
+    fun aWindowsWorktreeDirectoryCountsAsTheThreadsFolder() {
+        val inWorktree = sessionFile(pid = 100, cwd = "$winBase\\demo-shop\\.claude\\worktrees\\task-1", startedAt = 1_500, sessionId = "abc")
+        val pending = windowsPending("$winIde/demo-shop", worktree = "$winIde/demo-shop/.claude/worktrees/task-1")
+        assertEquals(10L, windows.matchLaunch(pending, listOf(inWorktree), emptySet())?.anchor)
     }
 }

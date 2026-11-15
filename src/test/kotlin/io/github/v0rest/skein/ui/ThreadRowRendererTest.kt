@@ -2,6 +2,8 @@ package io.github.v0rest.skein.ui
 
 import io.github.v0rest.skein.git.Changes
 import io.github.v0rest.skein.git.WorktreeCounts
+import io.github.v0rest.skein.paths.PathStyle
+import io.github.v0rest.skein.testutil.Fixture
 import io.github.v0rest.skein.threads.ContextUse
 import io.github.v0rest.skein.threads.SkeinThread
 import io.github.v0rest.skein.threads.ThreadColor
@@ -17,11 +19,15 @@ import javax.swing.JList
 
 /** The thread row laid out and painted headless, the way the list draws it. */
 class ThreadRowRendererTest {
+    /** The project folder as the IDE writes it (`C:/w/acme` on Windows), and a subfolder's label, which has the OS's separators. */
+    private val project = Fixture.forwardRoot("w/acme")
+    private val subfolder = "web" + PathStyle.current.separator + "src"
+
     private val list = JList<SkeinThread>()
     private val now = 1_000_000_000L
 
     private fun thread(name: String = "acme", color: ThreadColor? = null, worktree: String? = null, sessionCwd: String? = null) =
-        SkeinThread("t1", "/w/acme", null, name, ThreadState.Idle, now - 3 * 60_000, 0, null, color = color, sessionCwd = sessionCwd, worktree = worktree)
+        SkeinThread("t1", project, null, name, ThreadState.Idle, now - 3 * 60_000, 0, null, color = color, sessionCwd = sessionCwd, worktree = worktree)
 
     private fun render(
         thread: SkeinThread,
@@ -34,7 +40,7 @@ class ThreadRowRendererTest {
         contexts: Map<String, ContextUse> = emptyMap(),
         showContext: Boolean = true,
         worktreeCounts: Map<String, WorktreeCounts> = emptyMap(),
-        base: String? = "/w/acme",
+        base: String? = project,
     ): TwoLineRow {
         // the list gives every row its own width, as it does in the tool window
         list.setSize(width, 400)
@@ -103,7 +109,7 @@ class ThreadRowRendererTest {
         assertEquals("without a preview, the state words", "idle", row.detail.text)
         assertEquals("<html>idle", row.toolTipText)
         assertTrue("line 2 starts under the name", row.detail.x == row.title.x && row.detail.y >= row.title.y + row.title.height)
-        assertEquals("no path, a worktree's neither", "<html>idle", render(thread(sessionCwd = "/w/acme/.claude/worktrees/feat-x")).toolTipText)
+        assertEquals("no path, a worktree's neither", "<html>idle", render(thread(sessionCwd = Fixture.root("w/acme/.claude/worktrees/feat-x"))).toolTipText)
     }
 
     @Test
@@ -130,15 +136,15 @@ class ThreadRowRendererTest {
     /** A thread started in a folder inside the project names that folder where a worktree thread names its worktree. */
     @Test
     fun theFolderOfASubfolderThreadLeadsTheSecondLine() {
-        val inSrc = thread(name = "Fix login").copy(folder = "/w/acme/web/src")
+        val inSrc = thread(name = "Fix login").copy(folder = "$project/web/src")
         val preview = mapOf("t1" to "Tests are green.")
-        assertEquals("web/src · Tests are green.", render(inSrc, previews = preview).detail.text)
-        assertEquals("web/src · idle", render(inSrc).detail.text)
-        assertTrue(render(inSrc).accessibleContext.accessibleName.startsWith("Fix login, idle, web/src"))
+        assertEquals("$subfolder · Tests are green.", render(inSrc, previews = preview).detail.text)
+        assertEquals("$subfolder · idle", render(inSrc).detail.text)
+        assertTrue(render(inSrc).accessibleContext.accessibleName.startsWith("Fix login, idle, $subfolder"))
         assertEquals("the project folder itself names nothing", "idle", render(thread(name = "Fix login")).detail.text)
         assertEquals("without a base folder nothing either", "idle", render(inSrc, base = null).detail.text)
         // a worktree thread keeps its worktree mark
-        val worktree = thread(name = "Fix login", worktree = "feat-x").copy(folder = "/w/acme/web")
+        val worktree = thread(name = "Fix login", worktree = "feat-x").copy(folder = "$project/web")
         assertEquals("worktree feat-x · idle", render(worktree).detail.text)
     }
 

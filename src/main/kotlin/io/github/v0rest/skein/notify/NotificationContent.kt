@@ -6,6 +6,8 @@ import com.google.gson.JsonObject
 import io.github.v0rest.skein.claude.Json
 import io.github.v0rest.skein.claude.WaitReason
 import io.github.v0rest.skein.claude.stringOrNull
+import io.github.v0rest.skein.paths.PathRules
+import io.github.v0rest.skein.paths.PathStyle
 import io.github.v0rest.skein.threads.NotificationKind
 
 /**
@@ -19,6 +21,8 @@ object NotificationContent {
     const val MAX_CHARS = 120
     private const val ELLIPSIS = "…"
     private const val QUESTION_TOOL = "AskUserQuestion"
+    /** The tools whose input holds a shell command line: Claude Code calls it Bash, and on Windows PowerShell too. */
+    private val SHELL_TOOLS = setOf("Bash", "PowerShell")
     private val FILE_TOOLS = setOf("Edit", "MultiEdit", "Write", "Read", "NotebookEdit")
     private val AGENT_TOOLS = setOf("Agent", "Task")
 
@@ -36,12 +40,12 @@ object NotificationContent {
         fun unresolved(tool: ToolUse) = tool.id == null || tool.id !in resolved
     }
 
-    fun fromTail(lines: List<String>, kind: NotificationKind, reason: WaitReason?): String? {
+    fun fromTail(lines: List<String>, kind: NotificationKind, reason: WaitReason?, style: PathStyle = PathStyle.current): String? {
         val turn = currentTurn(lines)
         return when (kind) {
             NotificationKind.TURN_FINISHED -> lastText(turn)
             NotificationKind.NEEDS_YOU -> when (reason) {
-                WaitReason.PERMISSION -> pendingTool(turn)?.let(::toolLine)
+                WaitReason.PERMISSION -> pendingTool(turn)?.let { toolLine(it, style) }
                 WaitReason.QUESTION -> pendingQuestion(turn)?.let(::question) ?: lastText(turn)
                 WaitReason.OTHER, null -> lastText(turn)
             }
@@ -52,9 +56,9 @@ object NotificationContent {
      * What a thread at work is doing: the newest tool call of the current turn still without a result, else the
      * first sentence of the turn's last answer so far; null when the turn holds neither.
      */
-    fun working(lines: List<String>): String? {
+    fun working(lines: List<String>, style: PathStyle = PathStyle.current): String? {
         val turn = currentTurn(lines)
-        return runningTool(turn)?.let(::toolLine) ?: lastText(turn)
+        return runningTool(turn)?.let { toolLine(it, style) } ?: lastText(turn)
     }
 
     /** Walks the tail newest-first up to the user's latest prompt; a line that does not parse (cut at the end of the file) is skipped. */
@@ -116,14 +120,14 @@ object NotificationContent {
         turn.entries.asSequence().flatMap { it.toolUses.asReversed() }.firstOrNull { it.name == QUESTION_TOOL && turn.unresolved(it) }
 
     /** `<Tool>: <argument>`, or the tool's name alone when it has no short argument worth showing. */
-    private fun toolLine(tool: ToolUse): String? {
+    private fun toolLine(tool: ToolUse, style: PathStyle): String? {
         val name = collapse(tool.name)
         if (name.isEmpty()) return null
         val input = tool.input
         val argument = when {
             input == null -> null
-            name == "Bash" -> input.stringOrNull("command")?.lineSequence()?.map(::collapse)?.firstOrNull { it.isNotEmpty() }
-            name in FILE_TOOLS -> (input.stringOrNull("file_path") ?: input.stringOrNull("notebook_path"))?.let(::fileName)
+            name in SHELL_TOOLS -> input.stringOrNull("command")?.lineSequence()?.map(::collapse)?.firstOrNull { it.isNotEmpty() }
+            name in FILE_TOOLS -> (input.stringOrNull("file_path") ?: input.stringOrNull("notebook_path"))?.let { fileName(it, style) }
             else -> (if (name in AGENT_TOOLS) AGENT_ARGUMENTS else SHORT_ARGUMENTS)
                 .firstNotNullOfOrNull { input.stringOrNull(it)?.let(::collapse)?.takeIf(String::isNotEmpty) }
         }
@@ -136,8 +140,8 @@ object NotificationContent {
         return first.stringOrNull("question")?.let(::collapse)?.takeIf(String::isNotEmpty)?.let(::cut)
     }
 
-    /** The last path segment, as text: no Path parsing, so an odd value cannot throw. */
-    private fun fileName(path: String): String? = collapse(path.trimEnd('/').substringAfterLast('/')).takeIf(String::isNotEmpty)
+    /** The last path segment, as text: no Path parsing, so an odd value cannot throw. A Windows path comes with `\` between its names. */
+    private fun fileName(path: String, style: PathStyle): String? = collapse(PathRules.name(path, style)).takeIf(String::isNotEmpty)
 
     /** A fenced block from its opening line to the matching fence, or to the end when it never closes. */
     private val FENCED_BLOCK = Regex("(?ms)^[ \\t]*(`{3,}|~{3,}).*?(?:^[ \\t]*\\1[ \\t]*$|\\z)")

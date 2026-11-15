@@ -5,6 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import java.nio.file.Files
 import java.nio.file.Path
@@ -15,6 +16,11 @@ import java.nio.file.Path
  * PATH, and a fake that only its status file still names is stopped only while it is the process that file describes.
  */
 class FakeClaudeTest {
+    @Before
+    fun posixOnly() {
+        Fixture.assumeNotWindows("the fake claude is a POSIX shell and python rig and is not ported to Windows")
+    }
+
     private val python = Path.of("/usr/bin/python3")
 
     @Test

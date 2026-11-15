@@ -3,6 +3,7 @@ package io.github.v0rest.skein.notify
 import io.github.v0rest.skein.claude.WaitReason.OTHER
 import io.github.v0rest.skein.claude.WaitReason.PERMISSION
 import io.github.v0rest.skein.claude.WaitReason.QUESTION
+import io.github.v0rest.skein.paths.PathStyle
 import io.github.v0rest.skein.threads.NotificationKind.NEEDS_YOU
 import io.github.v0rest.skein.threads.NotificationKind.TURN_FINISHED
 import org.junit.Assert.assertEquals
@@ -144,6 +145,22 @@ class NotificationContentTest {
         assertEquals("Edit: Foo.kt", content)
         assertFalse(content.contains("/w/acme"))
         assertEquals("MultiEdit: Bar.kt", permission(assistant(toolUse("MultiEdit", """{"file_path":"/w/acme/src/Bar.kt","edits":[]}"""))))
+    }
+
+    /** On Windows Claude Code runs commands through the PowerShell tool as well, and its prompt reads like a Bash one. */
+    @Test
+    fun theWindowsPowerShellToolShowsItsCommandLikeBash() {
+        assertEquals("PowerShell: Get-ChildItem -Recurse", permission(assistant(toolUse("PowerShell", """{"command":"Get-ChildItem -Recurse\nGet-Date","description":"list"}"""))))
+        assertEquals("PowerShell", permission(assistant(toolUse("PowerShell", """{"description":"list"}"""))))
+        assertEquals("PowerShell: dotnet test", NotificationContent.working(listOf(assistant(toolUse("PowerShell", """{"command":"dotnet test"}""")))))
+    }
+
+    @Test
+    fun aWindowsFilePathShowsOnlyTheFileName() {
+        val lines = listOf(assistant(toolUse("Edit", """{"file_path":"C:\\Users\\skein\\demo-shop\\src\\Foo.kt","old_string":"a","new_string":"b"}""")))
+        assertEquals("Edit: Foo.kt", NotificationContent.fromTail(lines, NEEDS_YOU, PERMISSION, PathStyle.WINDOWS))
+        val forward = listOf(assistant(toolUse("Read", """{"file_path":"C:/Users/skein/demo-shop/src/Bar.kt"}""")))
+        assertEquals("Read: Bar.kt", NotificationContent.fromTail(forward, NEEDS_YOU, PERMISSION, PathStyle.WINDOWS))
     }
 
     @Test

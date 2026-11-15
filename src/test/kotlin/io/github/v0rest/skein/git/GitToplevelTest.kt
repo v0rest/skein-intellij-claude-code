@@ -1,16 +1,16 @@
 package io.github.v0rest.skein.git
 
+import io.github.v0rest.skein.testutil.CanonicalTemporaryFolder
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
-import org.junit.rules.TemporaryFolder
 import java.nio.file.Files
 import java.nio.file.Path
 
 class GitToplevelTest {
     @get:Rule
-    val tmp = TemporaryFolder()
+    val tmp = CanonicalTemporaryFolder()
 
     @Test
     fun findsTheNearestFolderWithGit() {

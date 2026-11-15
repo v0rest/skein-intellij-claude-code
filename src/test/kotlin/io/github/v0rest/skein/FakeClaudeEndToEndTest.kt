@@ -9,6 +9,7 @@ import io.github.v0rest.skein.process.JdkProcessProbe
 import io.github.v0rest.skein.process.LibcHangUp
 import io.github.v0rest.skein.testutil.FakeClaude
 import io.github.v0rest.skein.testutil.FakeClaudeRig
+import io.github.v0rest.skein.testutil.Fixture
 import io.github.v0rest.skein.testutil.RealGit
 import io.github.v0rest.skein.testutil.ShellThreadTerminal
 import io.github.v0rest.skein.testutil.awaitValue
@@ -81,6 +82,7 @@ class FakeClaudeEndToEndTest {
 
     @Before
     fun aRigAndSkein() {
+        Fixture.assumeNotWindows("the fake claude is a POSIX shell and python rig and is not ported to Windows")
         rig = FakeClaudeRig(tmp.root.toPath(), FakeClaude.requireRunnable())
         home = ClaudeHome(rig.claudeHome)
         watcher = SessionDirectoryWatcher(home, probe)

@@ -28,9 +28,10 @@ Unofficial, for Claude Code, not affiliated with Anthropic.
 
 ## Requirements
 
-An IntelliJ-based IDE 2026.3 or newer with the bundled terminal plugin, on local macOS or Linux, and Claude Code
-2.1.162 or newer on your PATH. On native Windows, for projects opened through WSL and in Remote Development Skein
-turns itself off and the tool window says why.
+An IntelliJ-based IDE 2026.3 or newer with the bundled terminal plugin, on local macOS, Windows or Linux, and Claude
+Code 2.1.162 or newer on your PATH. On Windows Claude Code's installer puts `claude.exe` in `%USERPROFILE%\.local\bin`
+without adding that folder to PATH - add it and restart the IDE, and Skein says so when it finds claude only there.
+For projects opened through WSL and in Remote Development Skein turns itself off and the tool window says why.
 
 ## Installing
 

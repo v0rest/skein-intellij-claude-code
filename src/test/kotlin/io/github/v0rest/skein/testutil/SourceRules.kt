@@ -11,6 +11,12 @@ object SourceRules {
     fun kotlinFiles(root: Path): List<Path> =
         Files.walk(root).use { s -> s.asSequence().filter { it.name.endsWith(".kt") }.sorted().toList() }
 
+    /**
+     * [file] relative to [root] with `/` between the names, whatever the OS - the rules name files that way, and on
+     * Windows java.nio would write `io\github\...`.
+     */
+    fun relative(root: Path, file: Path): String = root.relativize(file).joinToString("/")
+
     fun codeLines(file: Path): List<String> = codeLines(file.readLines())
 
     fun codeLines(lines: List<String>): List<String> =

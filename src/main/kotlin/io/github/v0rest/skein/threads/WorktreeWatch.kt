@@ -2,6 +2,8 @@ package io.github.v0rest.skein.threads
 
 import com.intellij.openapi.diagnostic.ControlFlowException
 import io.github.v0rest.skein.git.ExcludeResult
+import io.github.v0rest.skein.paths.PathRules
+import io.github.v0rest.skein.paths.PathStyle
 import io.github.v0rest.skein.ui.WorktreeStart
 import java.nio.file.Path
 import kotlin.coroutines.cancellation.CancellationException
@@ -23,10 +25,21 @@ object WorktreeWatch {
     fun repositories(threads: List<SkeinThread>, resolve: (String) -> String?): Map<String, String> =
         distinct(threads.filter { it.worktree != null }.map { it.folder }, resolve)
 
-    /** [folders] once per real path ([resolve] as in [repositories]; one that throws counts as null), each keyed by it, in their order. */
-    fun distinct(folders: Collection<String>, resolve: (String) -> String?): Map<String, String> {
+    /** [distinct] by the rules of the system Skein runs on. */
+    fun distinct(folders: Collection<String>, resolve: (String) -> String?): Map<String, String> = distinct(folders, PathStyle.current, resolve)
+
+    /**
+     * [folders] once per real path ([resolve] as in [repositories]; one that throws counts as null), each keyed by it,
+     * in their order. Two keys are one when [PathRules.same] says so by the rules of [style] (`C:/w/acme` and
+     * `c:\w\acme` on Windows), and the first one met stays.
+     */
+    fun distinct(folders: Collection<String>, style: PathStyle, resolve: (String) -> String?): Map<String, String> {
         val found = LinkedHashMap<String, String>()
-        for (folder in folders) found.putIfAbsent(isolated { resolve(folder) } ?: folder, folder)
+        val seen = HashSet<String>()
+        for (folder in folders) {
+            val real = isolated { resolve(folder) } ?: folder
+            if (seen.add(PathRules.key(real, style))) found[real] = folder
+        }
         return found
     }
 

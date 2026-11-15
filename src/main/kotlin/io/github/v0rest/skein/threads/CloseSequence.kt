@@ -27,7 +27,9 @@ data class Ending(val tab: ThreadTab, val shell: ProcessId?, val claude: Process
  * for its jobs, so its end says nothing about claude's); then the sequence waits until the tab's session has ended.
  * Every thread goes through this on its own, so a slow claude holds up nobody else's, and all of them share one
  * deadline, [timeoutMillis]: past it a thread's shell still gets its signal, and the log says which thread did not end.
- * Then the tabs close in one batch ([ThreadTerminal.close]), so the tab in front goes last.
+ * Then the tabs close in one batch ([ThreadTerminal.close]), so the tab in front goes last. Where [hangUp] sends
+ * nothing (Windows, where the IDE ends claude and its shell itself when the tab closes), nothing is waited for and the
+ * tabs close at once.
  *
  * Nothing is signalled unless the tab's session runs, and each signal goes out only while its target is still the very
  * process Skein recorded (same pid, same start instant, still in the tab's tree): a pid freed by an exited process may

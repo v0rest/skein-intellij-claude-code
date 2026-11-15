@@ -48,7 +48,7 @@ class ArchitectureTest {
     private fun filesContaining(vararg needles: String): List<String> =
         SourceRules.kotlinFiles(mainRoot)
             .filter { f -> SourceRules.offenders(SourceRules.codeLines(f), needles.toList()).isNotEmpty() }
-            .map { mainRoot.relativize(it).toString() }
+            .map { SourceRules.relative(mainRoot, it) }
 
     /** Skein sends nothing over the network, so no main source hands git a command that talks to a remote. */
     @Test
@@ -58,7 +58,7 @@ class ArchitectureTest {
         )
         val offenders = SourceRules.kotlinFiles(mainRoot)
             .filter { f -> talksToARemote.containsMatchIn(SourceRules.codeLines(f).joinToString("\n")) }
-            .map { mainRoot.relativize(it).toString() }
+            .map { SourceRules.relative(mainRoot, it) }
         assertEquals(emptyList<String>(), offenders)
     }
 
@@ -68,6 +68,40 @@ class ArchitectureTest {
         assertEquals(
             listOf("io/github/v0rest/skein/claude/ClaudeHome.kt", "io/github/v0rest/skein/claude/Worktrees.kt"),
             filesContaining("\".claude", "/.claude").sorted(),
+        )
+    }
+
+    /** The path rules work on text alone, so the macOS suite checks the Windows rules too and no answer hangs on a disk. */
+    @Test
+    fun pathRulesArePure() {
+        val offenders = SourceRules.kotlinFiles(mainRoot.resolve("io/github/v0rest/skein/paths")).flatMap { f ->
+            SourceRules.offenders(SourceRules.codeLines(f), listOf("Files.", "Path(", "Paths.", "java.nio.file", "java.io.", "toRealPath"))
+        }
+        assertEquals(emptyList<String>(), offenders)
+    }
+
+    /**
+     * Paths are compared and taken apart through PathRules, which knows both separators. A `/` by hand stays only where
+     * git's own names are read or built, which use `/` on every system, and in the Unix branch of FolderPaths, so a new
+     * one anywhere else is a Windows bug waiting. The list is per file, so a new use in one of these files is the
+     * reviewer's to catch.
+     */
+    @Test
+    fun slashesAreHandledByHandOnlyWhereGitsOwnNamesAre() {
+        val byHand = filesContaining(
+            "substringAfterLast('/')", "substringAfterLast(\"/\")", "substringBeforeLast('/')", "substringBeforeLast(\"/\")",
+            "lastIndexOf('/')", "lastIndexOf(\"/\")", "split('/')", "split(\"/\")", "trimEnd('/')", "removeSuffix(\"/\")",
+            "startsWith(\"/\")", "endsWith(\"/\")",
+        )
+        assertEquals(
+            listOf(
+                "io/github/v0rest/skein/git/WorktreeCounts.kt", // a branch name's rules
+                "io/github/v0rest/skein/git/WorktreeExcludes.kt", // exclude lines and the guard's path in git's tree
+                "io/github/v0rest/skein/git/WorktreeGit.kt", // git's status names, a folder ending in `/`
+                "io/github/v0rest/skein/ui/FolderPaths.kt", // the Unix branch
+                "io/github/v0rest/skein/ui/WorktreeDiff.kt", // names relative to the repository, as git lists them
+            ),
+            byHand.filterNot { it.startsWith("io/github/v0rest/skein/paths/") }.sorted(),
         )
     }
 
@@ -90,7 +124,7 @@ class ArchitectureTest {
     @Test
     fun noWriteCallsAnywhereInMain() {
         val offenders = SourceRules.kotlinFiles(mainRoot).filter { it != worktreeExcludes && it != leftoverFolder }.flatMap { f ->
-            SourceRules.offenders(SourceRules.codeLines(f), writeApis).map { "${mainRoot.relativize(f)}: $it" }
+            SourceRules.offenders(SourceRules.codeLines(f), writeApis).map { "${SourceRules.relative(mainRoot, f)}: $it" }
         }
         assertEquals(emptyList<String>(), offenders)
     }
@@ -200,7 +234,7 @@ class ArchitectureTest {
     fun skeinNeverTouchesVcsMappings() {
         val needles = listOf("ProjectLevelVcsManager", "VcsDirectoryMapping", "setDirectoryMappings", "vcs.xml")
         val offenders = SourceRules.kotlinFiles(mainRoot).flatMap { f ->
-            SourceRules.offenders(f.toFile().readLines(), needles).map { "${mainRoot.relativize(f)}: ${it.trim()}" }
+            SourceRules.offenders(f.toFile().readLines(), needles).map { "${SourceRules.relative(mainRoot, f)}: ${it.trim()}" }
         }
         assertEquals(emptyList<String>(), offenders)
     }
@@ -277,7 +311,7 @@ class ArchitectureTest {
         val readers = listOf("\"status\"", "\"ls-files\"", "\"ls-tree\"", "\"diff\"", "\"worktree\", \"remove\"")
         val status = SourceRules.kotlinFiles(mainRoot).flatMap { f ->
             SourceRules.codeLines(f).filter { line -> (line.contains(".run(") || line.contains(".bytes(")) && readers.any { line.contains(it) } }
-                .map { mainRoot.relativize(f).toString() to it }
+                .map { SourceRules.relative(mainRoot, f) to it }
         }
         assertTrue(status.toString(), status.isNotEmpty())
         assertEquals(emptyList<Pair<String, String>>(), status.filterNot { it.second.contains("NO_FSMONITOR") })
@@ -317,7 +351,7 @@ class ArchitectureTest {
         assertTrue("the trust check comes before git runs", trust in 0 until read)
         // and that view, behind the check, is the one place that makes the reader
         val made = SourceRules.kotlinFiles(mainRoot).flatMap { f ->
-            SourceRules.codeLines(f).filter { it.contains("WorktreeChangesReader(") && !it.startsWith("class ") }.map { mainRoot.relativize(f).toString() }
+            SourceRules.codeLines(f).filter { it.contains("WorktreeChangesReader(") && !it.startsWith("class ") }.map { SourceRules.relative(mainRoot, f) }
         }
         assertEquals(listOf("io/github/v0rest/skein/ui/WorktreeDiff.kt"), made)
         // the one save of the editor's documents: before the list is read, only those of files in that worktree

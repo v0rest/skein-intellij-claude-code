@@ -1,13 +1,24 @@
 package io.github.v0rest.skein.terminal
 
+import com.intellij.openapi.util.SystemInfo
+
 /**
  * What Skein's close check answers when the IDE is about to close a tab on the user's word (the editor tab's ×, Close,
  * Close All, Close Others, a Terminal tool window tab's close; never a move, which does not ask, nor a project close or
  * the IDE quitting, which pass when they do ask). A terminal tab closed while its shell runs leaves the shell, and a claude in it, hanging forever,
  * because the IDE keeps the tab's pty open but stops reading it (IJPL-259859); so a Skein thread tab whose session runs
- * stays open until Skein has ended the thread there and closes the tab itself.
+ * stays open until Skein has ended the thread there and closes the tab itself. That happens on macOS and Linux only
+ * ([closeCanHang]); on Windows every close goes ahead at once.
  */
 object CloseGate {
+    /**
+     * Whether closing a tab under a running shell can leave it hanging, so that Skein ends the thread first: macOS and
+     * Linux, the systems where Skein's hang-up sends its SIGHUP (process/HangUp.kt). On Windows the IDE ends claude and
+     * its shell itself when the tab closes, checked on Windows 11, and Skein has nothing to send there, so holding the
+     * tab would only delay the close and keep the rest of a Close All open in a second editor window.
+     */
+    val closeCanHang: Boolean = SystemInfo.isMac || SystemInfo.isLinux
+
     enum class Decision {
         /** Let it close now. */
         PASS,
@@ -24,10 +35,19 @@ object CloseGate {
      * the tab itself now. [running]: the tab's terminal session runs (not one that ended, nor a restored tab whose shell
      * has not started yet). [views]: the editor windows showing the tab. [endingForMillis]: how long ago Skein started
      * ending the thread, or null. An ending older than [ENDING_GRACE_MILLIS] never got to its close, and is given up.
+     * [closeCanHang]: false lets every close through, an ending under way included.
      */
-    fun decide(skeinTab: Boolean, closing: Boolean, released: Boolean, running: Boolean, views: Int, endingForMillis: Long?): Decision = when {
+    fun decide(
+        skeinTab: Boolean,
+        closing: Boolean,
+        released: Boolean,
+        running: Boolean,
+        views: Int,
+        endingForMillis: Long?,
+        closeCanHang: Boolean = this.closeCanHang,
+    ): Decision = when {
         // closing one of two views of a tab leaves the terminal running in the other one
-        !skeinTab || closing || released || !running || views > 1 -> Decision.PASS
+        !closeCanHang || !skeinTab || closing || released || !running || views > 1 -> Decision.PASS
         endingForMillis == null -> Decision.END_FIRST
         endingForMillis < ENDING_GRACE_MILLIS -> Decision.WAIT
         // an ending that never got to its close (something failed and its mark stayed) gives up: the tab closes as before
@@ -44,8 +64,8 @@ object CloseGate {
      */
     data class Batch(val pass: Boolean, val take: List<String>, val waiting: List<String>)
 
-    fun decideBatch(tabs: List<Tab>, closing: Boolean): Batch {
-        val decided = tabs.map { it to decide(skeinTab = true, closing, it.released, it.running, it.views, it.endingForMillis) }
+    fun decideBatch(tabs: List<Tab>, closing: Boolean, closeCanHang: Boolean = this.closeCanHang): Batch {
+        val decided = tabs.map { it to decide(skeinTab = true, closing, it.released, it.running, it.views, it.endingForMillis, closeCanHang) }
         val waiting = decided.filter { it.second == Decision.WAIT }.map { it.first.id }
         if (waiting.isEmpty() && decided.none { it.second == Decision.END_FIRST }) return Batch(pass = true, take = emptyList(), waiting = emptyList())
         // the IDE keeps the whole close open now, so Skein closes every thread tab of it that would have gone: a running
@@ -64,8 +84,8 @@ object CloseGate {
      * Move to Editor or a drag out of the tool window, where the terminal goes on in its new place: it always passes, as
      * does a project close or an IDE quit ([closing]). The tab is one view whatever [tab] says.
      */
-    fun decideTerminalWindowClose(tab: Tab, closing: Boolean, move: Boolean): Batch =
-        if (move) Batch(pass = true, take = emptyList(), waiting = emptyList()) else decideBatch(listOf(tab.copy(views = 1)), closing)
+    fun decideTerminalWindowClose(tab: Tab, closing: Boolean, move: Boolean, closeCanHang: Boolean = this.closeCanHang): Batch =
+        if (move) Batch(pass = true, take = emptyList(), waiting = emptyList()) else decideBatch(listOf(tab.copy(views = 1)), closing, closeCanHang)
 
     /**
      * True when [can] says yes to every one of [items], asking about each one even after a no, unlike `all`: each

@@ -29,4 +29,19 @@ class EnvironmentFactsTest {
         assertFalse(EnvironmentProbe.isThinClient("idea"))
         assertFalse(EnvironmentProbe.isThinClient(null))
     }
+
+    /**
+     * The platform's product mode is a second witness: a remote-development host started by a native launcher, or on
+     * Windows, where the JDK reports no launch arguments at all, is still seen by it.
+     */
+    @Test
+    fun theProductModeIsASecondWitness() {
+        assertTrue(EnvironmentProbe.isRemoteDevHost(backendMode = true, processArguments = emptyList()))
+        assertTrue(EnvironmentProbe.isRemoteDevHost(backendMode = false, processArguments = listOf("remoteDevHost")))
+        assertFalse(EnvironmentProbe.isRemoteDevHost(backendMode = false, processArguments = emptyList()))
+        assertTrue(EnvironmentProbe.isThinClient(frontendMode = true, platformPrefix = "idea"))
+        assertTrue(EnvironmentProbe.isThinClient(frontendMode = false, platformPrefix = "JetBrainsClient"))
+        assertFalse(EnvironmentProbe.isThinClient(frontendMode = false, platformPrefix = "idea"))
+        assertFalse(EnvironmentProbe.isThinClient(frontendMode = false, platformPrefix = null))
+    }
 }

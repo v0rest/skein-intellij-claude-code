@@ -1,7 +1,5 @@
 package io.github.v0rest.skein.claude
 
-import java.io.IOException
-import java.nio.file.InvalidPathException
 import java.nio.file.Path
 
 /**
@@ -35,12 +33,5 @@ object Transcripts {
     }
 
     /** The folder with symlinks resolved, as `getcwd()` reports it; the folder itself when it does not exist or is odd. */
-    private fun resolved(folder: String): String =
-        try {
-            Path.of(folder).toAbsolutePath().normalize().toRealPath().toString()
-        } catch (e: IOException) {
-            folder
-        } catch (e: InvalidPathException) {
-            folder
-        }
+    private fun resolved(folder: String): String = PhysicalPath.of(folder)
 }

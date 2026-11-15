@@ -1,6 +1,8 @@
 package io.github.v0rest.skein.threads
 
 import io.github.v0rest.skein.git.ExcludeResult
+import io.github.v0rest.skein.paths.PathStyle
+import io.github.v0rest.skein.testutil.Fixture
 import io.github.v0rest.skein.threads.WorktreeWatch.Balloon
 import io.github.v0rest.skein.threads.WorktreeWatch.Outcome
 import org.junit.Assert.assertEquals
@@ -12,45 +14,51 @@ class WorktreeWatchTest {
     private fun thread(id: String, folder: String, worktree: String? = null) =
         SkeinThread(id, folder, null, id, ThreadState.NotStarted, 0, 0, null, worktree = worktree)
 
-    private val acme = "/w/acme"
+    private val acme = Fixture.root("w/acme")
+    private val beta = Fixture.root("w/beta")
+    private val gamma = Fixture.root("w/gamma")
+    private val delta = Fixture.root("w/delta")
+    private val gone = Fixture.root("w/gone")
+    private val home = Fixture.root("w/home")
+    private val links = Fixture.root("links/acme")
 
     private fun ok(line: Boolean, guard: Boolean) =
-        ExcludeResult.Ok(line, guard, Path.of("$acme/.git/info/exclude"), Path.of("$acme/.claude/worktrees/.gitignore"))
+        ExcludeResult.Ok(line, guard, Fixture.path("w/acme/.git/info/exclude"), Fixture.path("w/acme/.claude/worktrees/.gitignore"))
 
     @Test
     fun onlyWorktreeThreadsCountOncePerRepository() {
         val threads = listOf(
             thread("1", acme, worktree = "task-1"),
-            thread("2", "/w/beta"),
-            thread("3", "/w/acme/", worktree = "task-2"),
-            thread("4", "/links/acme", worktree = "task-3"),
-            thread("5", "/w/gamma", worktree = "task-1"),
-            thread("6", "/w/gone", worktree = "task-1"),
+            thread("2", beta),
+            thread("3", "$acme/", worktree = "task-2"),
+            thread("4", links, worktree = "task-3"),
+            thread("5", gamma, worktree = "task-1"),
+            thread("6", gone, worktree = "task-1"),
         )
-        val real = mapOf(acme to acme, "/w/acme/" to acme, "/links/acme" to acme, "/w/gamma" to "/w/gamma")
+        val real = mapOf(acme to acme, "$acme/" to acme, links to acme, gamma to gamma)
         assertEquals(
-            mapOf(acme to acme, "/w/gamma" to "/w/gamma", "/w/gone" to "/w/gone"),
+            mapOf(acme to acme, gamma to gamma, gone to gone),
             WorktreeWatch.repositories(threads) { real[it] },
         )
-        assertEquals(emptyMap<String, String>(), WorktreeWatch.repositories(listOf(thread("2", "/w/beta"))) { it })
+        assertEquals(emptyMap<String, String>(), WorktreeWatch.repositories(listOf(thread("2", beta))) { it })
     }
 
     /** The minute check says what it put back, and nothing when the guard and the line were there. */
     @Test
     fun aGuardPutBackIsSaid() {
         assertEquals(
-            Outcome(Balloon.Info("Skein put back .claude/worktrees/.gitignore so git keeps ignoring the worktrees in /w/acme."), null),
+            Outcome(Balloon.Info("Skein put back .claude/worktrees/.gitignore so git keeps ignoring the worktrees in $acme."), null),
             WorktreeWatch.outcome(acme, ok(line = false, guard = true), periodic = true, lastWarned = null),
         )
         assertEquals(
             Outcome(
-                Balloon.Info("Skein put back .claude/worktrees/.gitignore and the line /.claude/worktrees/ in .git/info/exclude so git keeps ignoring the worktrees in /w/acme."),
+                Balloon.Info("Skein put back .claude/worktrees/.gitignore and the line /.claude/worktrees/ in .git/info/exclude so git keeps ignoring the worktrees in $acme."),
                 null,
             ),
             WorktreeWatch.outcome(acme, ok(line = true, guard = true), periodic = true, lastWarned = null),
         )
         assertEquals(
-            Outcome(Balloon.Info("Skein put back the line /.claude/worktrees/ in .git/info/exclude so git keeps ignoring the worktrees in /w/acme."), null),
+            Outcome(Balloon.Info("Skein put back the line /.claude/worktrees/ in .git/info/exclude so git keeps ignoring the worktrees in $acme."), null),
             WorktreeWatch.outcome(acme, ok(line = true, guard = false), periodic = true, lastWarned = null),
         )
         assertEquals(Outcome(null, null), WorktreeWatch.outcome(acme, ok(line = false, guard = false), periodic = true, lastWarned = "busy"))
@@ -59,11 +67,11 @@ class WorktreeWatchTest {
     /** A failure that lasts is said once, a new reason again, and once the check holds the next failure is said again. */
     @Test
     fun theMinuteCheckWarnsOncePerReason() {
-        val warning = Balloon.Warning("Skein could not keep the worktrees of /w/acme out of git, so git add -A could pick the worktree up: busy")
+        val warning = Balloon.Warning("Skein could not keep the worktrees of $acme out of git, so git add -A could pick the worktree up: busy")
         assertEquals(Outcome(warning, "busy"), WorktreeWatch.outcome(acme, ExcludeResult.Failed("busy"), periodic = true, lastWarned = null))
         assertEquals(Outcome(null, "busy"), WorktreeWatch.outcome(acme, ExcludeResult.Failed("busy"), periodic = true, lastWarned = "busy"))
         assertEquals(
-            Outcome(Balloon.Warning("Skein could not keep the worktrees of /w/acme out of git, so git add -A could pick the worktree up: locked"), "locked"),
+            Outcome(Balloon.Warning("Skein could not keep the worktrees of $acme out of git, so git add -A could pick the worktree up: locked"), "locked"),
             WorktreeWatch.outcome(acme, ExcludeResult.Failed("locked"), periodic = true, lastWarned = "busy"),
         )
     }
@@ -92,38 +100,38 @@ class WorktreeWatchTest {
         }
     }
 
-    private val guardBack = Balloon.Info("Skein put back .claude/worktrees/.gitignore so git keeps ignoring the worktrees in /w/acme.")
+    private val guardBack = Balloon.Info("Skein put back .claude/worktrees/.gitignore so git keeps ignoring the worktrees in $acme.")
 
     /** One tick checks each repository of the worktree threads once, in the minute check's words, and skips what it must. */
     @Test
     fun aTickChecksEachRepositoryOnce() {
         val threads = listOf(
             thread("1", acme, worktree = "task-1"),
-            thread("2", "/links/acme", worktree = "task-2"),
-            thread("3", "/w/beta"),
-            thread("4", "/w/gone", worktree = "task-1"),
-            thread("5", "/w/home", worktree = "task-1"),
-            thread("6", "/w/gamma", worktree = "task-1"),
+            thread("2", links, worktree = "task-2"),
+            thread("3", beta),
+            thread("4", gone, worktree = "task-1"),
+            thread("5", home, worktree = "task-1"),
+            thread("6", gamma, worktree = "task-1"),
         )
         val checks = FakeChecks(
-            real = mapOf(acme to acme, "/links/acme" to acme, "/w/beta" to "/w/beta", "/w/home" to "/w/home", "/w/gamma" to "/w/gamma"),
-            repositories = setOf(acme, "/w/beta", "/w/home", "/w/gamma"),
-            home = "/w/home",
-            results = mutableMapOf(acme to ok(line = false, guard = true), "/w/gamma" to ExcludeResult.Failed("busy")),
+            real = mapOf(acme to acme, links to acme, beta to beta, home to home, gamma to gamma),
+            repositories = setOf(acme, beta, home, gamma),
+            home = home,
+            results = mutableMapOf(acme to ok(line = false, guard = true), gamma to ExcludeResult.Failed("busy")),
         )
         val warnings = mutableMapOf<String, String>()
         assertEquals(
-            listOf(guardBack, Balloon.Warning("Skein could not keep the worktrees of /w/gamma out of git, so git add -A could pick the worktree up: busy")),
+            listOf(guardBack, Balloon.Warning("Skein could not keep the worktrees of $gamma out of git, so git add -A could pick the worktree up: busy")),
             WorktreeWatch.tick(threads, checks, warnings),
         )
-        assertEquals(listOf(acme, "/w/gamma"), checks.ensured)
-        assertEquals(mapOf("/w/gamma" to "busy"), warnings)
+        assertEquals(listOf(acme, gamma), checks.ensured)
+        assertEquals(mapOf(gamma to "busy"), warnings)
     }
 
     /** A check that throws is reported for its own repository and does not stop the others. */
     @Test
     fun aCheckThatThrowsStopsOnlyItsOwnRepository() {
-        val threads = listOf(thread("1", "/w/gamma", worktree = "task-1"), thread("2", acme, worktree = "task-1"))
+        val threads = listOf(thread("1", gamma, worktree = "task-1"), thread("2", acme, worktree = "task-1"))
         val checks = object : WorktreeWatch.Checks {
             val ensured = mutableListOf<String>()
 
@@ -135,16 +143,16 @@ class WorktreeWatchTest {
 
             override fun ensure(repository: Path): ExcludeResult {
                 ensured += repository.toString()
-                if (repository.toString() == "/w/gamma") throw IllegalStateException("broken")
+                if (repository.toString() == gamma) throw IllegalStateException("broken")
                 return ok(line = false, guard = true)
             }
         }
         val warnings = mutableMapOf<String, String>()
         assertEquals(
-            listOf(Balloon.Warning("Skein could not keep the worktrees of /w/gamma out of git, so git add -A could pick the worktree up: broken"), guardBack),
+            listOf(Balloon.Warning("Skein could not keep the worktrees of $gamma out of git, so git add -A could pick the worktree up: broken"), guardBack),
             WorktreeWatch.tick(threads, checks, warnings),
         )
-        assertEquals(listOf("/w/gamma", acme), checks.ensured)
+        assertEquals(listOf(gamma, acme), checks.ensured)
     }
 
     /**
@@ -153,13 +161,13 @@ class WorktreeWatchTest {
      */
     @Test
     fun aRepositoryThatThrowsAnywhereStopsOnlyItself() {
-        val threads = listOf(thread("1", "/w/gamma", worktree = "task-1"), thread("2", "/w/delta", worktree = "task-1"), thread("3", acme, worktree = "task-1"))
+        val threads = listOf(thread("1", gamma, worktree = "task-1"), thread("2", delta, worktree = "task-1"), thread("3", acme, worktree = "task-1"))
         val checks = object : WorktreeWatch.Checks {
             val ensured = mutableListOf<String>()
 
-            override fun realPath(folder: String): String = if (folder == "/w/delta") throw IllegalStateException("unreadable") else folder
+            override fun realPath(folder: String): String = if (folder == delta) throw IllegalStateException("unreadable") else folder
 
-            override fun isRepository(folder: Path): Boolean = if (folder.toString() == "/w/gamma") throw IllegalStateException("broken") else true
+            override fun isRepository(folder: Path): Boolean = if (folder.toString() == gamma) throw IllegalStateException("broken") else true
 
             override fun holdsClaudeHome(repository: Path): Boolean = false
 
@@ -170,16 +178,16 @@ class WorktreeWatchTest {
         }
         val warnings = mutableMapOf<String, String>()
         val balloons = WorktreeWatch.tick(threads, checks, warnings)
-        assertEquals(Balloon.Warning("Skein could not keep the worktrees of /w/gamma out of git, so git add -A could pick the worktree up: broken"), balloons.first())
-        assertEquals(listOf("/w/delta", acme), checks.ensured)
+        assertEquals(Balloon.Warning("Skein could not keep the worktrees of $gamma out of git, so git add -A could pick the worktree up: broken"), balloons.first())
+        assertEquals(listOf(delta, acme), checks.ensured)
         assertEquals(3, balloons.size)
-        assertEquals(mapOf("/w/gamma" to "broken"), warnings)
+        assertEquals(mapOf(gamma to "broken"), warnings)
     }
 
     /** A resume that kept the guard says so; the tick after it finds the guard there and the same reason is not shown again. */
     @Test
     fun aKeptGuardDoesNotWarnTwice() {
-        val guard = Path.of("$acme/.claude/worktrees/.gitignore")
+        val guard = Fixture.path("w/acme/.claude/worktrees/.gitignore")
         val checks = FakeChecks(
             real = mapOf(acme to acme),
             repositories = setOf(acme),
@@ -190,7 +198,7 @@ class WorktreeWatchTest {
         assertEquals(
             listOf(
                 Balloon.Warning(
-                    "Skein could not keep the worktrees of /w/acme out of git, so git add -A could pick the worktree up: git already tracks " +
+                    "Skein could not keep the worktrees of $acme out of git, so git add -A could pick the worktree up: git already tracks " +
                         ".claude/worktrees/.gitkeep; Skein kept the guard $guard it wrote, since worktrees live in that folder and it changes nothing git tracks",
                 ),
             ),
@@ -206,7 +214,7 @@ class WorktreeWatchTest {
         val threads = listOf(thread("1", acme, worktree = "task-1"))
         val checks = FakeChecks(real = mapOf(acme to acme), repositories = setOf(acme))
         val warnings = mutableMapOf<String, String>()
-        fun warning(reason: String) = Balloon.Warning("Skein could not keep the worktrees of /w/acme out of git, so git add -A could pick the worktree up: $reason")
+        fun warning(reason: String) = Balloon.Warning("Skein could not keep the worktrees of $acme out of git, so git add -A could pick the worktree up: $reason")
         fun tick(result: ExcludeResult): List<Balloon> {
             checks.results[acme] = result
             return WorktreeWatch.tick(threads, checks, warnings)
@@ -231,12 +239,12 @@ class WorktreeWatchTest {
         val warnings = mutableMapOf(acme to "busy")
         val repositories = WorktreeWatch.distinct(setOf(acme), checks::realPath)
         assertEquals(
-            listOf(Balloon.Warning("Skein could not keep the worktrees of /w/acme out of git, so git add -A could pick the worktree up: busy")),
+            listOf(Balloon.Warning("Skein could not keep the worktrees of $acme out of git, so git add -A could pick the worktree up: busy")),
             WorktreeWatch.check(repositories, periodic = false, checks, warnings),
         )
         checks.results[acme] = ok(line = false, guard = true)
         assertEquals(
-            listOf(Balloon.Info("Skein added .claude/worktrees/.gitignore so git ignores the worktrees in /w/acme.")),
+            listOf(Balloon.Info("Skein added .claude/worktrees/.gitignore so git ignores the worktrees in $acme.")),
             WorktreeWatch.check(repositories, periodic = false, checks, warnings),
         )
         assertEquals(emptyMap<String, String>(), warnings)
@@ -246,12 +254,22 @@ class WorktreeWatchTest {
     @Test
     fun aResumeSaysWhatItWroteAndAlwaysWarns() {
         assertEquals(
-            Outcome(Balloon.Info("Skein added .claude/worktrees/.gitignore so git ignores the worktrees in /w/acme."), null),
+            Outcome(Balloon.Info("Skein added .claude/worktrees/.gitignore so git ignores the worktrees in $acme."), null),
             WorktreeWatch.outcome(acme, ok(line = false, guard = true), periodic = false, lastWarned = "busy"),
         )
         assertEquals(
-            Outcome(Balloon.Warning("Skein could not keep the worktrees of /w/acme out of git, so git add -A could pick the worktree up: busy"), "busy"),
+            Outcome(Balloon.Warning("Skein could not keep the worktrees of $acme out of git, so git add -A could pick the worktree up: busy"), "busy"),
             WorktreeWatch.outcome(acme, ExcludeResult.Failed("busy"), periodic = false, lastWarned = "busy"),
         )
+    }
+
+    /** On Windows the threads name one repository as `C:/w/acme` and `c:\w\ACME\`: one check for both, by the first name met. */
+    @Test
+    fun oneRepositoryInTwoWindowsShapesIsCheckedOnce() {
+        val folders = listOf("C:/w/acme", "c:\\w\\ACME\\", "C:/w/acme2")
+        assertEquals(mapOf("C:/w/acme" to "C:/w/acme", "C:/w/acme2" to "C:/w/acme2"), WorktreeWatch.distinct(folders, PathStyle.WINDOWS) { null })
+        assertEquals(3, WorktreeWatch.distinct(folders, PathStyle.UNIX) { null }.size)
+        // the real path, when there is one, is the key
+        assertEquals(mapOf("C:\\w\\acme" to "C:/w/acme"), WorktreeWatch.distinct(folders.take(2), PathStyle.WINDOWS) { "C:\\w\\acme" })
     }
 }

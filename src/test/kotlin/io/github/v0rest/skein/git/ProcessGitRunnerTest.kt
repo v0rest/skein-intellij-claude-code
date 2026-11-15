@@ -1,5 +1,6 @@
 package io.github.v0rest.skein.git
 
+import io.github.v0rest.skein.testutil.CanonicalTemporaryFolder
 import io.github.v0rest.skein.testutil.RealGit
 import io.github.v0rest.skein.ui.WorktreeStart
 import org.junit.Assert.assertArrayEquals
@@ -10,13 +11,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
-import org.junit.rules.TemporaryFolder
 import java.nio.file.Files
 
 /** Smoke test against the real git; skipped when git is not installed. */
 class ProcessGitRunnerTest {
     @get:Rule
-    val folder = TemporaryFolder()
+    val folder = CanonicalTemporaryFolder()
 
     private val runner = ProcessGitRunner()
 

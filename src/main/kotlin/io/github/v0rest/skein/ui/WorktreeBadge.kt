@@ -5,6 +5,8 @@ import com.intellij.util.ui.JBUI
 import io.github.v0rest.skein.claude.Worktrees
 import io.github.v0rest.skein.git.Changes
 import io.github.v0rest.skein.git.WorktreeCounts
+import io.github.v0rest.skein.paths.PathRules
+import io.github.v0rest.skein.paths.PathStyle
 import io.github.v0rest.skein.threads.KeptKind
 
 /**
@@ -115,13 +117,15 @@ object WorktreeBadge {
 
     /**
      * The folder a Worktrees section row names in its tooltip: the worktree [name] of [repository] (as the project names
-     * it) from the project's [projectBase], `.claude/worktrees/task-1` say, or the whole resolved [path] for a
-     * repository outside the project.
+     * it) from the project's [projectBase], `.claude/worktrees/task-1` say, with `/` as git names a path inside a
+     * repository, or the whole resolved [path] for a repository outside the project. The two folders are compared by
+     * the rules of [style], so the IDE's `C:/w/acme` holds `C:\w\acme\.claude\worktrees\task-1` on Windows.
      */
-    fun folder(repository: String, name: String, path: String, projectBase: String?): String {
-        val base = projectBase?.trimEnd('/')?.takeIf { it.isNotEmpty() } ?: return path
-        val named = Worktrees.dirOf(repository, name)
-        return if (named.startsWith("$base/")) named.removePrefix("$base/") else path
+    fun folder(repository: String, name: String, path: String, projectBase: String?, style: PathStyle = PathStyle.current): String {
+        // a project on a bare root names no folder to start from, as before
+        val base = projectBase?.takeIf { PathRules.segments(it, style).isNotEmpty() } ?: return path
+        val below = PathRules.segmentsUnder(Worktrees.dirOf(repository, name, style), base, style)
+        return if (below.isNullOrEmpty()) path else below.joinToString("/")
     }
 
     /**

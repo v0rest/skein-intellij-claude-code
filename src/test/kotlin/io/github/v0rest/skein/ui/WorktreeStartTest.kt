@@ -2,6 +2,8 @@ package io.github.v0rest.skein.ui
 
 import io.github.v0rest.skein.git.GitResult
 import io.github.v0rest.skein.git.GitWorktree
+import io.github.v0rest.skein.paths.PathStyle.UNIX
+import io.github.v0rest.skein.paths.PathStyle.WINDOWS
 import io.github.v0rest.skein.threads.SkeinThread
 import io.github.v0rest.skein.threads.ThreadState
 import org.junit.Assert.assertEquals
@@ -22,7 +24,25 @@ class WorktreeStartTest {
             GitWorktree("/w/other-wt", "other"),
             GitWorktree("/w/beta/.claude/worktrees/feat-y", "worktree-feat-y"),
         )
-        assertEquals(setOf("feat-x"), WorktreeStart.existingNames(setOf("/w/acme"), worktrees))
+        assertEquals(setOf("feat-x"), WorktreeStart.existingNames(setOf("/w/acme"), worktrees, UNIX))
+    }
+
+    /**
+     * On Windows the project names its repository as the IDE writes it (`C:/w/acme`), while git's paths come in as
+     * the system writes them ([io.github.v0rest.skein.git.WorktreeGit.parseList]): one folder all the same.
+     */
+    @Test
+    fun existingNamesMatchTheRepositoryInAnyShapeOnWindows() {
+        val worktrees = listOf(
+            GitWorktree("C:\\w\\acme", "main"),
+            GitWorktree("C:\\w\\acme\\.claude\\worktrees\\feat-x", "worktree-feat-x"),
+            GitWorktree("C:\\w\\acme2\\.claude\\worktrees\\feat-y", "worktree-feat-y"),
+            GitWorktree("D:\\w\\acme\\.claude\\worktrees\\feat-z", "worktree-feat-z"),
+        )
+        assertEquals(setOf("feat-x"), WorktreeStart.existingNames(setOf("C:/w/acme"), worktrees, WINDOWS))
+        assertEquals(setOf("feat-x"), WorktreeStart.existingNames(setOf("c:\\W\\Acme\\"), worktrees, WINDOWS))
+        // the same text on Unix is one name with backslashes in it
+        assertEquals(emptySet<String>(), WorktreeStart.existingNames(setOf("C:/w/acme"), worktrees, UNIX))
     }
 
     /** git lists real paths, while a project opened through a link names its repository by the link. */
@@ -32,9 +52,9 @@ class WorktreeStartTest {
             GitWorktree("/real/acme", "main"),
             GitWorktree("/real/acme/.claude/worktrees/task-1", "worktree-task-1"),
         )
-        val existing = WorktreeStart.existingNames(setOf("/w/acme", "/real/acme"), worktrees)
+        val existing = WorktreeStart.existingNames(setOf("/w/acme", "/real/acme"), worktrees, UNIX)
         assertEquals(setOf("task-1"), existing)
-        assertEquals("task-2", WorktreeStart.defaultName(existing, emptySet()))
+        assertEquals("task-2", WorktreeStart.defaultName(existing, emptySet(), style = UNIX))
     }
 
     /** A thread whose `claude --worktree` is still queued or starting has no worktree yet, but its name is taken. */
@@ -50,10 +70,30 @@ class WorktreeStartTest {
             thread("t4", "/w/beta", "task-4"),
             thread("t5", "/w/acme", null),
         )
-        val inUse = WorktreeStart.threadNames(setOf("/w/acme", "/real/acme"), threads, resolve)
+        val inUse = WorktreeStart.threadNames(setOf("/w/acme", "/real/acme"), threads, resolve, UNIX)
         assertEquals(setOf("task-1", "task-2", "task-3"), inUse)
-        assertEquals("task-4", WorktreeStart.defaultName(existing = emptySet(), inUse = inUse))
-        assertEquals("task-5", WorktreeStart.defaultName(existing = setOf("task-4"), inUse = inUse))
+        assertEquals("task-4", WorktreeStart.defaultName(existing = emptySet(), inUse = inUse, style = UNIX))
+        assertEquals("task-5", WorktreeStart.defaultName(existing = setOf("task-4"), inUse = inUse, style = UNIX))
+    }
+
+    @Test
+    fun aThreadNamesItsRepositoryInAnyShapeOnWindows() {
+        val threads = listOf(
+            thread("t1", "C:/w/acme", "task-1"),
+            thread("t2", "c:\\w\\ACME\\", "task-2"),
+            thread("t3", "C:/w/acme2", "task-3"),
+        )
+        assertEquals(setOf("task-1", "task-2"), WorktreeStart.threadNames(setOf("C:\\w\\acme"), threads, style = WINDOWS))
+        // on Unix the case counts and a backslash is part of a name
+        assertEquals(setOf("task-1"), WorktreeStart.threadNames(setOf("C:/w/acme"), threads, style = UNIX))
+    }
+
+    /** NTFS keeps `Task-1` and `task-1` in one folder, so on Windows a worktree `Task-1` takes the name. */
+    @Test
+    fun aNameTakenInAnotherCaseIsNotOfferedOnWindows() {
+        assertEquals("task-2", WorktreeStart.defaultName(existing = setOf("Task-1"), inUse = emptySet(), style = WINDOWS))
+        assertEquals("task-2", WorktreeStart.defaultName(existing = emptySet(), inUse = emptySet(), branches = setOf("worktree-TASK-1"), style = WINDOWS))
+        assertEquals("task-1", WorktreeStart.defaultName(existing = setOf("Task-1"), inUse = emptySet(), style = UNIX))
     }
 
     /** The field starts with the suggested name; cleared, it still stands for that name. */
@@ -67,13 +107,26 @@ class WorktreeStartTest {
         assertFalse(WorktreeStart.isAcceptable("a b"))
     }
 
+    /** Win32 would open `task-1.` as `task-1`, so the dialog refuses such a name on Windows and says why. */
+    @Test
+    fun aNameEndingInADotIsRefusedOnWindows() {
+        assertFalse(WorktreeStart.isAcceptable("task-1.", WINDOWS))
+        assertFalse(WorktreeStart.isAcceptable(" a.. ", WINDOWS))
+        assertTrue(WorktreeStart.isAcceptable("task-1.", UNIX))
+        assertTrue(WorktreeStart.isAcceptable("a.b", WINDOWS))
+        assertEquals("Letters, digits, '.', '_' and '-', up to 64, not starting with '-' or '.' and not ending with '.'", WorktreeStart.nameRule(WINDOWS))
+        assertEquals("Letters, digits, '.', '_' and '-', up to 64, not starting with '-' or '.'", WorktreeStart.nameRule(UNIX))
+    }
+
     /** A `worktree-<name>` branch left behind (git refused to delete it) would clash with a new worktree of that name. */
     @Test
     fun aLeftoverBranchNameIsNotOffered() {
         val branches = setOf("main", "worktree-task-1", "worktree-task-3", "task-2", "worktree-")
-        assertEquals("task-2", WorktreeStart.defaultName(existing = emptySet(), inUse = emptySet(), branches = branches))
-        assertEquals("task-4", WorktreeStart.defaultName(existing = setOf("task-2"), inUse = emptySet(), branches = branches))
-        assertEquals("task-1", WorktreeStart.defaultName(existing = emptySet(), inUse = emptySet()))
+        for (style in listOf(UNIX, WINDOWS)) {
+            assertEquals("task-2", WorktreeStart.defaultName(existing = emptySet(), inUse = emptySet(), branches = branches, style = style))
+            assertEquals("task-4", WorktreeStart.defaultName(existing = setOf("task-2"), inUse = emptySet(), branches = branches, style = style))
+            assertEquals("task-1", WorktreeStart.defaultName(existing = emptySet(), inUse = emptySet(), style = style))
+        }
     }
 
     /** `rev-parse -q --verify` answers 1 for a HEAD with no commit; any other failure is said in git's own words. */
@@ -106,5 +159,8 @@ class WorktreeStartTest {
         assertEquals("behind", WorktreeStart.baseWarningFor("", "task-2", existing, "behind"))
         assertNull(WorktreeStart.baseWarningFor("task-1", "task-2", existing, "behind"))
         assertNull(WorktreeStart.baseWarningFor("task-2", "task-2", existing, null))
+        // NTFS opens `Task-1` as the existing `task-1`, a reopen; on Unix it is a new worktree
+        assertNull(WorktreeStart.baseWarningFor("Task-1", "task-2", existing, "behind", WINDOWS))
+        assertEquals("behind", WorktreeStart.baseWarningFor("Task-1", "task-2", existing, "behind", UNIX))
     }
 }

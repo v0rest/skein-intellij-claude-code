@@ -1,6 +1,7 @@
 package io.github.v0rest.skein.ui
 
 import io.github.v0rest.skein.claude.Worktrees
+import io.github.v0rest.skein.paths.PathStyle
 
 /** The grey note a worktree thread's row carries after its name. */
 object WorktreeLabel {
@@ -9,8 +10,8 @@ object WorktreeLabel {
      * worktree is the one the session's [sessionCwd] lies in, else the thread's own [worktree] (no session yet, or one
      * that reports the repository).
      */
-    fun of(shownName: String, worktree: String?, sessionCwd: String? = null): String? {
-        val shown = sessionCwd?.let(Worktrees::split)?.name ?: worktree ?: return null
+    fun of(shownName: String, worktree: String?, sessionCwd: String? = null, style: PathStyle = PathStyle.current): String? {
+        val shown = sessionCwd?.let { Worktrees.split(it, style) }?.name ?: worktree ?: return null
         return if (shownName == shown) "worktree" else "worktree $shown"
     }
 }

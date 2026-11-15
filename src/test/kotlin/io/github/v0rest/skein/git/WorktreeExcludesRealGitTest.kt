@@ -1,5 +1,6 @@
 package io.github.v0rest.skein.git
 
+import io.github.v0rest.skein.testutil.CanonicalTemporaryFolder
 import io.github.v0rest.skein.testutil.RealGit
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -9,7 +10,6 @@ import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
-import org.junit.rules.TemporaryFolder
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -20,7 +20,7 @@ import java.nio.file.Path
  */
 class WorktreeExcludesRealGitTest {
     @get:Rule
-    val folder = TemporaryFolder()
+    val folder = CanonicalTemporaryFolder()
 
     private lateinit var git: RealGit
 
@@ -40,6 +40,12 @@ class WorktreeExcludesRealGitTest {
     }
 
     private fun ensure(repo: Path): ExcludeResult = WorktreeExcludes(git).ensureExcluded(repo)
+
+    /**
+     * A file git checked out or brought back from a stash, with its line ends as LF: git turns them into CRLF where
+     * core.autocrlf is true, as Git for Windows' installer sets it, and reads the guard the same either way.
+     */
+    private fun fromGit(file: Path): String = Files.readString(file).replace("\r\n", "\n")
 
     private fun addWorktree(repo: Path, name: String = "task-1") {
         val added = git.run(repo, "worktree", "add", "-q", "-b", "worktree-$name", "--", ".claude/worktrees/$name")
@@ -284,7 +290,25 @@ class WorktreeExcludesRealGitTest {
         // restored from git, the team's guard is used as it is
         assertTrue(git.run(repo, "checkout", "--", ".claude/worktrees/.gitignore").ok)
         staysOut(repo)
-        assertEquals("# notes\n*\n", Files.readString(guard))
+        assertEquals("# notes\n*\n", fromGit(guard))
+        assertEquals(emptyList<String>(), modified(repo))
+    }
+
+    /**
+     * Git for Windows checks text out with CRLF (core.autocrlf true is its installer's default, so users have it on):
+     * the committed guard comes back as `# notes\r\n*\r\n` and is the team's guard all the same - read the way git
+     * reads it, it keeps the worktrees out, and nothing is rewritten. Set in the repository, so every system runs it.
+     */
+    @Test
+    fun aGuardCheckedOutWithCrlfIsUsedAsItIs() {
+        val repo = git.repository()
+        assertTrue(git.run(repo, "config", "core.autocrlf", "true").ok)
+        val guard = commitGuard(repo, "# notes\n*\n")
+        Files.delete(guard)
+        assertTrue(git.run(repo, "checkout", "--", ".claude/worktrees/.gitignore").ok)
+        assertEquals("# notes\r\n*\r\n", Files.readString(guard))
+        staysOut(repo)
+        assertEquals("# notes\r\n*\r\n", Files.readString(guard))
         assertEquals(emptyList<String>(), modified(repo))
     }
 
@@ -303,9 +327,9 @@ class WorktreeExcludesRealGitTest {
         // the folder added to the sparse checkout, the team's guard is back and used as it is
         val added = git.run(repo, "sparse-checkout", "add", ".claude/worktrees")
         assertTrue(added.stderr, added.ok)
-        assertEquals("# notes\n*\n", Files.readString(guard))
+        assertEquals("# notes\n*\n", fromGit(guard))
         staysOut(repo)
-        assertEquals("# notes\n*\n", Files.readString(guard))
+        assertEquals("# notes\n*\n", fromGit(guard))
         assertEquals(emptyList<String>(), modified(repo))
     }
 
@@ -362,8 +386,8 @@ class WorktreeExcludesRealGitTest {
 
         val popped = git.run(repo, "stash", "pop")
         assertTrue(popped.stdout + popped.stderr, popped.ok)
-        assertEquals("*\n", Files.readString(guard))
-        assertEquals("int a2;\n", Files.readString(repo.resolve("a.c")))
+        assertEquals("*\n", fromGit(guard))
+        assertEquals("int a2;\n", fromGit(repo.resolve("a.c")))
         assertEquals(ExcludeResult.Ok(false, false, repo.resolve(".git/info/exclude"), guard), ensure(repo))
         assertEquals(emptyList<String>(), seen(repo))
     }
@@ -387,7 +411,7 @@ class WorktreeExcludesRealGitTest {
 
         val popped = git.run(repo, "stash", "pop")
         assertTrue(popped.stdout + popped.stderr, popped.ok)
-        assertEquals("*\n", Files.readString(guard))
+        assertEquals("*\n", fromGit(guard))
         assertEquals(emptyList<String>(), seen(repo))
     }
 

@@ -8,6 +8,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -202,6 +203,24 @@ class CloseSequenceTest {
         }
         runBlocking { sequence(hangUp = failing).run(listOf(t1, t2)) }
         assertEquals(listOf("ending t1,t2", "hup 100", "hup 10", "await t1", "hup 101", "hup 11", "close t1,t2"), terminal.calls)
+    }
+
+    /**
+     * On Windows LibcHangUp sends nothing and answers false, and the IDE ends claude and its shell itself when the tab
+     * closes. So a Close waits for nothing - not for claude, not for the session - and closes at once,
+     * with nothing in the log, though claude and its shell still run and the session would never end by itself.
+     */
+    @Test
+    fun aHangUpThatSendsNothingClosesAtOnce() {
+        val sendsNothing = HangUp { pid ->
+            terminal.calls += "hup $pid"
+            false
+        }
+        terminal.ends = { awaitCancellation() }
+        runBlocking { withTimeout(5_000) { sequence(hangUp = sendsNothing, timeoutMillis = 60_000).run(listOf(t1, t2)) } }
+        assertEquals(listOf("ending t1,t2", "hup 100", "hup 10", "hup 101", "hup 11", "close t1,t2"), terminal.calls)
+        assertTrue(logged.toString(), logged.isEmpty())
+        assertTrue(probe.isAlive(100) && probe.isAlive(10))
     }
 
     @Test

@@ -145,8 +145,8 @@ jobs:
           retention-days: 7
           overwrite: true
 
-  # Skein is turned off on Windows for now (EnvironmentGate). This job only shows what the unit tests make of
-  # Windows - paths, processes, git - while that support is being built; it never blocks a merge or a release.
+  # Windows support is new. This job runs the unit tests there - paths, processes, git - and does not block a merge or
+  # a release until it has stayed green for a while.
   windows-tests:
     name: Tests on Windows (informational)
     if: ${{ !inputs.tag }}

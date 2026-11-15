@@ -4,13 +4,14 @@ import io.github.v0rest.skein.git.ChangeKind
 import io.github.v0rest.skein.git.ChangesLookup
 import io.github.v0rest.skein.git.NoOptionalLocks
 import io.github.v0rest.skein.git.WorktreeChangesReader
+import io.github.v0rest.skein.paths.PathStyle
+import io.github.v0rest.skein.testutil.CanonicalTemporaryFolder
 import io.github.v0rest.skein.testutil.RealGit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
-import org.junit.rules.TemporaryFolder
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -20,7 +21,7 @@ import java.nio.file.Path
  */
 class WorktreeDiskTest {
     @get:Rule
-    val folder = TemporaryFolder()
+    val folder = CanonicalTemporaryFolder()
 
     private fun dir(path: Path): Path = Files.createDirectories(path)
 
@@ -33,6 +34,18 @@ class WorktreeDiskTest {
             assumeTrue("no links here: $e", false)
             path
         }
+
+    /**
+     * git stores a link's target with `/` and git for Windows writes the link on disk with `\`: on Windows the worktree
+     * side reads as git would, so an untouched link shows no change. On Unix a backslash is part of a name.
+     */
+    @Test
+    fun aLinksTargetReadsAsGitStoresIt() {
+        assertEquals("src/a.c", WorktreeDisk.linkText("src\\a.c", PathStyle.WINDOWS))
+        assertEquals("../lib/a.c", WorktreeDisk.linkText("..\\lib/a.c", PathStyle.WINDOWS))
+        assertEquals("src\\a.c", WorktreeDisk.linkText("src\\a.c", PathStyle.UNIX))
+        assertEquals("src/a.c", WorktreeDisk.linkText("src/a.c", PathStyle.UNIX))
+    }
 
     @Test
     fun aFileAFolderAMissingPathAndALinkItselfAreWhatTheyAre() {

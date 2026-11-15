@@ -26,10 +26,13 @@ import io.github.v0rest.skein.git.WorktreeGit
 import io.github.v0rest.skein.git.WorktreeListing
 import io.github.v0rest.skein.git.WorktreeState
 import io.github.v0rest.skein.notify.ThreadNotifier
+import io.github.v0rest.skein.paths.PathRules
+import io.github.v0rest.skein.paths.PathStyle
 import io.github.v0rest.skein.process.JdkProcessProbe
 import io.github.v0rest.skein.process.ProcessProbe
 import io.github.v0rest.skein.threads.CloseOffer
 import io.github.v0rest.skein.threads.KeptWorktrees
+import io.github.v0rest.skein.threads.SameFolder
 import io.github.v0rest.skein.threads.SkeinThread
 import io.github.v0rest.skein.threads.ThreadService
 import io.github.v0rest.skein.threads.WorktreeClose
@@ -197,8 +200,10 @@ class WorktreeCloseFlow(
     /** False once the project is closing: the flow then stops where it is. */
     private val active: () -> Boolean = { true },
     private val settleMillis: Long = SETTLE_MILLIS,
-    /** Whether a path is a link; blocking. */
-    private val isLink: (Path) -> Boolean = { Files.isSymbolicLink(it) },
+    /** Whether the disk says a session's cwd lies in a worktree folder ([SameFolder.holds]); blocking. */
+    private val sameFolder: (dir: String, cwd: String) -> Boolean = { dir, cwd -> SameFolder.holds(dir, cwd) },
+    /** Whether a path is a link, a junction included ([LeftoverWorktreeFolder.linkOnTheWay]); blocking. */
+    private val isLink: (Path) -> Boolean = { LeftoverWorktreeFolder.linkOnTheWay(it) },
     /** Why a leftover folder holds a `.git` somewhere inside ([LeftoverWorktreeFolder.gitInside]); null when none does. Blocking. */
     private val gitInside: (Path) -> String? = { LeftoverWorktreeFolder.gitInside(it) },
     /** Deletes a folder git does not list ([LeftoverWorktreeFolder.delete]); null once it is gone, else why not. Blocking. */
@@ -207,15 +212,17 @@ class WorktreeCloseFlow(
     private val probe: ProcessProbe = JdkProcessProbe(),
     /** The system's zone: the start in Claude Code's lock reason is read in it and as UTC ([WorktreeLock.of]). */
     private val zone: ZoneId = ZoneId.systemDefault(),
+    /** The rules paths are compared by ([PathRules]): git's `C:/w/acme` and a thread's `C:\w\acme` are one folder on Windows. */
+    private val style: PathStyle = PathStyle.current,
 ) {
     suspend fun run(thread: SkeinThread) {
         val name = thread.worktree ?: return
         try {
             // a name from a hand-edited workspace file must never become a path git is asked to remove
-            if (!Worktrees.isValidName(name)) return
+            if (!Worktrees.isValidName(name, style)) return
             // a repository around the Claude home (a dotfiles repository in the home folder) is not Skein's to clean
             if (withContext(Dispatchers.IO) { insideClaudeHome(Path.of(thread.folder)) }) {
-                if (withContext(Dispatchers.IO) { exists(Path.of(Worktrees.dirOf(thread.folder, name))) }) {
+                if (withContext(Dispatchers.IO) { exists(Path.of(Worktrees.dirOf(thread.folder, name, style))) }) {
                     report(WorktreeCloseText.kept(name, WorktreeClose.CLAUDE_HOME), false)
                 }
                 return
@@ -231,16 +238,17 @@ class WorktreeCloseFlow(
 
     /**
      * A second close of a worktree already being asked about (two threads in it, both closed) asks nothing, also when
-     * the two threads name the repository by different paths (a link to it and its real path).
+     * the two threads name the repository by different paths (a link to it and its real path, or on Windows `C:/w/acme`
+     * and `c:\w\acme`).
      */
     private suspend fun once(thread: SkeinThread, name: String) {
-        val repository = thread.folder.trimEnd('/')
+        val repository = PathRules.canonical(thread.folder, style)
         val resolved = withContext(Dispatchers.IO) { resolve(repository) }
-        val key = Worktrees.dirOf(resolved ?: repository, name)
+        val key = flightKey(resolved ?: repository, name, style)
         if (!inFlight.add(key)) return
         try {
             // the repository as the thread names it and as git and the status files report it
-            val repositories = setOfNotNull(repository, resolved, thread.sessionCwd?.let(Worktrees::split)?.repository)
+            val repositories = setOfNotNull(repository, resolved, thread.sessionCwd?.let { Worktrees.split(it, style) }?.repository)
             offer(thread, name, repository, repositories)
         } finally {
             inFlight.remove(key)
@@ -248,8 +256,8 @@ class WorktreeCloseFlow(
     }
 
     private suspend fun offer(thread: SkeinThread, name: String, repository: String, repositories: Set<String>) {
-        val worktree = Path.of(Worktrees.dirOf(repository, name))
-        val dirs = repositories.mapTo(LinkedHashSet()) { Worktrees.dirOf(it, name) }
+        val worktree = Path.of(Worktrees.dirOf(repository, name, style))
+        val dirs = repositories.mapTo(LinkedHashSet()) { Worktrees.dirOf(it, name, style) }
         // the closed thread's own claude exits a moment after its tab (and may clean up after itself): wait for that,
         // so a session still inside afterwards really is another one, and nothing is read while it is going
         val settled = settled(repositories, name, thread.sessionId)
@@ -283,12 +291,12 @@ class WorktreeCloseFlow(
      * list the worktrees, or for a repository that contains the Claude home. Off the EDT but for the questions.
      */
     suspend fun removeKept(repository: String, name: String) {
-        if (!Worktrees.isValidName(name)) return
+        if (!Worktrees.isValidName(name, style)) return
         try {
-            val named = repository.trimEnd('/')
+            val named = PathRules.canonical(repository, style)
             if (withContext(Dispatchers.IO) { insideClaudeHome(Path.of(named)) }) return report(WorktreeCloseText.notRemoved(name, WorktreeClose.CLAUDE_HOME), false)
             val resolved = withContext(Dispatchers.IO) { resolve(named) }
-            val key = Worktrees.dirOf(resolved ?: named, name)
+            val key = flightKey(resolved ?: named, name, style)
             if (!inFlight.add(key)) return report(WorktreeCloseText.busy(name), false)
             try {
                 kept(named, setOfNotNull(named, resolved), name)
@@ -304,13 +312,13 @@ class WorktreeCloseFlow(
     }
 
     private suspend fun kept(repository: String, repositories: Set<String>, name: String) {
-        val worktree = Path.of(Worktrees.dirOf(repository, name))
-        val dirs = repositories.mapTo(LinkedHashSet()) { Worktrees.dirOf(it, name) }
+        val worktree = Path.of(Worktrees.dirOf(repository, name, style))
+        val dirs = repositories.mapTo(LinkedHashSet()) { Worktrees.dirOf(it, name, style) }
         val worktrees = when (val listing = withContext(Dispatchers.IO) { git.listing(Path.of(repository)) }) {
             is WorktreeListing.Failed -> return report(WorktreeCloseText.notRemoved(name, listing.reason), true)
             is WorktreeListing.Listed -> listing.worktrees
         }
-        if (entryOf(worktrees, repositories, name) == null) return leftover(repository, repositories, name, worktree, dirs)
+        if (entryOf(worktrees, repositories, name, style) == null) return leftover(repository, repositories, name, worktree, dirs)
         val recheck: suspend () -> Check = { check(null, name, repository, repositories, worktree, dirs, settled = true) }
         val first = recheck()
         when (first.offer) {
@@ -382,15 +390,15 @@ class WorktreeCloseFlow(
             is WorktreeListing.Listed -> listing.worktrees
         }
         return when {
-            entryOf(worktrees, repositories, name) != null -> NOW_LISTED
-            holdsAnother(worktrees, repositories, name) -> WorktreeClose.NESTED_WORKTREE
+            entryOf(worktrees, repositories, name, style) != null -> NOW_LISTED
+            holdsAnother(worktrees, repositories, name, style) -> WorktreeClose.NESTED_WORKTREE
             else -> when (GitToplevel.entryOf(folder)) {
                 GitEntry.FILE -> WorktreeCloseText.linkedElsewhere(folder.toString())
                 GitEntry.FOLDER -> OWN_REPOSITORY
                 // a clone or a worktree link deeper inside holds work too, and a look that cannot finish counts as one
                 null -> gitInside(folder) ?: when {
-                    liveInside(snapshots.value, repositories, name) -> WorktreeClose.SESSION_INSIDE
-                    repositories.any { KeptWorktrees.held(Worktrees.dirOf(it, name), threads(), resolve) } -> WorktreeClose.OTHER_THREAD
+                    liveInside(snapshots.value, repositories, name, style, resolve, sameFolder) -> WorktreeClose.SESSION_INSIDE
+                    repositories.any { KeptWorktrees.held(Worktrees.dirOf(it, name, style), threads(), resolve, style, sameFolder) } -> WorktreeClose.OTHER_THREAD
                     else -> trackedThere(Path.of(repository), folder)
                 }
             }
@@ -399,7 +407,8 @@ class WorktreeCloseFlow(
 
     /** Why [folder] must stay because [repository] tracks files in it, or git could not say; null when it tracks none. */
     private fun trackedThere(repository: Path, folder: Path): String? {
-        val result = git.tracked(repository, repository.relativize(folder).toString())
+        // a pathspec as git writes one, with `/` on every system
+        val result = git.tracked(repository, repository.relativize(folder).joinToString("/"))
         return when {
             !result.ok -> if (result.ran || result.timedOut) result.reason() else "git could not be run: " + result.reason()
             result.stdout.isNotBlank() -> TRACKED
@@ -417,7 +426,7 @@ class WorktreeCloseFlow(
     private fun lifts(asked: Check, now: Check): WorktreeLock.Stale? = (now.view.lock as? WorktreeLock.Stale)?.takeIf { it == asked.view.lock }
 
     /** What the worktree's lock means now, as git lists [entry]; none for a worktree git does not list. Blocking. */
-    private fun lockOf(entry: GitWorktree?): WorktreeLock = entry?.let { WorktreeLock.of(it.locked, it.lockReason, probe, zone) } ?: WorktreeLock.None
+    private fun lockOf(entry: GitWorktree?): WorktreeLock = entry?.let { WorktreeLock.of(it.locked, it.lockReason, probe, zone, style) } ?: WorktreeLock.None
 
     /**
      * Everything that decides the offer, in this order: the worktree is there, no session ([settled]) and no other thread
@@ -435,12 +444,12 @@ class WorktreeCloseFlow(
         settled: Boolean,
     ): Check {
         val present = withContext(Dispatchers.IO) { exists(worktree) }
-        val live = !settled || liveInside(snapshots.value, repositories, name)
+        val live = !settled || withContext(Dispatchers.IO) { liveInside(snapshots.value, repositories, name, style, resolve, sameFolder) }
         val otherThread = withContext(Dispatchers.IO) {
             if (closedId != null) {
-                sharedWithThread(threads(), closedId, repositories, name, resolve)
+                sharedWithThread(threads(), closedId, repositories, name, resolve, style)
             } else {
-                repositories.any { KeptWorktrees.held(Worktrees.dirOf(it, name), threads(), resolve) }
+                repositories.any { KeptWorktrees.held(Worktrees.dirOf(it, name, style), threads(), resolve, style, sameFolder) }
             }
         }
         val view = if (present && !live && !otherThread) withContext(Dispatchers.IO) { read(repository, worktree, repositories, name) } else GitView.NONE
@@ -471,11 +480,11 @@ class WorktreeCloseFlow(
         val worktrees = git.list(Path.of(repository))
         // a folder git does not list as a worktree has no state of its own (git would answer for the working tree around
         // it), and neither has one git marks prunable, whose link to the repository is broken
-        val entry = entryOf(worktrees, repositories, name)?.takeUnless { it.prunable }
+        val entry = entryOf(worktrees, repositories, name, style)?.takeUnless { it.prunable }
         // Claude Code's own lock: whether the claude that made it still runs
         val lock = lockOf(entry)
         // the worktrees folder is ignored, so git status here cannot see a worktree inside this one, and the removal would delete it
-        if (holdsAnother(worktrees, repositories, name)) return GitView(entry, null, true, 0, lock = lock)
+        if (holdsAnother(worktrees, repositories, name, style)) return GitView(entry, null, true, 0, lock = lock)
         if (entry == null) return GitView.NONE
         val state = git.state(worktree) ?: return GitView(entry, null, false, 0, lock = lock)
         // a repository of its own inside, untracked or ignored: git status above cannot see an ignored one, and git
@@ -520,7 +529,7 @@ class WorktreeCloseFlow(
                 is WorktreeListing.Failed -> return Removal.NotLifted(listing.reason)
                 is WorktreeListing.Listed -> listing.worktrees
             }
-            if (lockOf(entryOf(worktrees, repositories, name)?.takeUnless { it.prunable }) != lift) return Removal.LockChanged
+            if (lockOf(entryOf(worktrees, repositories, name, style)?.takeUnless { it.prunable }) != lift) return Removal.LockChanged
             val lifted = removals.liftLock(repository, worktree)
             if (!lifted.ok) return Removal.NotLifted(reason(lifted))
         }
@@ -588,7 +597,7 @@ class WorktreeCloseFlow(
     private suspend fun settled(repositories: Set<String>, name: String, ownSessionId: String?): Boolean =
         withTimeoutOrNull(settleMillis) {
             snapshots.first { snapshot ->
-                !liveInside(snapshot, repositories, name) && (ownSessionId == null || snapshot.sessions.values.none { it.sessionId == ownSessionId })
+                !withContext(Dispatchers.IO) { liveInside(snapshot, repositories, name, style, resolve, sameFolder) } && (ownSessionId == null || snapshot.sessions.values.none { it.sessionId == ownSessionId })
             }
         } != null
 
@@ -615,12 +624,33 @@ class WorktreeCloseFlow(
         const val TRACKED = "git tracks files in it, so deleting it would be a change to commit"
 
         /**
-         * Whether a session in [snapshot] runs in the worktree [name] of one of [repositories], or anywhere below it (a
-         * worktree nested inside it included).
+         * The key the close flows of a project share for the worktree [name] of [repository]: one per folder, whatever
+         * shape of its path a thread or the section names ([PathRules.key]).
          */
-        fun liveInside(snapshot: SessionSnapshot, repositories: Set<String>, name: String): Boolean {
-            val dirs = repositories.map { Worktrees.dirOf(it, name) }
-            return snapshot.sessions.values.any { session -> session.cwd?.let { cwd -> dirs.any { isAtOrUnder(cwd, it) } } == true }
+        fun flightKey(repository: String, name: String, style: PathStyle = PathStyle.current): String =
+            PathRules.key(Worktrees.dirOf(repository, name, style), style)
+
+        /**
+         * Whether a session in [snapshot] runs in the worktree [name] of one of [repositories], or anywhere below it (a
+         * worktree nested inside it included). A cwd the text cannot place for sure ([PathRules.mayBeInside]) counts,
+         * an empty one does not. The cwd counts as written, by its real path ([resolve], which may block), and by the
+         * disk's own word ([sameFolder], which may block too): on Windows a claude started from a subst drive or
+         * through a junction keeps that spelling in its status file.
+         */
+        fun liveInside(
+            snapshot: SessionSnapshot,
+            repositories: Set<String>,
+            name: String,
+            style: PathStyle = PathStyle.current,
+            resolve: (String) -> String? = { null },
+            sameFolder: (dir: String, cwd: String) -> Boolean = { _, _ -> false },
+        ): Boolean {
+            val dirs = repositories.map { Worktrees.dirOf(it, name, style) }
+            return snapshot.sessions.values.any { session ->
+                val cwd = session.cwd?.takeIf(String::isNotBlank) ?: return@any false
+                listOfNotNull(cwd, resolve(cwd)?.takeIf(String::isNotBlank)).any { place -> dirs.any { PathRules.mayBeInside(place, it, style) } } ||
+                    dirs.any { sameFolder(it, cwd) }
+            }
         }
 
         /**
@@ -634,38 +664,44 @@ class WorktreeCloseFlow(
             repositories: Set<String>,
             name: String,
             resolve: (String) -> String? = { null },
+            style: PathStyle = PathStyle.current,
         ): Boolean {
-            val dirs = repositories.map { Worktrees.dirOf(it, name) }
+            val dirs = repositories.map { Worktrees.dirOf(it, name, style) }
             return threads.any { other ->
                 val worktree = other.worktree ?: return@any false
                 if (other.id == closedId) return@any false
-                val usesIt = { folder: String? -> folder != null && dirs.any { isAtOrUnder(Worktrees.dirOf(folder, worktree), it) } }
-                usesIt(other.folder.trimEnd('/')) || usesIt(resolve(other.folder))
+                val usesIt = { folder: String? ->
+                    !folder.isNullOrBlank() && dirs.any { PathRules.mayBeInside(Worktrees.dirOf(folder, worktree, style), it, style) }
+                }
+                usesIt(other.folder) || usesIt(resolve(other.folder))
             }
         }
 
-        /** Whether git lists a worktree below the worktree [name] of one of [repositories] (not that worktree itself). */
-        fun holdsAnother(worktrees: List<GitWorktree>, repositories: Set<String>, name: String): Boolean {
-            val dirs = repositories.map { Worktrees.dirOf(it, name) }
-            return worktrees.any { w -> dirs.any { w.path.trimEnd('/').startsWith("$it/") } }
-        }
-
-        /** The worktree [name] of one of [repositories] as `git worktree list` reports it, or null when git does not list it. */
-        fun entryOf(worktrees: List<GitWorktree>, repositories: Set<String>, name: String): GitWorktree? =
-            worktrees.firstOrNull { w -> repositories.any { w.path.trimEnd('/') == Worktrees.dirOf(it, name) } }
-
-        /** Whether [path] is the folder [dir] or lies below it. */
-        private fun isAtOrUnder(path: String, dir: String): Boolean {
-            val trimmed = path.trimEnd('/')
-            return trimmed == dir || trimmed.startsWith("$dir/")
+        /**
+         * Whether git lists a worktree below the worktree [name] of one of [repositories] (not that worktree itself). A
+         * yes keeps the worktree, so a listed path the text cannot place for sure counts as below it.
+         */
+        fun holdsAnother(worktrees: List<GitWorktree>, repositories: Set<String>, name: String, style: PathStyle = PathStyle.current): Boolean {
+            val dirs = repositories.map { Worktrees.dirOf(it, name, style) }
+            return worktrees.any { w -> dirs.any { PathRules.mayBeInside(w.path, it, style) && !PathRules.same(w.path, it, style) } }
         }
 
         /**
-         * Whether one of [files], each a path and its canonical path (links resolved, or null), lies in one of the
-         * worktree folders [dirs]: a file opened through a link to the repository has a path outside the worktree.
+         * The worktree [name] of one of [repositories] as `git worktree list` reports it, or null when git does not list
+         * it. Strict ([PathRules.same]): on Windows a name Win32 would trim never matches the folder it opens, so such a
+         * worktree reads as not listed, and Skein does not take such a name for one there anyway
+         * ([Worktrees.isValidName]).
          */
-        fun anyInWorktree(files: List<Pair<String, String?>>, dirs: Set<String>): Boolean =
-            files.any { (path, canonical) -> listOfNotNull(path, canonical).any { p -> dirs.any { isAtOrUnder(p, it) } } }
+        fun entryOf(worktrees: List<GitWorktree>, repositories: Set<String>, name: String, style: PathStyle = PathStyle.current): GitWorktree? =
+            worktrees.firstOrNull { w -> repositories.any { PathRules.same(w.path, Worktrees.dirOf(it, name, style), style) } }
+
+        /**
+         * Whether one of [files], each a path and its canonical path (links resolved, or null), lies in one of the
+         * worktree folders [dirs]: a file opened through a link to the repository has a path outside the worktree. A
+         * yes keeps the worktree, so a path the text cannot place for sure counts as in it.
+         */
+        fun anyInWorktree(files: List<Pair<String, String?>>, dirs: Set<String>, style: PathStyle = PathStyle.current): Boolean =
+            files.any { (path, canonical) -> listOfNotNull(path, canonical).any { p -> dirs.any { PathRules.mayBeInside(p, it, style) } } }
 
         /** Whether an editor holds a change, not saved yet, to a file in one of [dirs]; reads only, in a read action. */
         private suspend fun unsavedEditsIn(dirs: Set<String>): Boolean = readAction {

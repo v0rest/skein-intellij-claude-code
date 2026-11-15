@@ -265,10 +265,31 @@ output or `.env`, which the question says, and the changed-files count does not 
 ignored folder, a `name.git` folder with no `.git` entry, does not count as a repository of its own, so it goes with
 the worktree, as it would with git itself.
 
+## Windows
+
+Skein runs on native Windows the way it runs on macOS and Linux, and it reads what Claude Code writes there in its own
+shapes. Paths arrive in several forms, `C:\...` from the status files and java.nio and `C:/...` from git and the IDE,
+so Skein compares them through one set of rules that takes either separator, any case and the drive letter, and that
+answers "not sure" for a path only the disk could place, a `..` or a name ending in a dot or a space. Where a yes lets
+Skein act, as in deleting a leftover worktree folder, not sure counts as no, and where a yes holds an action back, as
+in a session still working in a worktree, it counts as yes. The one recursive delete refuses a symbolic link or an
+NTFS junction on its way, and a session also holds its worktree when its folder is the same one through a link, a
+`subst` drive or a short 8.3 name.
+
+A status file's process start is a Windows FILETIME there, the CLI is `claude.exe` and not Claude Desktop, whose
+processes have the same name, and Claude Code's worktree lock carries no start date, so a lock counts as left behind
+only once its process is gone or clearly runs something else. The IDE ends claude and its shell itself when a tab
+closes on Windows, so Skein closes the tab at once instead of hanging claude up first, and a permission prompt on the
+PowerShell tool shows its command like one on Bash. Claude Code's installer does not put its folder on PATH, and the
+warning about missing status files says so when claude is only there. Git for Windows checks files out with CRLF by
+default, which the worktrees `.gitignore` takes as it comes. Keep the Mac awake stays a macOS setting, and the fake
+claude for the end-to-end tests is a POSIX script, so those tests skip on Windows.
+
 ## Checked
 
-- 1117 unit tests, among them a lifecycle test that drives a thread from start to restore against a copy of a Claude
-  home and proves, byte for byte, that nothing under it changed (and fails as soon as anything does).
+- 1282 unit tests (six of them need Windows and skip on macOS), among them a lifecycle test that drives a thread from
+  start to restore against a copy of a Claude home and proves, byte for byte, that nothing under it changed (and fails
+  as soon as anything does).
 - Unit tests for which glyph and tooltip words a waiting thread gets for each reason (and that the three glyphs differ
   and stay orange in both themes), the thread order with pins, the History arrangement (pinned first, done hidden, a
   done mark dropping on newer activity), the sections and the waiting-only filter, the toolbar counter, the keep-awake
@@ -304,8 +325,8 @@ the worktree, as it would with git itself.
   thread's claude in its git worktree, and close a thread with real SIGHUPs, the fake's first and then its shell's.
   Contract tests check every status and transcript line the fake writes against Skein's readers, that it refuses the
   real Claude home and an unmarked one, and that a fake left waiting ends once its test is gone. These tests are skipped
-  where python3 3.8 or newer or `/bin/sh` is missing, the git worktree tests also without git, and the close test
-  outside macOS and Linux.
+  where python3 3.8 or newer or `/bin/sh` is missing, the git worktree tests also without git, and all of them on
+  Windows, where the fake does not run.
 - Unit tests for New Thread Here as well, the folder a selection leads to (a file its folder, a folder itself, several
   items only when they lead to one folder, none outside the project, off the local disk or in a worktree), the folder
   a subfolder thread's row names, a subfolder thread tied to its own claude and restored to its folder, and the
@@ -331,6 +352,15 @@ the worktree, as it would with git itself.
   bytes that are not UTF-8 and a backspace included. Unit tests for the worktree tooltip too, its numbered paths, a
   long line wrapped after a `/` or at a space under its number, the fixed width only once a line wrapped, and the
   folder named from the project's folder or in full outside it.
+- Unit tests for the Windows rules, which run on macOS with Windows-shaped input as well - the path rules over a
+  generated corpus (either separator, case, drive letters, UNC and `\\?\` paths, a `..`, names ending in a dot or a
+  space, a `ſ` or a Kelvin sign that NTFS keeps apart from s and k), git's forward-slash worktree list, the FILETIME
+  start, `claude.exe` against Claude Desktop and node, bun or deno, the lock without a start date, the History of a
+  `C:\` project, the PATH hint and the PowerShell preview. The whole suite runs on Windows too, in CI in a
+  `windows-latest` job that does not block, and it passed on a Windows 11 ARM64 machine with the POSIX-only tests
+  skipped, where the tests that need the real system ran as well, a junction refused on the way of the folder delete
+  and of the worktrees `.gitignore`, a OneDrive-like folder that resolves to itself let through, and Git for Windows'
+  CRLF.
 - The IntelliJ Plugin Verifier against IntelliJ IDEA 2026.3 (263.7307.200): compatible, no internal API usage (the
   build fails on any), no deprecated API usage.
 - In a sandbox IDE: the terminal tab opens in the editor area, the typed command reaches the shell (0.4 to 0.9 s),
@@ -393,6 +423,12 @@ the worktree, as it would with git itself.
   clean worktree, a rebase stopped half way and an untrusted project, and the note past 1,000 files. The worktree
   tooltip waits for a long path wrapping, its width and the folder named from the project's folder in the Worktrees
   section.
+  Windows waits for its checks by hand on Windows 11, with the plugin installed from disk - a thread's states and the
+  glyphs of a waiting one, the balloons, the editor ×, the Terminal tool window's × and Close on a working thread, a
+  restart that resumes the threads, History, New Thread Here, a worktree thread with its counts, Show Changes and the
+  base warning, a worktree lock while its claude runs, Remove… of a leftover behind a junction at `.claude`, a claude
+  started from a `subst` drive, a project opened through a junction and its History, a project under OneDrive, the
+  PATH hint with `.local\bin` taken off PATH, and a run on x64 Windows.
 
 ## Releasing
 

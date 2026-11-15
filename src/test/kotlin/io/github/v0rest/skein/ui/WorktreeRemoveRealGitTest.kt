@@ -5,8 +5,11 @@ import io.github.v0rest.skein.git.GitResult
 import io.github.v0rest.skein.git.GitRunner
 import io.github.v0rest.skein.git.WorktreeGit
 import io.github.v0rest.skein.git.WorktreeReader
+import io.github.v0rest.skein.paths.PathRules
 import io.github.v0rest.skein.process.JdkProcessProbe
 import io.github.v0rest.skein.process.ProcessProbe
+import io.github.v0rest.skein.testutil.CanonicalTemporaryFolder
+import io.github.v0rest.skein.testutil.Fixture
 import io.github.v0rest.skein.threads.KeptKind
 import io.github.v0rest.skein.threads.SkeinThread
 import io.github.v0rest.skein.threads.ThreadState
@@ -22,7 +25,6 @@ import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
-import org.junit.rules.TemporaryFolder
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
@@ -38,7 +40,7 @@ import java.util.concurrent.TimeUnit
  */
 class WorktreeRemoveRealGitTest {
     @get:Rule
-    val folder = TemporaryFolder()
+    val folder = CanonicalTemporaryFolder()
 
     private lateinit var git: RealGit
     private val events = mutableListOf<String>()
@@ -157,6 +159,46 @@ class WorktreeRemoveRealGitTest {
         assertEquals(1, reports.size)
     }
 
+    /**
+     * With core.ignorecase on (Windows, a case-insensitive Mac) git tracks `.Claude/worktrees/stray/f` in the folder
+     * `.claude/worktrees/stray`, while a pathspec compares by case: the leftover counts as tracked all the same, and
+     * Delete Folder is not offered. The index entry is made without the file, so this runs on a case-sensitive disk too.
+     */
+    @Test
+    fun aLeftoverTrackedUnderAnotherCaseIsNotDeleted() {
+        val repo = git.repository("acme").toRealPath()
+        ok(repo, "config", "core.ignorecase", "true")
+        val blob = ok(repo, "hash-object", "-w", "--", "a.c").stdout.trim()
+        ok(repo, "update-index", "--add", "--cacheinfo", "100644,$blob,.Claude/worktrees/stray/f")
+        ok(repo, "commit", "-q", "-m", "tracked under another case")
+        val stray = Files.createDirectories(repo.resolve(".claude/worktrees/stray"))
+        Files.writeString(stray.resolve("notes.txt"), "work\n")
+        remove(repo, "stray")
+        assertFalse(events.toString(), "delete?" in events)
+        assertEquals(listOf(WorktreeCloseText.notDeleted("stray", WorktreeCloseFlow.TRACKED)), reports)
+        assertTrue(Files.exists(stray.resolve("notes.txt")))
+    }
+
+    /**
+     * On Windows a junction under the worktrees folder (`mklink /J`, no privilege needed) is no symbolic link to
+     * java.nio: the flow's own link check takes it for one, so Delete Folder is never offered for what lies behind it.
+     */
+    @Test
+    fun aJunctionLeftoverIsALinkToTheFlowOnWindows() {
+        Fixture.assumeWindows("NTFS junctions exist on Windows only")
+        val repo = git.repository("acme").toRealPath()
+        val outside = Files.createDirectories(folder.root.toPath().toRealPath().resolve("outside"))
+        Files.writeString(outside.resolve("work.txt"), "work\n")
+        Files.createDirectories(repo.resolve(".claude/worktrees"))
+        val junction = ProcessBuilder("cmd", "/c", "mklink", "/J", repo.resolve(".claude/worktrees/x").toString(), outside.toString())
+            .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
+        assertTrue(junction.waitFor(30, TimeUnit.SECONDS) && junction.exitValue() == 0)
+        remove(repo, "x")
+        assertFalse(events.toString(), "delete?" in events)
+        assertEquals(listOf(WorktreeCloseText.notDeleted("x", WorktreeCloseFlow.LINK)), reports)
+        assertTrue(Files.exists(outside.resolve("work.txt")))
+    }
+
     /** A clone with a commit of its own in an ignored folder of the worktree: git status cannot see it, the plain remove deletes it. */
     private fun ignoredClone(wt: Path): Path {
         val clone = Files.createDirectories(wt.resolve("vendor/lib"))
@@ -260,7 +302,7 @@ class WorktreeRemoveRealGitTest {
 
     /** The lock's reason as `git worktree list --porcelain` shows it, or null when the worktree is not locked. */
     private fun lockOf(wt: Path): String? {
-        val entry = WorktreeGit(git).list(wt.parent.parent.parent).single { it.path == wt.toString() }
+        val entry = WorktreeGit(git).list(wt.parent.parent.parent).single { PathRules.same(it.path, wt.toString()) }
         return if (entry.locked) entry.lockReason.orEmpty() else null
     }
 
@@ -268,24 +310,28 @@ class WorktreeRemoveRealGitTest {
     private fun claudeReason(pid: Long, start: Instant, zone: ZoneId = ZoneId.systemDefault()) =
         "claude session x (pid $pid start ${DateTimeFormatter.ofPattern("EEE MMM ppd HH:mm:ss uuuu", Locale.US).format(start.atZone(zone))})"
 
-    /** The pid of a process that has ended. */
+    /** The pid of a process that has ended: git, which every test here needs anyway, on every system. */
     private fun deadPid(): Long {
-        val process = ProcessBuilder("true").start()
+        val process = ProcessBuilder("git", "--version").redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
         assertTrue(process.waitFor(30, TimeUnit.SECONDS))
         assertFalse(ProcessHandle.of(process.pid()).map { it.isAlive }.orElse(false))
         return process.pid()
     }
 
-    /** A live `sleep` and its start, or the test is skipped when the system does not say when it started. */
-    private fun <T> withSleep(block: (pid: Long, start: Instant) -> T): T {
-        val sleep = ProcessBuilder("sleep", "60").start()
+    /**
+     * A live program that is not claude, and its start, or the test is skipped when the system does not say when it
+     * started: git reading its input until that closes, which works on every system, where `sleep` is POSIX only.
+     */
+    private fun <T> withLiveProgram(block: (pid: Long, start: Instant) -> T): T {
+        val program = ProcessBuilder("git", "hash-object", "--stdin").redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
         try {
-            val start = JdkProcessProbe().startInstant(sleep.pid())
+            val start = JdkProcessProbe().startInstant(program.pid())
             assumeTrue(start != null)
-            return block(sleep.pid(), start!!)
+            return block(program.pid(), start!!)
         } finally {
-            sleep.destroy()
-            sleep.waitFor(30, TimeUnit.SECONDS)
+            // its input closed, git ends on its own, and so does any process git for Windows started for it
+            program.outputStream.close()
+            if (!program.waitFor(30, TimeUnit.SECONDS)) program.destroy()
         }
     }
 
@@ -320,7 +366,7 @@ class WorktreeRemoveRealGitTest {
     @Test
     fun aLiveClaudeKeepsItsLockAndItsWorktree() {
         val wt = repositoryWithWorktree()
-        withSleep { pid, start ->
+        withLiveProgram { pid, start ->
             val reason = claudeReason(pid, start)
             lock(wt, reason)
             runBlocking { flow(probe = claudeAt(pid)).removeKept(wt.parent.parent.parent.toString(), "x") }
@@ -331,12 +377,12 @@ class WorktreeRemoveRealGitTest {
         }
     }
 
-    /** The pid lives, but `sleep` holds it and not claude: the lock is stale, and the worktree goes after the question. */
+    /** The pid lives, but another program holds it and not claude: the lock is stale, and the worktree goes after the question. */
     @Test
     fun aPidAnotherProgramHoldsNowDoesNotKeepTheLock() {
         val wt = repositoryWithWorktree()
-        withSleep { pid, start ->
-            // three days before the `sleep` started, in UTC and in the system's zone alike
+        withLiveProgram { pid, start ->
+            // three days before that program started, in UTC and in the system's zone alike
             lock(wt, claudeReason(pid, start.minusSeconds(3 * 86_400)))
             remove(wt.parent.parent.parent)
         }
@@ -346,7 +392,7 @@ class WorktreeRemoveRealGitTest {
 
     /**
      * The pid lives and started when the lock says, written in the system's zone or in UTC as Claude Code was seen to
-     * write it: that start vouches, though `sleep` is no command Skein knows as claude, and nothing is lifted.
+     * write it: that start vouches, though git is no command Skein knows as claude, and nothing is lifted.
      */
     @Test
     fun aMatchingStartKeepsTheLockWhateverTheCommand() {
@@ -354,7 +400,7 @@ class WorktreeRemoveRealGitTest {
             val wt = repositoryWithWorktree(git.repository("acme-$zone".replace('/', '-')).toRealPath())
             events.clear()
             reports.clear()
-            withSleep { pid, start ->
+            withLiveProgram { pid, start ->
                 val reason = claudeReason(pid, start, zone)
                 lock(wt, reason)
                 remove(wt.parent.parent.parent)

@@ -3,6 +3,8 @@ package io.github.v0rest.skein.ui
 import io.github.v0rest.skein.git.Changes
 import io.github.v0rest.skein.git.Operation
 import io.github.v0rest.skein.git.WorktreeCounts
+import io.github.v0rest.skein.paths.PathStyle.UNIX
+import io.github.v0rest.skein.paths.PathStyle.WINDOWS
 import io.github.v0rest.skein.threads.KeptKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -96,12 +98,29 @@ class WorktreeBadgeTest {
     /** The section row names its folder from the project's base, and the whole path only for one outside the project. */
     @Test
     fun theFolderIsNamedFromTheProjectBase() {
-        assertEquals(".claude/worktrees/task-old", WorktreeBadge.folder("/w/acme", "task-old", "/private/w/acme/.claude/worktrees/task-old", "/w/acme"))
-        assertEquals(".claude/worktrees/task-old", WorktreeBadge.folder("/w/acme/", "task-old", "/w/acme/.claude/worktrees/task-old", "/w/acme/"))
-        assertEquals("libs/demo-shop/.claude/worktrees/task-1", WorktreeBadge.folder("/w/acme/libs/demo-shop", "task-1", "/w/acme/libs/demo-shop/.claude/worktrees/task-1", "/w/acme"))
-        assertEquals("/elsewhere/shop/.claude/worktrees/task-1", WorktreeBadge.folder("/elsewhere/shop", "task-1", "/elsewhere/shop/.claude/worktrees/task-1", "/w/acme"))
-        assertEquals("/w/acme-old/.claude/worktrees/task-1", WorktreeBadge.folder("/w/acme-old", "task-1", "/w/acme-old/.claude/worktrees/task-1", "/w/acme"))
-        assertEquals("/w/acme/.claude/worktrees/task-1", WorktreeBadge.folder("/w/acme", "task-1", "/w/acme/.claude/worktrees/task-1", null))
+        assertEquals(".claude/worktrees/task-old", WorktreeBadge.folder("/w/acme", "task-old", "/private/w/acme/.claude/worktrees/task-old", "/w/acme", UNIX))
+        assertEquals(".claude/worktrees/task-old", WorktreeBadge.folder("/w/acme/", "task-old", "/w/acme/.claude/worktrees/task-old", "/w/acme/", UNIX))
+        assertEquals("libs/demo-shop/.claude/worktrees/task-1", WorktreeBadge.folder("/w/acme/libs/demo-shop", "task-1", "/w/acme/libs/demo-shop/.claude/worktrees/task-1", "/w/acme", UNIX))
+        assertEquals("/elsewhere/shop/.claude/worktrees/task-1", WorktreeBadge.folder("/elsewhere/shop", "task-1", "/elsewhere/shop/.claude/worktrees/task-1", "/w/acme", UNIX))
+        assertEquals("/w/acme-old/.claude/worktrees/task-1", WorktreeBadge.folder("/w/acme-old", "task-1", "/w/acme-old/.claude/worktrees/task-1", "/w/acme", UNIX))
+        assertEquals("/w/acme/.claude/worktrees/task-1", WorktreeBadge.folder("/w/acme", "task-1", "/w/acme/.claude/worktrees/task-1", null, UNIX))
+        // a project on a bare root names nothing from there
+        assertEquals("/w/acme/.claude/worktrees/task-1", WorktreeBadge.folder("/w/acme", "task-1", "/w/acme/.claude/worktrees/task-1", "/", UNIX))
+    }
+
+    /**
+     * On Windows the IDE gives the project's base as `C:/w/acme`, the section's row names its repository in the
+     * system's shape: the folder is still named from the base, with `/` as git names a path inside a repository.
+     */
+    @Test
+    fun theFolderIsNamedFromTheProjectBaseOnWindows() {
+        val path = "C:\\w\\acme\\.claude\\worktrees\\task-1"
+        assertEquals(".claude/worktrees/task-1", WorktreeBadge.folder("C:\\w\\acme", "task-1", path, "C:/w/acme", WINDOWS))
+        assertEquals(".claude/worktrees/task-1", WorktreeBadge.folder("c:/W/Acme/", "task-1", path, "C:/w/acme", WINDOWS))
+        assertEquals("libs/demo-shop/.claude/worktrees/task-1", WorktreeBadge.folder("C:/w/acme/libs/demo-shop", "task-1", path, "C:/w/acme", WINDOWS))
+        assertEquals(path, WorktreeBadge.folder("C:\\w\\acme-old", "task-1", path, "C:/w/acme", WINDOWS))
+        assertEquals(path, WorktreeBadge.folder("D:\\w\\acme", "task-1", path, "C:/w/acme", WINDOWS))
+        assertEquals(path, WorktreeBadge.folder("C:\\w\\acme", "task-1", path, "C:/", WINDOWS))
     }
 
     /** The tooltip is as wide as its longest line, and given a body width only when a line had to wrap. */
