@@ -404,4 +404,20 @@ class ArchitectureTest {
         assertTrue(lines.isNotEmpty())
         assertEquals(emptyList<String>(), lines.filter { "plain(" !in it })
     }
+
+    /** Claude Code's `.claude.json` holds the user's account: only the trust reader reads it, through ClaudeHome. */
+    @Test
+    fun onlyFolderTrustReadsTheClaudeConfig() {
+        assertEquals(
+            listOf("io/github/v0rest/skein/claude/ClaudeHome.kt", "io/github/v0rest/skein/claude/FolderTrust.kt"),
+            filesContaining("readConfig(", "readAtMost(", "configFile").sorted(),
+        )
+    }
+
+    /** Nothing read from `.claude.json` may reach a log - only each folder's trust leaves the reader. */
+    @Test
+    fun folderTrustNeverLogs() {
+        val lines = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/claude/FolderTrust.kt"))
+        assertEquals(emptyList<String>(), SourceRules.offenders(lines, listOf("logger", "LOG.", "thisLogger", "println", "System.out", "System.err", "printStackTrace")))
+    }
 }

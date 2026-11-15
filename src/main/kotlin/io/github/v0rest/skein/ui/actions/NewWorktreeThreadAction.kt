@@ -12,6 +12,7 @@ import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.text.StringUtil
 import io.github.v0rest.skein.claude.ClaudeHome
+import io.github.v0rest.skein.claude.FolderTrustReader
 import io.github.v0rest.skein.claude.WorktreeBaseRef
 import io.github.v0rest.skein.git.BaseWarning
 import io.github.v0rest.skein.git.ExcludeResult
@@ -72,8 +73,10 @@ class NewWorktreeThreadAction : DumbAwareAction() {
                 branch = { git.currentBranch(repository) },
                 counts = { git.upstreamCounts(repository) },
             )
+            // claude --worktree refuses a repository nobody told Claude Code to trust, so the dialog says so and lets OK go on
+            val trustWarning = WorktreeStart.trustWarning(repo, FolderTrustReader.read(ClaudeHome.default(), repo))
             ApplicationManager.getApplication().invokeLater({
-                val dialog = WorktreeNameDialog(project, existing, inUse, branches, warning)
+                val dialog = WorktreeNameDialog(project, existing, inUse, branches, warning, trustWarning)
                 if (!dialog.showAndGet()) return@invokeLater // cancelled: nothing was written
                 val name = dialog.name
                 // an existing worktree reopens: the repository's branch now says nothing about where it started

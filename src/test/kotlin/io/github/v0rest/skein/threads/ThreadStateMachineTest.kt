@@ -140,4 +140,16 @@ class ThreadStateMachineTest {
         assertEquals(NeedsYou(WaitReason.PERMISSION, 10), ThreadStateMachine.onViewed(NeedsYou(WaitReason.PERMISSION, 10)))
         assertEquals(Working, ThreadStateMachine.onViewed(Working))
     }
+
+    /** The person only told claude to trust its folder: what comes next is claude starting, never a finished turn. */
+    @Test
+    fun theAnswerToTheTrustQuestionIsStillTheStart() {
+        val asking = NeedsYou(WaitReason.TRUST, 5)
+        assertEquals(Transition(Idle, null), ThreadStateMachine.onSession(asking, idle, viewed = false, now = 10))
+        assertEquals(Transition(Starting, null), ThreadStateMachine.onSession(asking, busy, viewed = false, now = 10))
+        assertEquals(Transition(Starting, null), ThreadStateMachine.onSession(asking, sessionFile(activity = BACKGROUND), viewed = false, now = 10))
+        // claude's own prompts are left as they were: the end of one is a finished turn
+        assertEquals(Transition(YourTurn(10), NotificationKind.TURN_FINISHED), ThreadStateMachine.onSession(NeedsYou(WaitReason.OTHER, 5), idle, viewed = false, now = 10))
+        assertEquals(Transition(NeedsYou(WaitReason.PERMISSION, 10), NotificationKind.NEEDS_YOU), ThreadStateMachine.onSession(asking, permission, viewed = false, now = 10))
+    }
 }

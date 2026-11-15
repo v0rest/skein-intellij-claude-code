@@ -23,7 +23,12 @@ question, any other dialog), blue when it finished its turn and you have not loo
 works, each with its own glyph. The orange one is a ring with a lock in it for a permission prompt, a ring with a
 speech bubble for a question and a ring with a dot for any other dialog, all three orange because all three need you,
 and the tooltip says "waiting for your permission" or "waiting for your answer". Grouping, the waiting-only filter, the
-counter, Jump to Waiting Thread and the tool window badge treat the three alike. Clicking a row opens its tab, in the
+counter, Jump to Waiting Thread and the tool window badge treat the three alike. In a folder Claude Code has not been
+told to trust yet, claude first asks whether to trust it and writes no status file while it asks, so about half a
+minute after the launch such a thread shows as waiting too, with "claude asks whether to trust this folder", where
+Skein used to say it could not read the session's status. Skein learns that answer from Claude Code's `.claude.json`,
+in the home folder or in `CLAUDE_CONFIG_DIR`. It keeps only each folder's trust from that file, never shows or logs
+anything else from it and never writes it. Clicking a row opens its tab, in the
 Terminal tool window by bringing the tool window up on it, and Tools | Skein has Jump to Waiting Thread for the
 keyboard. A thread whose tab you have in front, the selected editor or the selected tab of the visible Terminal tool
 window, counts as seen and gets no balloon.
@@ -125,7 +130,10 @@ nothing, and it says nothing either when `origin` has no cached default branch, 
 Claude Code's own fetch. A level or ahead-only branch, a branch with no upstream or one that tracks a local branch, a
 detached HEAD and a git error give no warning, and the dialog looks as it always did. In a shallow repository the
 counts cannot be trusted, so the warning says the branch differs from the remote and leaves the numbers out. Typing the
-name of an existing worktree, which reopens it, hides the warning too.
+name of an existing worktree, which reopens it, hides the warning too. When Claude Code has not been told to trust the
+repository yet, the dialog also warns that `claude --worktree` refuses such a folder and that a plain thread there has
+to answer its question first. OK still works, since a newer Claude Code may decide otherwise, and a worktree thread
+that ends that way gets the same words as a balloon.
 
 Skein reads `worktree.baseRef` from the project's `.claude/settings.local.json` and `.claude/settings.json` and the
 user's `settings.json`, in that order and as strict JSON, so a file Claude Code would reject (a comment, a trailing
@@ -287,7 +295,7 @@ claude for the end-to-end tests is a POSIX script, so those tests skip on Window
 
 ## Checked
 
-- 1282 unit tests (six of them need Windows and skip on macOS), among them a lifecycle test that drives a thread from
+- 1355 unit tests (six of them need Windows and skip on macOS), among them a lifecycle test that drives a thread from
   start to restore against a copy of a Claude home and proves, byte for byte, that nothing under it changed (and fails
   as soon as anything does).
 - Unit tests for which glyph and tooltip words a waiting thread gets for each reason (and that the three glyphs differ
@@ -444,10 +452,12 @@ and a failing one leaves a screenshot of that machine under `build/reports/ui-sc
 
 The tests check that the Skein tool window is on, that a thread started from the empty list starts claude with its
 status file and that the tab's × ends both, and that New Thread in Worktree…, from its own button, starts claude
-with the worktree as its `cwd` while the repository's `git status` stays clean. After each test they end the claude
-processes the IDE under test still has, by pid, and delete the test's repository under `skein-ci/ui-work` in the home
-folder of that machine. The title bar's buttons are reached through a click into the list first, since the new UI
-shows a tool window's title bar buttons only while it has the focus.
+with the worktree as its `cwd` while the repository's `git status` stays clean. Two more check the trust question of a
+fresh folder - the thread's row says claude asks about trust until the answer, and New Thread in Worktree… warns about
+a repository nobody trusted yet. After each test they end the claude processes the IDE under test still has, by pid,
+and delete the test's repository under `skein-ci/ui-work` in the home folder of that machine. The title bar's buttons
+are reached through a click into the list first, since the new UI shows a tool window's title bar buttons only while it
+has the focus.
 
 ## Releasing
 

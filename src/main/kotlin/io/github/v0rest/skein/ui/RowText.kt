@@ -11,16 +11,18 @@ object RowText {
     fun bold(state: ThreadState): Boolean = state is ThreadState.NeedsYou || state is ThreadState.YourTurn
 
     /**
-     * One thing on each line: the name when the row cuts it ([cutName]), the state words with when claude last answered,
-     * the model and the context in use ([context]), then a worktree's [lines] ([WorktreeBadge.tooltip]). No preview and
-     * no path: the row shows what fits of the one and names the folder or the worktree of the other. Always HTML with
-     * every line escaped: names come from Claude Code, git and the user, and a tooltip that starts with `<html>` is read
-     * as HTML, remote images included, so none of them can ever be markup. A worktree line that wrapped gives the
-     * tooltip a width ([WorktreeBadge.html]), [widthPx] or the scaled default.
+     * One thing on each line: the name when the row cuts it ([cutName]), the state words with when claude last answered
+     * and the state's hint, if it has one ([StatusText.tooltipHint]), the model and the context in use ([context]), then a
+     * worktree's [lines] ([WorktreeBadge.tooltip]). No preview and no path: the row shows what fits of the one and names
+     * the folder or the worktree of the other. Always HTML with every line escaped: names come from Claude Code, git and
+     * the user, and a tooltip that starts with `<html>` is read as HTML, remote images included, so none of them can
+     * ever be markup. A worktree line that wrapped gives the tooltip a width ([WorktreeBadge.html]), [widthPx] or the
+     * scaled default.
      */
     fun tooltip(thread: SkeinThread, cutName: String? = null, context: ContextUse? = null, now: Long = 0, lines: List<String> = emptyList(), widthPx: Int? = null): String {
         val state = listOfNotNull(StatusText.tooltipLine(thread.state), context?.let { answered(it, now) }).joinToString(" · ")
-        return WorktreeBadge.html(listOfNotNull(cutName, state, context?.tooltipBase) + lines, widthPx)
+        val hint = StatusText.tooltipHint(thread.state)?.let { WorktreeBadge.wrap(it, indent = 0) }.orEmpty()
+        return WorktreeBadge.html(listOfNotNull(cutName, state) + hint + listOfNotNull(context?.tooltipBase) + lines, widthPx)
     }
 
     /**

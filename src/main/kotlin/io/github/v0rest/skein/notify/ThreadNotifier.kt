@@ -26,6 +26,7 @@ import io.github.v0rest.skein.threads.SessionMarksService
 import io.github.v0rest.skein.threads.SkeinThread
 import io.github.v0rest.skein.threads.ThreadState
 import io.github.v0rest.skein.ui.SkeinIcons
+import io.github.v0rest.skein.ui.WorktreeStart
 import java.awt.Toolkit
 import java.nio.file.Files
 import java.nio.file.Path
@@ -41,6 +42,7 @@ object NotificationText {
         NotificationKind.NEEDS_YOU -> when ((thread.state as? ThreadState.NeedsYou)?.reason) {
             WaitReason.PERMISSION -> "needs your permission"
             WaitReason.QUESTION -> "has a question"
+            WaitReason.TRUST -> "asks whether to trust this folder"
             WaitReason.OTHER, null -> "needs you"
         }
     }
@@ -90,6 +92,13 @@ object NotificationText {
             else -> "Skein could not read session status. $version"
         }
     }
+
+    /**
+     * The balloon's content when `claude --worktree` ended in a [repository] Claude Code was not told to trust - the
+     * dialog's own words ([WorktreeStart.untrustedRepository]), escaped, since a folder name may hold a `<`.
+     */
+    fun untrustedWorktree(repository: String, style: PathStyle = PathStyle.current): String =
+        StringUtil.escapeXmlEntities(WorktreeStart.untrustedRepository(repository, style))
 }
 
 /**
@@ -155,6 +164,10 @@ class ThreadNotifier(private val project: Project, private val open: (threadId: 
             onEdt { group(GROUP_ID).createNotification(text, NotificationType.WARNING).notify(project) }
         }
     }
+
+    /** A worktree thread's `claude --worktree` ended in a [repository] nobody told Claude Code to trust; says what to do. */
+    fun untrustedWorktree(repository: String) =
+        onEdt { group(GROUP_ID).createNotification(NotificationText.untrustedWorktree(repository), NotificationType.WARNING).notify(project) }
 
     private fun locateClaude(): ClaudeLocator.Result =
         ClaudeLocator.locateIn(PathStyle.current, EnvironmentUtil.getEnvironmentMap(), System.getProperty("user.home").orEmpty()) { Files.isRegularFile(Path.of(it)) }

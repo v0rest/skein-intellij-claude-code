@@ -1,8 +1,10 @@
 package io.github.v0rest.skein.threads
 
+import io.github.v0rest.skein.claude.FolderTrust
 import io.github.v0rest.skein.claude.HistoryEntry
 import io.github.v0rest.skein.claude.SessionFile
 import io.github.v0rest.skein.claude.SessionSnapshot
+import io.github.v0rest.skein.claude.WaitReason
 import io.github.v0rest.skein.claude.Worktrees
 import io.github.v0rest.skein.claude.liveIn
 import io.github.v0rest.skein.paths.PathRules
@@ -53,6 +55,12 @@ interface CoordinatorEvents {
 
     /** No thread Skein ever started produced a status file: the user's Claude Code is probably too old. Called once. */
     fun missingStatusFiles()
+
+    /**
+     * A worktree thread's `claude --worktree` ended without a status file in a repository Claude Code was not told to
+     * trust, which it refuses. Called for each such launch, in place of [missingStatusFiles].
+     */
+    fun untrustedWorktree(thread: SkeinThread) = Unit
 }
 
 sealed interface ResumeOutcome {
@@ -78,6 +86,11 @@ class ThreadCoordinator(
     private val mapper: ThreadMapper,
     private val slot: LaunchSlot,
     private val events: CoordinatorEvents,
+    /**
+     * Whether Claude Code was told to trust a folder ([io.github.v0rest.skein.claude.FolderTrustReader]). Asked only for
+     * a launch past its timeout, and blocking, since it reads Claude Code's config.
+     */
+    private val trust: (folder: String) -> FolderTrust = { FolderTrust.UNKNOWN },
     private val ids: () -> String = { UUID.randomUUID().toString() },
 ) {
     private class Record(
@@ -119,6 +132,12 @@ class ThreadCoordinator(
         /** Typed into the tab and not yet seen in the session directory. */
         var pending: PendingLaunch? = null
         var pendingTimedOut = false
+
+        /**
+         * The thread's claude, seen under the tab's shell past the launch timeout while it asks whether to trust the
+         * folder - it writes its status file only once the person answers yes. Null otherwise.
+         */
+        var asking: ProcessId? = null
 
         /** Waiting for the launch slot before it can be typed. */
         var queued: String? = null
@@ -223,6 +242,10 @@ class ThreadCoordinator(
         // launch is in flight, and only within the grace window, so it cannot take a newer thread's process
         for (record in records.values.sortedBy { it.pendingTimedOut }) {
             val pending = record.pending ?: continue
+            record.asking?.let {
+                followAsking(record, it, snapshot, now)
+                continue
+            }
             val anchor = record.anchor
             if (anchor != null) {
                 // a relaunch in a tab that already has its anchor: the new claude shows up under that anchor
@@ -235,7 +258,7 @@ class ThreadCoordinator(
                     // nothing came within the late window: give up, and the tab reads "exited" again
                     now - pending.typedAt > LATE_MATCH_MILLIS -> clearPending(record)
                     // after the launch timeout: status unknown, but still waiting, so nothing is typed twice
-                    else -> checkTimeout(record, pending, now)
+                    else -> checkTimeout(record, pending, snapshot, now)
                 }
                 continue
             }
@@ -255,7 +278,7 @@ class ThreadCoordinator(
                 clearPending(record)
                 anyFileEverMatched = true
             } else {
-                checkTimeout(record, pending, now)
+                checkTimeout(record, pending, snapshot, now)
             }
         }
         for (record in records.values) markInView(record, viewed(record.id))
@@ -290,14 +313,126 @@ class ThreadCoordinator(
         slot.release(record.id)
     }
 
-    private fun checkTimeout(record: Record, pending: PendingLaunch, now: Long) {
+    /**
+     * The launch's status file did not come in time. Before Skein calls the status unknown it looks whether the thread's
+     * claude runs under the tab's shell without one, and reads trust only when that can change the outcome
+     * ([LaunchTimeout]) - a claude in a folder nobody trusted asks about that and waits for the person, a worktree
+     * thread's claude gone from such a repository was turned away. Every other launch shows status unknown, and the
+     * could-not-read balloon once, as before.
+     */
+    private fun checkTimeout(record: Record, pending: PendingLaunch, snapshot: SessionSnapshot, now: Long) {
         if (record.pendingTimedOut || now - pending.typedAt <= LAUNCH_TIMEOUT_MILLIS) return
         record.pendingTimedOut = true
         slot.release(record.id)
+        val asking = claudeWithoutStatus(record, snapshot)
+        // only `claude --worktree` is turned away by a folder nobody trusted, a resume in a worktree thread is not
+        val worktreeLaunch = record.worktree != null && pending.resumeSessionId == null
+        when (LaunchTimeout.decide(claudeAlive = asking != null, worktree = worktreeLaunch) { trustQuietly(record.folder) }) {
+            LaunchTimeout.Outcome.ASKS_TRUST -> if (asking != null && waitForTrust(record, asking, now)) return
+            LaunchTimeout.Outcome.UNTRUSTED_WORKTREE -> {
+                setState(record, ThreadState.Unknown, now)
+                events.untrustedWorktree(record.toThread())
+                return
+            }
+            LaunchTimeout.Outcome.AS_BEFORE -> Unit
+        }
         setState(record, ThreadState.Unknown, now)
+        reportMissingStatusFiles()
+    }
+
+    /** The could-not-read balloon, once, and only while no thread Skein started ever got a status file it could read. */
+    private fun reportMissingStatusFiles() {
         if (!anyFileEverMatched && !missingReported) {
             missingReported = true
             events.missingStatusFiles()
+        }
+    }
+
+    /** [trust], with a failure read as a trust Skein cannot tell. */
+    private fun trustQuietly(folder: String): FolderTrust =
+        try {
+            trust(folder)
+        } catch (e: RuntimeException) {
+            FolderTrust.UNKNOWN
+        }
+
+    /**
+     * The tab's shell and the one claude under it that has no status file, or null on any doubt. An IDE child counts only
+     * as the bracket of [doubtAbout] proves it the tab's own (there when Skein typed and when the tab's session started,
+     * not there before the tab's own shell), is still that very process and is not some other thread's. The bracket is
+     * only as fine as a tick, so whatever else the IDE started in that tick passes it too. Each child left gets its kind
+     * ([ThreadMapper.kindOf]) - the IDE's own helpers (conhost, fsnotifier, JCEF) are ignored, and the tab's shell is
+     * taken only when it is the one shell left and nothing unrecognised stands beside it. An unrecognised child may be
+     * the tab's own shell (wsl.exe, tmux, a wrapper, a command the system does not give), with a listed shell beside it
+     * being another terminal's, and Close would hang that one up. A tab with its anchor already has its shell. Two
+     * claudes under the shell, or none, are no answer either. Never throws - a process listing that fails is no answer.
+     */
+    private fun claudeWithoutStatus(record: Record, snapshot: SessionSnapshot): Pair<Long, ProcessId>? =
+        try {
+            val withStatus = snapshot.sessions.keys + snapshot.unrecognized
+            val owned = slot.ownedAnchors() - setOfNotNull(record.anchor)
+            val listed = record.anchor?.let { anchor -> listOfNotNull(mapper.startOf(anchor)?.let { ProcessId(anchor, it) }) }
+                ?: (record.tab.shellsAtCommand as? ShellsAtCommand.Listed)?.processes?.known.orEmpty()
+            val bracketed = listed.filter { it.pid !in owned && mapper.startOf(it.pid) == it.start && doubtAbout(record, it) == null }
+            val shell = if (record.anchor != null) bracketed.singleOrNull() else loneShell(bracketed)
+            shell?.let { mapper.clisUnder(it.pid).filter { claude -> claude.pid !in withStatus }.singleOrNull()?.let { claude -> it.pid to claude } }
+        } catch (e: Exception) {
+            null
+        }
+
+    /** The one shell among [children], or null when there is none, there are more, or a child Skein does not know stands beside it. */
+    private fun loneShell(children: List<ProcessId>): ProcessId? {
+        val kinds = children.groupBy { mapper.kindOf(it.pid) }
+        if (kinds[IdeChild.UNRECOGNISED].orEmpty().isNotEmpty()) return null
+        return kinds[IdeChild.SHELL]?.singleOrNull()
+    }
+
+    /**
+     * Shows the thread as waiting on claude's trust question. The tab's shell becomes its anchor (so Close ends it as
+     * any other thread), and a balloon goes out unless the person looks at the tab. False, and nothing changed, when
+     * another window holds that shell.
+     */
+    private fun waitForTrust(record: Record, found: Pair<Long, ProcessId>, now: Long): Boolean {
+        val (shell, claude) = found
+        if (record.anchor == null) {
+            if (!slot.claimAnchor(this, shell)) return false
+            record.anchor = shell
+        }
+        record.asking = claude
+        setState(record, ThreadState.NeedsYou(WaitReason.TRUST, now), now)
+        if (!record.inView) events.notify(record.toThread(), NotificationKind.NEEDS_YOU)
+        return true
+    }
+
+    /**
+     * A thread whose claude asks about trust ([Record.asking]). Its status file comes once the person answers yes,
+     * however long that takes, and the thread goes on from there as a starting one, so its first idle is not a finished
+     * turn. A status file Skein cannot read ends the wait too, with status unknown and the could-not-read balloon the
+     * launch's timeout held back, as a launch with such a file gets it. A claude that ends first (the answer was no)
+     * leaves the thread exited, and the tab's shell stays its anchor, so a claude typed there by hand is followed.
+     */
+    private fun followAsking(record: Record, claude: ProcessId, snapshot: SessionSnapshot, now: Long) {
+        val anchor = record.anchor
+        val answered = claude.pid in snapshot.sessions || anchor != null && mapper.processFor(anchor, snapshot.sessions.values) != null
+        when {
+            answered -> {
+                record.asking = null
+                setState(record, ThreadState.Starting, now)
+                clearPending(record)
+                anyFileEverMatched = true
+            }
+            claude.pid in snapshot.unrecognized -> {
+                record.asking = null
+                clearPending(record)
+                setState(record, ThreadState.Unknown, now)
+                reportMissingStatusFiles()
+            }
+            mapper.startOf(claude.pid) != claude.start -> {
+                record.asking = null
+                record.pending = null
+                record.pendingTimedOut = false
+                setState(record, ThreadState.Exited, now)
+            }
         }
     }
 
@@ -381,7 +516,8 @@ class ThreadCoordinator(
 
     /**
      * What to hang up before [record]'s tab closes: the tab's shell (its anchor) and the thread's claude, taken only from
-     * a live session file under that anchor ([ThreadMapper.processFor]), so never a claude in another terminal. The
+     * a live session file under that anchor ([ThreadMapper.processFor]) or, while it asks about trust and has no such
+     * file yet, the claude Skein saw under that very shell ([Record.asking]) - so never a claude in another terminal. The
      * anchor serves the thread's status as it always did. For a signal it must also be, as the very same process (pid
      * and start instant), among the IDE's processes right before Skein typed into the tab ([ThreadTab.shellsAtCommand])
      * and when the tab's session was first seen started ([Record.shellsAtStart]), and not among them before the tab's
@@ -403,7 +539,9 @@ class ThreadCoordinator(
         val shell = ProcessId(anchor, start)
         val doubt = doubtAbout(record, shell)
         if (doubt != null) return Ending(record.tab, shell = null, claude = null, doubt = doubt)
+        // a claude asking about trust has no session file yet, but Skein saw it under this very shell
         val claude = mapper.processFor(anchor, sessions)?.pid?.let { pid -> mapper.startOf(pid)?.let { ProcessId(pid, it) } }
+            ?: record.asking?.takeIf { mapper.startOf(it.pid) == it.start }
         return Ending(record.tab, shell, claude)
     }
 

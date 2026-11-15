@@ -112,4 +112,11 @@ class WaitGlyphTest {
         assertSame(SkeinIcons.forGlyph(WaitGlyph.QUESTION), SkeinIcons.forState(ThreadState.NeedsYou(WaitReason.QUESTION, 0)))
         assertSame(SkeinIcons.forGlyph(WaitGlyph.DOT), SkeinIcons.forState(ThreadState.NeedsYou(WaitReason.OTHER, 0)))
     }
+
+    /** The trust question is a dialog of claude's like any other: the plain orange dot. */
+    @Test
+    fun theTrustQuestionGetsThePlainDot() {
+        assertEquals(WaitGlyph.DOT, WaitGlyph.of(WaitReason.TRUST))
+        assertSame(SkeinIcons.NEEDS_YOU, SkeinIcons.forState(ThreadState.NeedsYou(WaitReason.TRUST, 0)))
+    }
 }

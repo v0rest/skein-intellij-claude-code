@@ -1,6 +1,7 @@
 package io.github.v0rest.skein.threads
 
 import io.github.v0rest.skein.claude.ClaudeActivity
+import io.github.v0rest.skein.claude.FolderTrust
 import io.github.v0rest.skein.claude.HistoryEntry
 import io.github.v0rest.skein.claude.SessionFile
 import io.github.v0rest.skein.claude.SessionSnapshot
@@ -8,10 +9,12 @@ import io.github.v0rest.skein.claude.WaitReason
 import io.github.v0rest.skein.paths.PathRules
 import io.github.v0rest.skein.process.HangUp
 import io.github.v0rest.skein.process.ProcessId
+import io.github.v0rest.skein.process.ProcessProbe
 import io.github.v0rest.skein.terminal.ClaudeCommand
 import io.github.v0rest.skein.terminal.ThreadTerminalListener
 import io.github.v0rest.skein.testutil.FakeProcessProbe
 import io.github.v0rest.skein.testutil.FakeThreadTerminal
+import io.github.v0rest.skein.testutil.Fixture
 import io.github.v0rest.skein.testutil.sessionFile
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -38,6 +41,11 @@ class ThreadCoordinatorTest {
     private val closedThreads = mutableListOf<SkeinThread>()
     private val leftNeedsYou = mutableListOf<String>()
     private var missingStatusFilesCalls = 0
+    private val untrustedWorktrees = mutableListOf<SkeinThread>()
+
+    /** What `.claude.json` says about every folder, and the folders the coordinator asked about. */
+    private var folderTrust = FolderTrust.UNKNOWN
+    private val trustAsked = mutableListOf<String>()
     private val events = object : CoordinatorEvents {
         override fun notify(thread: SkeinThread, kind: NotificationKind) {
             notifications += thread.id to kind
@@ -59,9 +67,13 @@ class ThreadCoordinatorTest {
         override fun missingStatusFiles() {
             missingStatusFilesCalls++
         }
+
+        override fun untrustedWorktree(thread: SkeinThread) {
+            untrustedWorktrees += thread
+        }
     }
     private var nextId = 0
-    private val coordinator = ThreadCoordinator(terminal, ThreadMapper(probe), slot, events) { "t${++nextId}" }
+    private val coordinator = ThreadCoordinator(terminal, ThreadMapper(probe), slot, events, trust = { trustAsked += it; folderTrust }) { "t${++nextId}" }
 
     @Before
     fun tree() {
@@ -73,8 +85,11 @@ class ThreadCoordinatorTest {
 
     private var nextShell = 10L
 
+    /** What a tab's shell runs, so the trust look counts it as a shell ([ThreadMapper.kindOf]). */
+    private val shellCommand = listOf(Fixture.root("bin/zsh"))
+
     private fun spawnShell() {
-        probe.add(nextShell++, parent = 1, start = t0)
+        probe.add(nextShell++, parent = 1, start = t0, command = shellCommand)
     }
 
     private fun claude(pid: Long, under: Long, startedAt: Long = 1_500, cwd: String = "/p", sessionId: String = A, activity: ClaudeActivity = ClaudeActivity.IDLE, waitingFor: String? = null, name: String? = "acme-api", nameDerived: Boolean = false): SessionFile {
@@ -1162,5 +1177,461 @@ class ThreadCoordinatorTest {
         coordinator.onTabClosed("t1")
         assertEquals("feat-x", closedThreads.single().worktree)
         assertEquals("t1", closedThreads.single().id)
+    }
+
+    // claude's folder-trust question: it writes no status file while it asks
+
+    /** Claude Code's CLI by its executable, so Skein can tell it from another program under the tab's shell. */
+    private val cli = Fixture.root("w/bin/claude")
+
+    /** A claude Skein tells as the CLI, running under [under] without a status file, as it does while it asks about trust. */
+    private fun askingClaude(pid: Long, under: Long, startedAt: Long = 1_500) =
+        probe.add(pid, parent = under, start = Instant.ofEpochMilli(startedAt - 100), command = listOf(cli))
+
+    /** t1 in /p, its claude 100 under shell 10 asking whether to trust the folder, past the launch timeout. */
+    private fun startAskingThread(viewed: Boolean = false) {
+        folderTrust = FolderTrust.NOT_TRUSTED
+        coordinator.newThread("/p", now = 1_000)
+        askingClaude(100, under = 10)
+        coordinator.onSnapshot(snap(), viewed = { viewed }, now = 31_000)
+        coordinator.onSnapshot(snap(), viewed = { viewed }, now = 31_001)
+    }
+
+    private val asking = ThreadState.NeedsYou(WaitReason.TRUST, 31_001)
+
+    @Test
+    fun aClaudeAskingWhetherToTrustItsFolderWaitsForTheUser() {
+        folderTrust = FolderTrust.NOT_TRUSTED
+        coordinator.newThread("/p", now = 1_000)
+        askingClaude(100, under = 10)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 31_000)
+        assertEquals(ThreadState.Starting, thread().state)
+        assertTrue("nothing is read before the launch timeout", trustAsked.isEmpty())
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 31_001)
+        assertEquals(asking, thread().state)
+        assertEquals(listOf("/p"), trustAsked)
+        assertEquals("no could-not-read balloon", 0, missingStatusFilesCalls)
+        assertEquals(listOf("t1" to NotificationKind.NEEDS_YOU), notifications)
+        // the tab's shell is the thread's from now on, and the launch slot is free for the next thread
+        assertEquals(10L, thread().anchor)
+        assertNull(slot.holder(now = 0))
+        // it keeps waiting, and the file is not read again
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 300_000)
+        assertEquals(asking, thread().state)
+        assertEquals(1, trustAsked.size)
+        assertEquals(1, notifications.size)
+    }
+
+    @Test
+    fun aThreadInViewWaitsWithoutABalloon() {
+        startAskingThread(viewed = true)
+        assertEquals(asking, thread().state)
+        assertTrue(notifications.isEmpty())
+    }
+
+    /** However long the person takes - here well past the late window - the status file that comes then is the thread's. */
+    @Test
+    fun theStatusFileAfterTheAnswerGoesOnWithoutAnnouncingATurn() {
+        startAskingThread()
+        val answered = sessionFile(pid = 100, activity = ClaudeActivity.IDLE, sessionId = A, cwd = "/p", name = "acme-api", startedAt = 1_500)
+        coordinator.onSnapshot(snap(answered), viewed = { false }, now = 200_000)
+        assertEquals(ThreadState.Idle, thread().state)
+        assertEquals(A, thread().sessionId)
+        assertEquals(10L, thread().anchor)
+        assertEquals(listOf("t1"), leftNeedsYou)
+        assertEquals("only the trust question's own balloon", listOf("t1" to NotificationKind.NEEDS_YOU), notifications)
+        // from here on its turns are ordinary ones
+        coordinator.onSnapshot(snap(sessionFile(pid = 100, activity = ClaudeActivity.BUSY, sessionId = A, cwd = "/p", startedAt = 1_500)), viewed = { false }, now = 201_000)
+        coordinator.onSnapshot(snap(answered), viewed = { false }, now = 202_000)
+        assertEquals(ThreadState.YourTurn(202_000), thread().state)
+    }
+
+    /** "No, exit" ends claude without a status file: the thread is no longer waiting, and its tab is followed as before. */
+    @Test
+    fun aClaudeThatEndsWhileAskingLeavesTheThreadExited() {
+        startAskingThread()
+        probe.kill(100)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 40_000)
+        assertEquals(ThreadState.Exited, thread().state)
+        assertEquals(listOf("t1"), leftNeedsYou)
+        assertEquals(0, missingStatusFilesCalls)
+        // claude typed again by hand in that tab shows up under its shell
+        coordinator.onSnapshot(snap(claude(101, under = 10, startedAt = 50_000)), viewed = { false }, now = 51_000)
+        assertEquals(ThreadState.Idle, thread().state)
+    }
+
+    /** A pid that another process took over since is not the claude that asked. */
+    @Test
+    fun aPidTakenOverByAnotherProcessIsNotTheClaudeThatAsked() {
+        startAskingThread()
+        probe.kill(100)
+        probe.add(100, parent = 10, start = Instant.ofEpochMilli(39_000), command = listOf(cli))
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 40_000)
+        assertEquals(ThreadState.Exited, thread().state)
+    }
+
+    @Test
+    fun aLiveClaudeInATrustedFolderTimesOutAsBefore() {
+        folderTrust = FolderTrust.TRUSTED
+        coordinator.newThread("/p", now = 1_000)
+        askingClaude(100, under = 10)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 31_001)
+        assertEquals(ThreadState.Unknown, thread().state)
+        assertEquals(1, missingStatusFilesCalls)
+        assertEquals(listOf("/p"), trustAsked)
+        assertNull(thread().anchor)
+    }
+
+    @Test
+    fun aLiveClaudeWhoseTrustSkeinCannotReadTimesOutAsBefore() {
+        folderTrust = FolderTrust.UNKNOWN
+        coordinator.newThread("/p", now = 1_000)
+        askingClaude(100, under = 10)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 31_001)
+        assertEquals(ThreadState.Unknown, thread().state)
+        assertEquals(1, missingStatusFilesCalls)
+        assertTrue(notifications.isEmpty())
+    }
+
+    /** A process under the shell that the system names nothing Skein can tell (node on Windows, say) is no proof of claude. */
+    @Test
+    fun aProcessSkeinCannotTellAsClaudeIsNoAnswer() {
+        folderTrust = FolderTrust.NOT_TRUSTED
+        coordinator.newThread("/p", now = 1_000)
+        probe.add(100, parent = 10, start = Instant.ofEpochMilli(1_400))
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 31_001)
+        assertEquals(ThreadState.Unknown, thread().state)
+        assertEquals(1, missingStatusFilesCalls)
+        assertTrue("trust is read only for a claude Skein saw", trustAsked.isEmpty())
+    }
+
+    @Test
+    fun aPlainLaunchWithoutClaudeNeverReadsTrust() {
+        folderTrust = FolderTrust.NOT_TRUSTED
+        coordinator.newThread("/p", now = 1_000)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 31_001)
+        assertEquals(ThreadState.Unknown, thread().state)
+        assertEquals(1, missingStatusFilesCalls)
+        assertTrue(trustAsked.isEmpty())
+    }
+
+    /** Only the tab's own shell counts: a terminal open before the tab or opened after the typing is another one's. */
+    @Test
+    fun aClaudeInAnotherTerminalIsNeverTakenForTheThreads() {
+        folderTrust = FolderTrust.NOT_TRUSTED
+        probe.add(9, parent = 1, start = t0, command = shellCommand) // a terminal the user had open before
+        askingClaude(90, under = 9)
+        coordinator.newThread("/p", now = 1_000)
+        probe.add(30, parent = 1, start = Instant.ofEpochMilli(2_000), command = shellCommand) // one opened after Skein typed
+        askingClaude(300, under = 30, startedAt = 2_500)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 31_001)
+        assertEquals(ThreadState.Unknown, thread().state)
+        assertNull(thread().anchor)
+        assertEquals(1, missingStatusFilesCalls)
+    }
+
+    @Test
+    fun twoClaudesUnderTheTabAreADoubt() {
+        folderTrust = FolderTrust.NOT_TRUSTED
+        coordinator.newThread("/p", now = 1_000)
+        askingClaude(100, under = 10)
+        askingClaude(101, under = 10, startedAt = 1_600)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 31_001)
+        assertEquals(ThreadState.Unknown, thread().state)
+    }
+
+    /** The gate of the could-not-read balloon is no gate here: a thread asks about trust whatever others did before. */
+    @Test
+    fun aThreadAsksAboutTrustEvenAfterAnotherGotItsStatusFile() {
+        val s100 = startIdleThread()
+        folderTrust = FolderTrust.NOT_TRUSTED
+        coordinator.newThread("/q", now = 10_000)
+        askingClaude(101, under = 11, startedAt = 10_500)
+        coordinator.onSnapshot(snap(s100), viewed = { false }, now = 40_001)
+        assertEquals(ThreadState.NeedsYou(WaitReason.TRUST, 40_001), thread("t2").state)
+        assertEquals(listOf("/q"), trustAsked)
+        assertEquals(ThreadState.Idle, thread("t1").state)
+    }
+
+    /** A resume typed into a tab that has its shell already waits the same way. */
+    @Test
+    fun aRelaunchInTheSameTabCanAskAboutTrustToo() {
+        startIdleThread()
+        probe.kill(100)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 3_000)
+        coordinator.resume(entry(A), snap(), now = 4_000)
+        folderTrust = FolderTrust.NOT_TRUSTED
+        askingClaude(101, under = 10, startedAt = 4_500)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 34_001)
+        assertEquals(ThreadState.NeedsYou(WaitReason.TRUST, 34_001), thread().state)
+        coordinator.onSnapshot(snap(sessionFile(pid = 101, activity = ClaudeActivity.IDLE, sessionId = A, cwd = "/p", startedAt = 4_500)), viewed = { false }, now = 200_000)
+        assertEquals(ThreadState.Idle, thread().state)
+        assertEquals(listOf("t1" to NotificationKind.NEEDS_YOU), notifications)
+    }
+
+    /** Close ends a waiting thread like any other: its claude, then its shell. */
+    @Test
+    fun closingAThreadThatAsksAboutTrustEndsItsClaudeAndShell() {
+        startAskingThread()
+        val ending = coordinator.close(listOf("t1"), confirmed = setOf("t1"), snap()).closing.single()
+        assertEquals(ProcessId(10, t0), ending.shell)
+        assertEquals(ProcessId(100, Instant.ofEpochMilli(1_400)), ending.claude)
+        assertNull(ending.doubt)
+    }
+
+    /** `claude --worktree` ends at once in a folder nobody trusted: the balloon says that instead of "could not read". */
+    @Test
+    fun aWorktreeThreadTurnedAwayForTrustSaysSo() {
+        folderTrust = FolderTrust.NOT_TRUSTED
+        coordinator.newWorktreeThread("/p", "feat-x", now = 1_000)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 31_001)
+        assertEquals(ThreadState.Unknown, thread().state)
+        assertEquals(listOf("t1"), untrustedWorktrees.map { it.id })
+        assertEquals("/p", untrustedWorktrees.single().folder)
+        assertEquals(listOf("/p"), trustAsked)
+        assertEquals(0, missingStatusFilesCalls)
+        // that answer does not use up the could-not-read balloon of a launch with no such reason
+        folderTrust = FolderTrust.UNKNOWN
+        coordinator.newThread("/q", now = 40_000)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 70_001)
+        assertEquals(1, missingStatusFilesCalls)
+        assertEquals(1, untrustedWorktrees.size)
+    }
+
+    @Test
+    fun aWorktreeThreadGoneWithoutAnAnswerOnTrustTimesOutAsBefore() {
+        folderTrust = FolderTrust.UNKNOWN
+        coordinator.newWorktreeThread("/p", "feat-x", now = 1_000)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 31_001)
+        folderTrust = FolderTrust.TRUSTED
+        coordinator.newWorktreeThread("/p", "feat-y", now = 40_000)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 70_001)
+        assertTrue(untrustedWorktrees.isEmpty())
+        assertEquals(listOf("/p", "/p"), trustAsked)
+        assertEquals(1, missingStatusFilesCalls)
+        assertEquals(listOf(ThreadState.Unknown, ThreadState.Unknown), coordinator.threads.map { it.state })
+    }
+
+    // review fixes, round 1
+
+    /** Two terminals whose shells started in the tick the tab opened cannot be told apart, so neither one's claude is taken (T1). */
+    @Test
+    fun twoShellsThatStartedWithTheTabAreADoubt() {
+        folderTrust = FolderTrust.NOT_TRUSTED
+        terminal.onOpen = { spawnShell(); spawnShell() } // the tab's shell 10, and 11 of a terminal opened in the same tick
+        coordinator.newThread("/p", now = 1_000)
+        askingClaude(110, under = 11) // the other terminal's claude, asking about its own folder
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 31_001)
+        assertEquals(ThreadState.Unknown, thread().state)
+        assertNull(thread().anchor)
+        assertEquals(1, missingStatusFilesCalls)
+        assertTrue(notifications.isEmpty())
+    }
+
+    /** A shell another window holds is that window's thread's, so it is no doubt for this one (T3, the owned guard). */
+    @Test
+    fun aShellAnotherWindowHoldsLeavesTheTabsOwnShell() {
+        folderTrust = FolderTrust.NOT_TRUSTED
+        terminal.onOpen = { spawnShell(); spawnShell() }
+        coordinator.newThread("/p", now = 1_000)
+        slot.claimAnchor(Any(), 11) // another window's thread runs in shell 11
+        askingClaude(100, under = 10)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 31_001)
+        assertEquals(asking, thread().state)
+        assertEquals(10L, thread().anchor)
+    }
+
+    /** The tab's shell ended after its session started and a new process got its pid: not the tab's shell any more (T3). */
+    @Test
+    fun aShellPidTakenOverAfterTheStartIsNotTheTabs() {
+        folderTrust = FolderTrust.NOT_TRUSTED
+        coordinator.newThread("/p", now = 1_000)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 2_000) // the session is seen started with shell 10
+        probe.kill(10)
+        probe.add(10, parent = 1, start = Instant.ofEpochMilli(5_000), command = shellCommand)
+        askingClaude(100, under = 10, startedAt = 6_000)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 31_001)
+        assertEquals(ThreadState.Unknown, thread().state)
+        assertNull(thread().anchor)
+    }
+
+    /**
+     * Two windows run on dispatchers of their own, so another one may claim the shell between Skein's look and its own
+     * claim: then no trust wait, and status unknown as before (T3, the false path of the claim).
+     */
+    @Test
+    fun aShellAnotherWindowClaimsMeanwhileIsNotTaken() {
+        folderTrust = FolderTrust.NOT_TRUSTED
+        val otherWindow = Any()
+        var race = false
+        val racing = object : ProcessProbe by probe {
+            override fun children(pid: Long): List<Long> {
+                // the walk below the shell is the moment between the look and the claim
+                if (race && pid == 10L) slot.claimAnchor(otherWindow, 10)
+                return probe.children(pid)
+            }
+        }
+        val window = ThreadCoordinator(terminal, ThreadMapper(racing), slot, events, trust = { folderTrust }) { "w1" }
+        window.newThread("/p", now = 1_000)
+        askingClaude(100, under = 10)
+        window.onSnapshot(snap(), viewed = { false }, now = 2_000)
+        race = true
+        window.onSnapshot(snap(), viewed = { false }, now = 31_001)
+        assertEquals(ThreadState.Unknown, window.threads.single().state)
+        assertNull(window.threads.single().anchor)
+        assertEquals(1, missingStatusFilesCalls)
+    }
+
+    /**
+     * The answer came, but claude wrote a status file Skein cannot read: status unknown, as for any such file, and the
+     * could-not-read balloon its timeout did not give, under the usual once-only rule (T3, `unrecognized` in the answer).
+     */
+    @Test
+    fun anUnreadableStatusFileAfterTheAnswerIsStatusUnknownWithTheBalloon() {
+        startAskingThread()
+        coordinator.onSnapshot(snap(unrecognized = setOf(100)), viewed = { false }, now = 60_000)
+        assertEquals(ThreadState.Unknown, thread().state)
+        assertEquals(listOf("t1"), leftNeedsYou)
+        assertEquals(1, missingStatusFilesCalls)
+        coordinator.onSnapshot(snap(unrecognized = setOf(100)), viewed = { false }, now = 61_000)
+        assertEquals(1, missingStatusFilesCalls)
+        // once it is readable, the thread goes on
+        coordinator.onSnapshot(snap(sessionFile(pid = 100, activity = ClaudeActivity.IDLE, sessionId = A, cwd = "/p", startedAt = 1_500)), viewed = { false }, now = 62_000)
+        assertEquals(ThreadState.Idle, thread().state)
+    }
+
+    /** The asking claude ended and its pid went to another process before the close came: only the shell is hung up (T3). */
+    @Test
+    fun aClaudePidTakenOverBeforeTheCloseIsNotHungUp() {
+        startAskingThread()
+        probe.kill(100)
+        probe.add(100, parent = 10, start = Instant.ofEpochMilli(40_000), command = listOf(cli))
+        val ending = coordinator.close(listOf("t1"), confirmed = setOf("t1"), snap()).closing.single()
+        assertEquals(ProcessId(10, t0), ending.shell)
+        assertNull(ending.claude)
+    }
+
+    /**
+     * A worktree session resumed from History or restored types `claude --resume`, which a folder nobody trusted does
+     * not turn away the way it does `--worktree`, so a claude Skein did not see is no reason for the trust balloon (T2).
+     */
+    @Test
+    fun aResumedWorktreeSessionIsNotTakenForATurnedAwayWorktree() {
+        folderTrust = FolderTrust.NOT_TRUSTED
+        coordinator.resume(HistoryEntry(A, "/p/.claude/worktrees/feat-x", "title", 0, null, worktree = "feat-x"), snap(), now = 1_000)
+        assertEquals("feat-x", thread().worktree)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 31_001)
+        assertEquals(ThreadState.Unknown, thread().state)
+        assertTrue(untrustedWorktrees.isEmpty())
+        assertTrue("trust is not read for a resume Skein saw no claude of", trustAsked.isEmpty())
+        assertEquals(1, missingStatusFilesCalls)
+        // a restored worktree thread with its session resumes it the same way
+        coordinator.restore(listOf(saved("r1", D, worktree = "feat-y")), snap(), now = 40_000)
+        coordinator.onTabSelected("r1", snap(), now = 41_000)
+        assertEquals("r1" to "claude --resume $D", terminal.typed.last())
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 72_000)
+        assertEquals(ThreadState.Unknown, thread("r1").state)
+        assertTrue(untrustedWorktrees.isEmpty())
+    }
+
+    /** A terminal open before the tab fails the bracket, so the tab's own shell is the one left and its claude is the thread's. */
+    @Test
+    fun aTerminalOpenBeforeTheTabLeavesTheTabsOwnClaude() {
+        folderTrust = FolderTrust.NOT_TRUSTED
+        probe.add(9, parent = 1, start = t0, command = shellCommand)
+        askingClaude(90, under = 9)
+        coordinator.newThread("/p", now = 1_000)
+        askingClaude(100, under = 10)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 31_001)
+        assertEquals(asking, thread().state)
+        assertEquals(10L, thread().anchor)
+        assertEquals(ProcessId(100, Instant.ofEpochMilli(1_400)), coordinator.close(listOf("t1"), setOf("t1"), snap()).closing.single().claude)
+    }
+
+    // review fixes, round 2 - only shells count (T1')
+
+    /**
+     * On Windows the IDE starts helpers of its own in the tick the tab opens - conhost, fsnotifier, and JCEF's
+     * cef_server when README.md opens in its preview. They are no tab's shell, so the trust wait still engages.
+     */
+    @Test
+    fun theIdesOwnHelpersBesideTheShellAreNoDoubt() {
+        folderTrust = FolderTrust.NOT_TRUSTED
+        // the helpers as the running system names them, `.exe` on Windows only
+        fun exe(name: String) = if (io.github.v0rest.skein.paths.PathStyle.current == io.github.v0rest.skein.paths.PathStyle.WINDOWS) "$name.exe" else name
+        terminal.onOpen = {
+            spawnShell()
+            probe.add(20, parent = 1, start = t0, command = listOf(Fixture.root("w/ide/bin/" + exe("conhost"))))
+            probe.add(21, parent = 1, start = t0, command = listOf(Fixture.root("w/ide/bin/" + exe("fsnotifier"))))
+            probe.add(22, parent = 1, start = t0, command = listOf(Fixture.root("w/ide/jbr/lib/" + exe("cef_server"))))
+            probe.add(23, parent = 1, start = t0, command = listOf(Fixture.root("w/ide/Frameworks/jcef Helper (Renderer)")))
+        }
+        coordinator.newThread("/p", now = 1_000)
+        askingClaude(100, under = 10)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 31_001)
+        assertEquals(asking, thread().state)
+        assertEquals(10L, thread().anchor)
+        assertEquals(0, missingStatusFilesCalls)
+    }
+
+    /** A shell Skein does not know by name is no candidate, so nothing is taken and the timeout is as before. */
+    @Test
+    fun aShellOfAnUnknownNameGivesNoAnswer() {
+        folderTrust = FolderTrust.NOT_TRUSTED
+        terminal.onOpen = { probe.add(10, parent = 1, start = t0, command = listOf(Fixture.root("opt/bin/oddshell"))) }
+        coordinator.newThread("/p", now = 1_000)
+        askingClaude(100, under = 10)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 31_001)
+        assertEquals(ThreadState.Unknown, thread().state)
+        assertNull(thread().anchor)
+        assertEquals(1, missingStatusFilesCalls)
+    }
+
+    /** A process whose command the system does not give is no shell either. */
+    @Test
+    fun aShellWhoseCommandIsUnknownGivesNoAnswer() {
+        folderTrust = FolderTrust.NOT_TRUSTED
+        terminal.onOpen = { probe.add(10, parent = 1, start = t0) }
+        coordinator.newThread("/p", now = 1_000)
+        askingClaude(100, under = 10)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 31_001)
+        assertEquals(ThreadState.Unknown, thread().state)
+        assertNull(thread().anchor)
+    }
+
+    // review fixes, round 3 - an unrecognised child beside the shell is a doubt (T1'')
+
+    /**
+     * The tab's own shell is one Skein does not list (wsl.exe here), and a terminal opened in the same tick runs zsh with
+     * a claude asking: that zsh is no proof of being the tab's, so nothing is taken.
+     */
+    @Test
+    fun anUnlistedThreadShellBesideAListedOneIsADoubt() {
+        folderTrust = FolderTrust.NOT_TRUSTED
+        terminal.onOpen = {
+            probe.add(10, parent = 1, start = t0, command = listOf(Fixture.root("w/bin/wsl.exe")))
+            probe.add(11, parent = 1, start = t0, command = shellCommand)
+        }
+        coordinator.newThread("/p", now = 1_000)
+        askingClaude(110, under = 11)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 31_001)
+        assertEquals(ThreadState.Unknown, thread().state)
+        assertNull(thread().anchor)
+        assertEquals(1, missingStatusFilesCalls)
+    }
+
+    /** A process whose command the system does not give, beside the shell, could be the tab's own shell: a doubt. */
+    @Test
+    fun aCommandlessProcessBesideTheShellIsADoubt() {
+        folderTrust = FolderTrust.NOT_TRUSTED
+        terminal.onOpen = {
+            spawnShell()
+            probe.add(20, parent = 1, start = t0)
+        }
+        coordinator.newThread("/p", now = 1_000)
+        askingClaude(100, under = 10)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 31_001)
+        assertEquals(ThreadState.Unknown, thread().state)
+        assertNull(thread().anchor)
     }
 }

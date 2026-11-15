@@ -1,6 +1,8 @@
 package io.github.v0rest.skein.threads
 
+import io.github.v0rest.skein.claude.ClaudeIdentity
 import io.github.v0rest.skein.claude.PhysicalPath
+import io.github.v0rest.skein.claude.SessionDirectoryWatcher
 import io.github.v0rest.skein.claude.SessionFile
 import io.github.v0rest.skein.paths.PathRules
 import io.github.v0rest.skein.paths.PathStyle
@@ -25,6 +27,12 @@ data class PendingLaunch(
      */
     val worktreeCwd: String? = null,
 )
+
+/**
+ * What a direct child of the IDE is, by its executable's name ([ThreadMapper.kindOfExecutable]): a shell a terminal tab
+ * runs, a helper the IDE starts for itself, or something Skein does not know - which may be a tab's shell all the same.
+ */
+enum class IdeChild { SHELL, HELPER, UNRECOGNISED }
 
 /** The status file that answered a [PendingLaunch], and the tab's anchor process it revealed. */
 data class LaunchMatch(val anchor: Long, val file: SessionFile)
@@ -97,6 +105,40 @@ class ThreadMapper(private val probe: ProcessProbe, private val style: PathStyle
         return byFolder
     }
 
+    /**
+     * The Claude Code CLIs below [shell], told by their executable ([SessionDirectoryWatcher.identify]), each with its
+     * start - the outermost ones only, so a claude another claude started is not counted. A claude whose start the system
+     * does not report is left out, since a later process with its pid could not be told from it. A command the system
+     * does not give (node on Windows, another user's process) proves nothing and is no CLI here. This is how a claude that
+     * has written no status file yet is found - one that asks whether to trust its folder. Walks a bounded part of the tree.
+     */
+    fun clisUnder(shell: Long): List<ProcessId> {
+        val found = ArrayList<ProcessId>()
+        var level = probe.children(shell)
+        var walked = 0
+        repeat(MAX_DEPTH) {
+            if (level.isEmpty()) return found
+            val next = ArrayList<Long>()
+            for (pid in level) {
+                if (++walked > MAX_WALK) return found
+                if (SessionDirectoryWatcher.identify(probe.command(pid), style) == ClaudeIdentity.CLI) {
+                    probe.startInstant(pid)?.let { found += ProcessId(pid, it) }
+                } else {
+                    next += probe.children(pid)
+                }
+            }
+            level = next
+        }
+        return found
+    }
+
+    /**
+     * What the IDE's child [pid] runs, by its executable's name ([kindOfExecutable]). The IDE has children of its own
+     * that are no tab's shell - conhost, fsnotifier, JCEF's cef_server on Windows, JCEF's helpers on macOS - and a command
+     * the system does not give is UNRECOGNISED, as is a pid that is gone.
+     */
+    fun kindOf(pid: Long): IdeChild = kindOfExecutable(probe.command(pid).firstOrNull(), style)
+
     private fun isOutermost(file: SessionFile, anchor: Long, sessions: Collection<SessionFile>): Boolean {
         val sessionPids = sessions.mapTo(HashSet()) { it.pid }
         var current = probe.parent(file.pid)
@@ -117,5 +159,32 @@ class ThreadMapper(private val probe: ProcessProbe, private val style: PathStyle
 
     companion object {
         const val MAX_DEPTH = 64
+
+        /** How many processes [clisUnder] looks at below one shell at most. */
+        const val MAX_WALK = 512
+
+        /** The shells a terminal tab may run, by the file name of their executable ([kindOfExecutable]). */
+        val SHELLS = listOf("powershell", "pwsh", "cmd", "bash", "zsh", "sh", "fish", "nu", "dash", "ksh", "tcsh", "csh", "elvish", "xonsh")
+
+        /** The IDE's own helpers that run as its children beside the terminals' shells. */
+        val HELPERS = listOf("conhost", "openconsole", "fsnotifier", "fsnotifier64", "cef_server")
+
+        /** macOS names JCEF's helpers "jcef Helper", "jcef Helper (Renderer)", "jcef Helper (GPU)" and so on. */
+        private const val JCEF_HELPER = "jcef helper"
+
+        /**
+         * What [executable] is, by its file name - on Windows without `.exe` and in any case, on Unix exactly, except
+         * that a name starting with "jcef helper" is a helper in any case, as macOS writes it "jcef Helper". A blank or
+         * missing command, and any name in neither list, is UNRECOGNISED.
+         */
+        fun kindOfExecutable(executable: String?, style: PathStyle = PathStyle.current): IdeChild {
+            val name = executable?.takeIf { it.isNotBlank() }?.let { PathRules.name(it, style) } ?: return IdeChild.UNRECOGNISED
+            val bare = if (style == PathStyle.WINDOWS && name.endsWith(".exe", ignoreCase = true)) name.dropLast(4) else name
+            return when {
+                SHELLS.any { PathRules.sameName(bare, it, style) } -> IdeChild.SHELL
+                HELPERS.any { PathRules.sameName(bare, it, style) } || bare.startsWith(JCEF_HELPER, ignoreCase = true) -> IdeChild.HELPER
+                else -> IdeChild.UNRECOGNISED
+            }
+        }
     }
 }

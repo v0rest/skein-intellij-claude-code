@@ -7,7 +7,10 @@ import io.github.v0rest.skein.claude.waitReasonOf
 
 /** What a thread row shows. The state machine below derives the first four from status files; the coordinator sets the rest. */
 sealed interface ThreadState {
-    /** `claude` is blocked on a dialog since [since] (epoch millis); orange, top of the list. */
+    /**
+     * `claude` is blocked on a dialog since [since] (epoch millis); orange, top of the list. With [WaitReason.TRUST] it is
+     * its folder-trust question, asked before claude writes any status file.
+     */
     data class NeedsYou(val reason: WaitReason, val since: Long) : ThreadState
 
     /** A turn finished at [since] and the user has not looked at the tab yet; blue, right after the orange rows. */
@@ -59,11 +62,13 @@ object ThreadStateMachine {
         ClaudeActivity.BACKGROUND -> Transition(if (prev.isStartingUp()) ThreadState.Starting else ThreadState.Background, null)
         // a value Skein does not know is shown as working but never leads to a notification, not even at the next idle
         ClaudeActivity.UNKNOWN -> Transition(if (prev.isStartingUp()) ThreadState.Starting else ThreadState.WorkingUnknown, null)
-        ClaudeActivity.IDLE -> when (prev) {
+        ClaudeActivity.IDLE -> when {
             // the user is looking at it: the turn is read
-            is ThreadState.YourTurn -> Transition(if (viewed) ThreadState.Idle else prev, null)
-            ThreadState.Idle -> Transition(prev, null)
-            ThreadState.Working, ThreadState.Background, is ThreadState.NeedsYou ->
+            prev is ThreadState.YourTurn -> Transition(if (viewed) ThreadState.Idle else prev, null)
+            prev == ThreadState.Idle -> Transition(prev, null)
+            // the answer to the trust question only lets claude start, nothing was asked of it yet
+            prev.isStartingUp() -> Transition(ThreadState.Idle, null)
+            prev == ThreadState.Working || prev == ThreadState.Background || prev is ThreadState.NeedsYou ->
                 if (viewed) Transition(ThreadState.Idle, null) else Transition(ThreadState.YourTurn(now), NotificationKind.TURN_FINISHED)
             else -> Transition(ThreadState.Idle, null)
         }
@@ -72,9 +77,13 @@ object ThreadStateMachine {
     /** The user looked at the tab: "your turn" is consumed, everything else stays. */
     fun onViewed(prev: ThreadState): ThreadState = if (prev is ThreadState.YourTurn) ThreadState.Idle else prev
 
-    /** States in which a busy `claude` is still coming up (a slow `--resume`), so its first idle is not a finished turn. */
+    /**
+     * States in which a busy `claude` is still coming up (a slow `--resume`, or one the person just told to trust its
+     * folder), so its first idle is not a finished turn.
+     */
     private fun ThreadState.isStartingUp(): Boolean =
-        this == ThreadState.Starting || this == ThreadState.NotStarted || this == ThreadState.Exited || this is ThreadState.RunningElsewhere
+        this == ThreadState.Starting || this == ThreadState.NotStarted || this == ThreadState.Exited || this is ThreadState.RunningElsewhere ||
+            this is ThreadState.NeedsYou && reason == WaitReason.TRUST
 }
 
 object ThreadOrdering {

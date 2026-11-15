@@ -2,6 +2,7 @@ package io.github.v0rest.skein.threads
 
 import io.github.v0rest.skein.claude.ClaudeActivity
 import io.github.v0rest.skein.paths.PathStyle
+import io.github.v0rest.skein.process.ProcessId
 import io.github.v0rest.skein.testutil.FakeProcessProbe
 import io.github.v0rest.skein.testutil.Fixture
 import io.github.v0rest.skein.testutil.sessionFile
@@ -226,5 +227,100 @@ class ThreadMapperTest {
         val inWorktree = sessionFile(pid = 100, cwd = "$winBase\\demo-shop\\.claude\\worktrees\\task-1", startedAt = 1_500, sessionId = "abc")
         val pending = windowsPending("$winIde/demo-shop", worktree = "$winIde/demo-shop/.claude/worktrees/task-1")
         assertEquals(10L, windows.matchLaunch(pending, listOf(inWorktree), emptySet())?.anchor)
+    }
+
+    /**
+     * The Claude Code CLIs under a shell, by their executable, each with its start, outermost only: how a claude that has
+     * written no status file yet (it asks whether to trust its folder) is told apart from other programs in the tab.
+     */
+    @Test
+    fun theClaudeClisUnderAShellAreTheOutermostOnes() {
+        val cli = r("w/bin/claude")
+        // IDE 1 → shell 20 → claude 400 → claude 410; shell 20 → vim 420 editing a file named claude; shell 20 → sh 430 → claude 440
+        probe.add(20, parent = 1, start = t0)
+        probe.add(400, parent = 20, start = t0.plusSeconds(1), command = listOf(cli))
+        probe.add(410, parent = 400, start = t0.plusSeconds(2), command = listOf(cli))
+        probe.add(420, parent = 20, start = t0.plusSeconds(3), command = listOf(r("usr/bin/vim"), "claude"))
+        probe.add(430, parent = 20, start = t0.plusSeconds(4), command = listOf(r("bin/sh")))
+        probe.add(440, parent = 430, start = t0.plusSeconds(5), command = listOf(cli, "--worktree", "task-1"))
+        assertEquals(listOf(ProcessId(400, t0.plusSeconds(1)), ProcessId(440, t0.plusSeconds(5))), mapper.clisUnder(20).sortedBy { it.pid })
+        // claude 100 under shell 10 has no command the system gave, and a pid that is gone has nothing under it
+        assertEquals(emptyList<ProcessId>(), mapper.clisUnder(10))
+        assertEquals(emptyList<ProcessId>(), mapper.clisUnder(999))
+        // a claude whose start the system does not report cannot be told from a later process with its pid
+        probe.unknownStart += 400
+        assertEquals(listOf(ProcessId(440, t0.plusSeconds(5))), mapper.clisUnder(20))
+    }
+
+    /**
+     * On Windows the CLI is claude.exe (or a file under claude\versions) under powershell.exe, as the VM showed. Claude
+     * Desktop's claude.exe in its WindowsApps package is not, and node.exe, which Windows reports without its script,
+     * proves nothing.
+     */
+    @Test
+    fun theClaudeClisUnderAShellOnWindows() {
+        val windows = ThreadMapper(probe, PathStyle.WINDOWS)
+        probe.add(20, parent = 1, start = t0, command = listOf("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"))
+        probe.add(400, parent = 20, start = t0.plusSeconds(1), command = listOf("C:\\Users\\skein\\.local\\bin\\claude.exe"))
+        probe.add(410, parent = 20, start = t0.plusSeconds(2), command = listOf("C:\\Program Files\\WindowsApps\\Claude_1.0.0.0_arm64__abc\\app\\claude.exe"))
+        probe.add(420, parent = 20, start = t0.plusSeconds(3), command = listOf("C:\\Program Files\\nodejs\\node.exe"))
+        probe.add(430, parent = 20, start = t0.plusSeconds(4), command = listOf("C:\\Users\\skein\\.local\\share\\claude\\versions\\2.1.325"))
+        assertEquals(listOf(400L, 430L), windows.clisUnder(20).map { it.pid }.sorted())
+    }
+
+    /**
+     * What an IDE child is by its file name: on Windows without `.exe` and in any case, on Unix exactly, a "jcef Helper"
+     * in any case (T1', T1'').
+     */
+    @Test
+    fun anIdeChildIsToldByItsExecutablesName() {
+        fun kind(executable: String?, style: PathStyle) = ThreadMapper.kindOfExecutable(executable, style)
+        val windows = mapOf(
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" to IdeChild.SHELL,
+            "C:\\Program Files\\PowerShell\\7\\PWSH.EXE" to IdeChild.SHELL,
+            "C:\\Windows\\System32\\cmd.exe" to IdeChild.SHELL,
+            "C:\\Program Files\\Git\\bin\\bash.exe" to IdeChild.SHELL,
+            "C:/tools/nu.exe" to IdeChild.SHELL,
+            "C:\\tools\\elvish" to IdeChild.SHELL,
+            "C:\\Windows\\System32\\conhost.exe" to IdeChild.HELPER,
+            "C:\\Windows\\System32\\OpenConsole.exe" to IdeChild.HELPER,
+            "C:\\w\\ide\\bin\\fsnotifier.exe" to IdeChild.HELPER,
+            "C:\\w\\ide\\bin\\FSNOTIFIER64.EXE" to IdeChild.HELPER,
+            "C:\\w\\ide\\jbr\\lib\\cef_server.exe" to IdeChild.HELPER,
+            "C:\\Windows\\System32\\wsl.exe" to IdeChild.UNRECOGNISED,
+            "C:\\Users\\skein\\.local\\bin\\claude.exe" to IdeChild.UNRECOGNISED,
+            "C:\\tools\\bash.exe.bak" to IdeChild.UNRECOGNISED,
+            "C:\\tools\\oddshell.exe" to IdeChild.UNRECOGNISED,
+            "" to IdeChild.UNRECOGNISED,
+            "   " to IdeChild.UNRECOGNISED,
+        )
+        for ((executable, expected) in windows) assertEquals(executable, expected, kind(executable, PathStyle.WINDOWS))
+        assertEquals(IdeChild.UNRECOGNISED, kind(null, PathStyle.WINDOWS))
+        val unix = mapOf(
+            "/bin/zsh" to IdeChild.SHELL,
+            "/bin/bash" to IdeChild.SHELL,
+            "/usr/local/bin/fish" to IdeChild.SHELL,
+            "/bin/sh" to IdeChild.SHELL,
+            "/opt/homebrew/bin/xonsh" to IdeChild.SHELL,
+            "/opt/ide/bin/fsnotifier" to IdeChild.HELPER,
+            "/opt/ide/jbr/Contents/Frameworks/jcef Helper (Renderer).app/Contents/MacOS/jcef Helper (Renderer)" to IdeChild.HELPER,
+            "/opt/ide/jbr/Contents/Frameworks/jcef Helper.app/Contents/MacOS/jcef Helper" to IdeChild.HELPER,
+            "/bin/ZSH" to IdeChild.UNRECOGNISED,
+            "/bin/zsh.exe" to IdeChild.UNRECOGNISED,
+            "/opt/ide/bin/Fsnotifier" to IdeChild.UNRECOGNISED,
+            "/usr/bin/tmux" to IdeChild.UNRECOGNISED,
+            "/usr/bin/login" to IdeChild.UNRECOGNISED,
+            "zsh-helper" to IdeChild.UNRECOGNISED,
+        )
+        for ((executable, expected) in unix) assertEquals(executable, expected, kind(executable, PathStyle.UNIX))
+    }
+
+    @Test
+    fun aProcessWithoutACommandIsUnrecognised() {
+        probe.add(20, parent = 1, start = t0, command = listOf(r("bin/zsh")))
+        probe.add(21, parent = 1, start = t0)
+        assertEquals(IdeChild.SHELL, mapper.kindOf(20))
+        assertEquals(IdeChild.UNRECOGNISED, mapper.kindOf(21))
+        assertEquals(IdeChild.UNRECOGNISED, mapper.kindOf(999))
     }
 }

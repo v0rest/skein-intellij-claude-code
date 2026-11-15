@@ -1,7 +1,12 @@
 package io.github.v0rest.skein.claude
 
 import com.intellij.util.EnvironmentUtil
+import java.io.BufferedReader
+import java.io.FilterInputStream
 import java.io.IOException
+import java.io.InputStream
+import java.io.InputStreamReader
+import java.io.Reader
 import java.nio.ByteBuffer
 import java.nio.channels.SeekableByteChannel
 import java.nio.file.DirectoryIteratorException
@@ -16,9 +21,10 @@ data class FileStamp(val size: Long, val modifiedMillis: Long)
 /**
  * The only code in Skein that touches `~/.claude`. Every method opens files read-only, returns null (or an empty
  * list) for anything missing or unreadable, and rejects paths outside [root]. Nothing here creates, changes or
- * removes a file.
+ * removes a file. [configFile] is Claude Code's global config, `.claude.json`, which lives outside [root] unless
+ * CLAUDE_CONFIG_DIR is set ([resolveConfigFile]), or null when this home does not know it.
  */
-open class ClaudeHome(val root: Path) {
+open class ClaudeHome(val root: Path, val configFile: Path? = null) {
     private val normalizedRoot: Path = root.toAbsolutePath().normalize()
 
     val sessionsDir: Path get() = root.resolve("sessions")
@@ -59,6 +65,23 @@ open class ClaudeHome(val root: Path) {
         return try {
             val attributes = Files.readAttributes(checked, BasicFileAttributes::class.java)
             if (attributes.isRegularFile) FileStamp(attributes.size(), attributes.lastModifiedTime().toMillis()) else null
+        } catch (e: IOException) {
+            null
+        }
+    }
+
+    /**
+     * [configFile] handed to [parse] as UTF-8 text, or null when there is none, it is not a regular file, it is larger
+     * than [maxBytes] (by its size, or by the bytes read, [readAtMost]) or it cannot be opened. Only that one file is opened, read-only. It holds the user's account as
+     * well, so a caller keeps only what it needs from it and never logs it. Blocking.
+     */
+    fun <T : Any> readConfig(maxBytes: Long, parse: (Reader) -> T?): T? {
+        val file = configFile ?: return null
+        return try {
+            val attributes = Files.readAttributes(file, BasicFileAttributes::class.java)
+            if (!attributes.isRegularFile || attributes.size() > maxBytes) return null
+            // the size may grow between the look and the read, so the read counts its bytes as well
+            Files.newInputStream(file).use { readAtMost(it, maxBytes, parse) }
         } catch (e: IOException) {
             null
         }
@@ -135,16 +158,54 @@ open class ClaudeHome(val root: Path) {
          * As above, preferring the shell environment (what the terminal and so `claude` see, including variables
          * exported in rc files) over the IDE process's own, which lacks them when the IDE starts from the Dock.
          */
-        fun resolveRoot(shellEnv: Map<String, String>, processEnv: Map<String, String>, userHome: String): Path {
-            val candidate = sequenceOf(shellEnv, processEnv)
+        fun resolveRoot(shellEnv: Map<String, String>, processEnv: Map<String, String>, userHome: String): Path =
+            configDir(shellEnv, processEnv) ?: Path.of(userHome, ".claude")
+
+        /**
+         * Where Claude Code keeps its global config, `.claude.json` - in CLAUDE_CONFIG_DIR by the same rule as the home
+         * ([resolveRoot]), else in the user's home folder, next to `~/.claude` rather than in it.
+         */
+        fun resolveConfigFile(shellEnv: Map<String, String>, processEnv: Map<String, String>, userHome: String): Path =
+            (configDir(shellEnv, processEnv) ?: Path.of(userHome)).resolve(".claude.json")
+
+        /**
+         * [input] handed to [parse] as strict UTF-8 (malformed bytes are an error, not a replacement character), with the
+         * bytes counted as they are read: past [maxBytes] the read fails and the answer is null, whatever size was
+         * looked at before. Closes nothing - the caller owns [input].
+         */
+        internal fun <T : Any> readAtMost(input: InputStream, maxBytes: Long, parse: (Reader) -> T?): T? =
+            try {
+                parse(BufferedReader(InputStreamReader(AtMost(input, maxBytes), Charsets.UTF_8.newDecoder())))
+            } catch (e: IOException) {
+                null
+            }
+
+        /** [input] that fails once more than [maxBytes] have come through it. */
+        private class AtMost(input: InputStream, private val maxBytes: Long) : FilterInputStream(input) {
+            private var count = 0L
+
+            override fun read(): Int = super.read().also { if (it >= 0) counted(1) }
+
+            override fun read(b: ByteArray, off: Int, len: Int): Int = super.read(b, off, len).also { if (it > 0) counted(it.toLong()) }
+
+            override fun skip(n: Long): Long = super.skip(n).also { counted(it) }
+
+            private fun counted(n: Long) {
+                count += n
+                if (count > maxBytes) throw IOException("more than $maxBytes bytes")
+            }
+        }
+
+        private fun configDir(shellEnv: Map<String, String>, processEnv: Map<String, String>): Path? =
+            sequenceOf(shellEnv, processEnv)
                 .mapNotNull { it["CLAUDE_CONFIG_DIR"]?.trim()?.takeIf(String::isNotEmpty) }
                 .map { Path.of(it) }
                 .firstOrNull { it.isAbsolute }
-            return candidate ?: Path.of(userHome, ".claude")
-        }
 
         private val defaultHome by lazy {
-            ClaudeHome(resolveRoot(EnvironmentUtil.getEnvironmentMap(), System.getenv(), System.getProperty("user.home")))
+            val shellEnv = EnvironmentUtil.getEnvironmentMap()
+            val userHome = System.getProperty("user.home")
+            ClaudeHome(resolveRoot(shellEnv, System.getenv(), userHome), resolveConfigFile(shellEnv, System.getenv(), userHome))
         }
 
         /** The user's Claude home. Resolving it may wait for the shell environment, so call it off the EDT. */

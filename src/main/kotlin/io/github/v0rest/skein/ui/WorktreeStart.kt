@@ -1,5 +1,6 @@
 package io.github.v0rest.skein.ui
 
+import io.github.v0rest.skein.claude.FolderTrust
 import io.github.v0rest.skein.claude.Worktrees
 import io.github.v0rest.skein.git.ExcludeResult
 import io.github.v0rest.skein.git.GitResult
@@ -76,6 +77,19 @@ object WorktreeStart {
         head.exitCode == 1 -> NO_COMMIT
         else -> head.reason()
     }
+
+    /**
+     * The warning the name dialog shows under the name when Claude Code was not told to trust [repository], which
+     * `claude --worktree` refuses, or null for a trusted repository or one whose trust Skein cannot read. A warning only,
+     * OK stays, since the reading may be wrong for a newer Claude Code.
+     */
+    fun trustWarning(repository: String, trust: FolderTrust, style: PathStyle = PathStyle.current): String? =
+        if (trust == FolderTrust.NOT_TRUSTED) untrustedRepository(repository, style) else null
+
+    /** What to do before a worktree thread can start in [repository], named as the other messages name it. */
+    fun untrustedRepository(repository: String, style: PathStyle = PathStyle.current): String =
+        "claude --worktree refuses a folder Claude Code has not been told to trust yet. " +
+            "Start a plain thread in ${PathRules.canonical(repository, style)} once and answer its question, then come back."
 
     /** Why no worktree thread starts in [repository]: Claude Code would put its worktrees inside its own home. */
     fun insideClaudeHome(repository: String): String =
