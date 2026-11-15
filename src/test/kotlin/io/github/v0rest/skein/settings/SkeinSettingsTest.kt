@@ -7,4 +7,8 @@ class SkeinSettingsTest {
     /** Off is the choice to keep threads in the Terminal tool window; out of the box they open in the editor, as before. */
     @Test
     fun threadsOpenInTheEditorByDefault() = assertTrue(SkeinSettings.State().threadsInEditor)
+
+    /** Rename also renames in Claude Code until the user unticks the box once. */
+    @Test
+    fun renameAlsoReachesClaudeCodeByDefault() = assertTrue(SkeinSettings.State().renameInClaude)
 }

@@ -2,7 +2,9 @@ package io.github.v0rest.skein.ui
 
 import com.intellij.remoterobot.RemoteRobot
 import com.intellij.remoterobot.fixtures.CommonContainerFixture
+import com.intellij.remoterobot.fixtures.ComponentFixture
 import com.intellij.remoterobot.search.locators.byXpath
+import com.intellij.remoterobot.utils.keyboard
 import com.intellij.remoterobot.utils.waitFor
 import org.junit.rules.ExternalResource
 import org.junit.rules.TestWatcher
@@ -21,6 +23,18 @@ object RemoteIde {
 
     fun js(script: String, edt: Boolean = false): String = robot.callJs(script, edt)
 
+    /** Whether the IDE under test runs on macOS, where select-all and the like take Cmd instead of Ctrl. */
+    val onMac: Boolean by lazy { js("'' + java.lang.System.getProperty('os.name')").startsWith("Mac") }
+
+    /** Replaces the text of the focused field with [text] the way a person would: select all, then type. */
+    fun replaceTextWith(text: String) {
+        val modifier = if (onMac) java.awt.event.KeyEvent.VK_META else java.awt.event.KeyEvent.VK_CONTROL
+        robot.keyboard {
+            hotKey(modifier, java.awt.event.KeyEvent.VK_A)
+            enterText(text)
+        }
+    }
+
     /** A new git repository with one commit, in a folder of its own on the IDE's machine; its full path. */
     fun newRepository(): String = js(
         """
@@ -28,6 +42,9 @@ object RemoteIde {
         base.mkdirs();
         $GIT
         git(base, ['init', '-q', '-b', 'main']);
+        // the IDE keeps its own project files in .idea, and saves them whenever its window loses the focus on macOS;
+        // they are no business of Skein's, so git status, which the tests check, never shows them
+        java.nio.file.Files.writeString(new java.io.File(base, '.git/info/exclude').toPath(), '.idea/\n', java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
         java.nio.file.Files.writeString(new java.io.File(base, 'README.md').toPath(), 'demo\n');
         git(base, ['add', '.']);
         git(base, ['commit', '-q', '-m', 'init']);
@@ -35,16 +52,22 @@ object RemoteIde {
         """,
     )
 
-    /** Opens [path] as a project in a frame of its own and returns the project's name. */
+    /**
+     * Opens [path] as a project in a frame of its own and returns the project's name, which is its folder's name. The
+     * open is queued rather than run inside the robot's call: right after the IDE starts it can take longer than the
+     * robot's read timeout, and the call would fail although the project opens fine.
+     */
     fun open(path: String): String {
         val name = js(
             """
-            var p = com.intellij.ide.impl.ProjectUtil.openOrImport(java.nio.file.Path.of('${slashed(path)}'), com.intellij.ide.impl.OpenProjectTask.build().withForceOpenInNewFrame(true));
-            p.getName()
+            var path = java.nio.file.Path.of('${slashed(path)}');
+            com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater(new java.lang.Runnable({
+                run: function() { com.intellij.ide.impl.ProjectUtil.openOrImport(path, com.intellij.ide.impl.OpenProjectTask.build().withForceOpenInNewFrame(true)); }
+            }));
+            '' + path.getFileName()
             """,
-            edt = true,
         )
-        waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "the frame of $name") { frames(name).isNotEmpty() }
+        waitFor(Duration.ofSeconds(120), Duration.ofSeconds(1), "the frame of $name") { frames(name).isNotEmpty() }
         return name
     }
 
@@ -66,6 +89,57 @@ object RemoteIde {
         waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "the frame of $name closed") { frames(name).isEmpty() }
     }
 
+    /** Whether the project named [name] is indexing (dumb mode); false once it is not, or when no such project is open. */
+    fun isDumb(name: String): Boolean = js(
+        """
+        var ps = com.intellij.openapi.project.ProjectManager.getInstance().getOpenProjects(); var out = 'false';
+        for (var i = 0; i < ps.length; i++) if (ps[i].getName() == '$name') out = '' + com.intellij.openapi.project.DumbService.isDumb(ps[i]);
+        out
+        """,
+    ) == "true"
+
+    /**
+     * Clicks the "Start claude in a new tab" link of the empty thread list of [name], which runs New Thread like "+"
+     * does. "+" itself sits in the title bar, which the new UI shows only while the IDE's window has the system's focus -
+     * something a robot-driven window on another machine does not reliably get - so the link is the dependable way in.
+     * On a cold IDE the first click can go unheard, so this waits until the project is out of dumb mode first, and while
+     * no new claude has started and the list still has no row it clicks again every [LINK_RETRY] seconds, for up to a
+     * minute. Once a row is there it never clicks again, so a slow claude is never started twice. Returns the list,
+     * which then shows the thread's row; the caller waits for the claude as before.
+     */
+    fun startClaudeFromTheEmptyList(name: String): ComponentFixture {
+        waitFor(Duration.ofSeconds(120), Duration.ofSeconds(1), "$name out of dumb mode") { !isDumb(name) }
+        toFront(name)
+        val list = frame(name).find(ComponentFixture::class.java, byXpath(EMPTY_LIST), Duration.ofSeconds(30))
+        // the robot reads the text the list paints, with where it painted it
+        waitFor(Duration.ofSeconds(10), Duration.ofSeconds(1), "the link in the empty list") { list.findAllText().any { it.text.contains(LINK) } }
+        val before = claudePids()
+        var clickedAt: Long? = null
+        waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "a thread started from the empty list of $name") {
+            when {
+                (claudePids() - before).isNotEmpty() || rows(list) > 0 -> true
+                clickedAt.let { it == null || System.nanoTime() - it >= LINK_RETRY * 1_000_000_000L } -> {
+                    // looked at once more right before the click: a row that came meanwhile means the thread is on its way
+                    if (rows(list) == 0) list.findAllText().firstOrNull { it.text.contains(LINK) }?.click()
+                    clickedAt = System.nanoTime()
+                    false
+                }
+                else -> false
+            }
+        }
+        return list
+    }
+
+    /** How many rows the thread list holds; 0 when it cannot be read. */
+    private fun rows(list: ComponentFixture): Int = list.callJs<String>("'' + component.getModel().getSize()").trim().toIntOrNull() ?: 0
+
+    /** The thread list while it is empty, with its link. */
+    private const val EMPTY_LIST = "//div[@class='JBList' and contains(@visible_text, 'No threads yet')]"
+    private const val LINK = "Start claude"
+
+    /** Seconds between two clicks on the link while nothing comes of them. */
+    private const val LINK_RETRY = 15L
+
     fun frame(name: String): CommonContainerFixture =
         robot.find(CommonContainerFixture::class.java, byXpath(frameXpath(name)), Duration.ofSeconds(30))
 
@@ -85,7 +159,8 @@ object RemoteIde {
         while (it.hasNext()) {
             var p = it.next();
             var c = ('' + p.info().command().orElse('')).toLowerCase();
-            var cli = c.endsWith('claude.exe') || c.endsWith('/claude') || c.endsWith('\\\\claude');
+            // the native installer's `claude` on macOS and Linux is a link, and the process runs the version it points to
+            var cli = c.endsWith('claude.exe') || c.endsWith('/claude') || c.endsWith('\\\\claude') || c.indexOf('/claude/versions/') >= 0;
             if (!cli || c.indexOf('windowsapps') >= 0) continue;
             var shell = p.parent();
             var owner = shell.isPresent() ? shell.get().parent() : java.util.Optional.empty();
@@ -171,6 +246,29 @@ object RemoteIde {
         """,
     ).trim('[', ']').split(',').mapNotNull { it.trim().toLongOrNull() }.toSet()
 
+    /** A text field of the status file of claude [pid] (`status`, `sessionId`), or "" when there is none. */
+    fun sessionField(pid: Long, name: String): String = js(
+        """
+        var f = new java.io.File(java.lang.System.getProperty('user.home'), '.claude/sessions/$pid.json');
+        var text = f.isFile() ? '' + java.nio.file.Files.readString(f.toPath()) : '';
+        var m = /"$name"\s*:\s*"([^"]*)"/.exec(text);
+        m ? m[1] : ''
+        """,
+    )
+
+    /** The lines of session [sessionId]'s transcript under Claude Code's `projects` folder on that machine, none when it has none. */
+    fun transcript(sessionId: String): List<String> = js(
+        """
+        var root = new java.io.File(java.lang.System.getProperty('user.home'), '.claude/projects');
+        var dirs = root.listFiles(); var text = '';
+        if (dirs != null) for (var i = 0; i < dirs.length; i++) {
+            var f = new java.io.File(dirs[i], '$sessionId.jsonl');
+            if (f.isFile()) text = '' + java.nio.file.Files.readString(f.toPath());
+        }
+        text
+        """,
+    ).lines().filter { it.isNotBlank() }
+
     /** The `cwd` in the status file of claude [pid], or "" when there is none. */
     fun sessionCwd(pid: Long): String = js(
         """
@@ -218,6 +316,47 @@ object RemoteIde {
         gitOut(new java.io.File('${slashed(repo)}'), ['status', '--porcelain'])
         """,
     )
+
+    /**
+     * Answers Claude Code's "Accessing workspace" question in the thread's tab of [project], which has the focus. Its
+     * first answer is "No, exit", which ends claude, and its menu may not take a key the moment it is drawn, so Down goes
+     * again until the pointer stands on "Yes, I trust this folder", and only then Enter. Skein's row and balloon say
+     * "asks whether to trust this folder" too, and those are not the question.
+     */
+    fun acceptTheTrustQuestion(project: String) {
+        val frame = frame(project)
+        waitFor(Duration.ofSeconds(30), Duration.ofSeconds(1), "claude's question about trusting the folder") {
+            frame.findAllText().any { it.text.contains("trust this folder") && !it.text.contains("asks whether") }
+        }
+        waitFor(Duration.ofSeconds(20), Duration.ofSeconds(2), "the pointer on \"Yes, I trust this folder\"") {
+            if (!editorsContain(TRUST_YES)) robot.keyboard { key(java.awt.event.KeyEvent.VK_DOWN) }
+            editorsContain(TRUST_YES)
+        }
+        robot.keyboard { enter() }
+    }
+
+    /** The trust question's second answer with claude's pointer on it. */
+    private const val TRUST_YES = "\u276F Yes, I trust this folder"
+
+    /**
+     * Whether [text] is in the document of an editor on screen. The terminal draws its output, claude's input box among
+     * it, into an editor, and the robot's painted-text search may see a line in pieces, so the document is read instead.
+     */
+    fun editorsContain(text: String): Boolean = js(
+        """
+        var found = false;
+        function walk(c) {
+            if (found) return;
+            if (c instanceof com.intellij.openapi.editor.impl.EditorComponentImpl &&
+                ('' + c.getEditor().getDocument().getText()).indexOf('${text.replace("\\", "\\\\").replace("'", "\\'")}') >= 0) { found = true; return; }
+            if (c instanceof java.awt.Container) { var cs = c.getComponents(); for (var i = 0; i < cs.length; i++) walk(cs[i]); }
+        }
+        var ws = java.awt.Window.getWindows();
+        for (var i = 0; i < ws.length && !found; i++) if (ws[i].isShowing()) walk(ws[i]);
+        '' + found
+        """,
+        edt = true,
+    ) == "true"
 
     fun exists(path: String): Boolean = js("'' + new java.io.File('${slashed(path)}').isDirectory()") == "true"
 

@@ -21,6 +21,9 @@ class SessionMarksService : PersistentStateComponent<SessionMarksService.Saved> 
         var pinned by list<String>()
         var names by map<String, String>()
         var done by map<String, Long>()
+
+        /** [SessionMarks.claudeRenames], kept so a rename still waiting reaches Claude Code after an IDE restart too. */
+        var claudeRenames by map<String, String>()
     }
 
     private val current = MutableStateFlow(SessionMarks())
@@ -31,17 +34,34 @@ class SessionMarksService : PersistentStateComponent<SessionMarksService.Saved> 
         current.update(change)
     }
 
+    /**
+     * Takes [name], the rename waiting for [sessionId]'s claude, for the line about to go: true, and it stops waiting,
+     * when it still waits ([SessionMarks.waitsFor]); false, and nothing changes, when the Rename dialog dropped or
+     * replaced it meanwhile, and then the line must not go. One atomic step, whatever else updates the marks.
+     */
+    fun claimClaudeRename(sessionId: String, name: String): Boolean {
+        while (true) {
+            val now = current.value
+            if (!now.waitsFor(sessionId, name)) return false
+            if (current.compareAndSet(now, now.claudeRenameSent(sessionId, name))) return true
+        }
+    }
+
     override fun getState(): Saved {
         val marks = current.value
         return Saved().apply {
             pinned.addAll(marks.pinned)
             names.putAll(marks.names)
             done.putAll(marks.done)
+            claudeRenames.putAll(marks.claudeRenames)
         }
     }
 
     override fun loadState(state: Saved) {
-        current.value = SessionMarks(state.pinned.toSet(), state.names.toMap(), state.done.toMap())
+        val names = state.names.toMap()
+        // a waiting rename is always the session's Skein name too; one that is not (a hand-edited file) is not sent
+        val claudeRenames = state.claudeRenames.filter { (id, name) -> names[id] == name }
+        current.value = SessionMarks(state.pinned.toSet(), names, state.done.toMap(), claudeRenames)
     }
 
     companion object {

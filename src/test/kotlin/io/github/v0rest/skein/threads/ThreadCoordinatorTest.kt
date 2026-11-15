@@ -1634,4 +1634,46 @@ class ThreadCoordinatorTest {
         assertEquals(ThreadState.Unknown, thread().state)
         assertNull(thread().anchor)
     }
+
+    // a rename waiting for Claude Code goes only into the claude Skein follows the thread by, for that very session
+
+    @Test
+    fun aRenameTargetIsTheThreadWhoseClaudeRunsTheSession() {
+        val s100 = startIdleThread()
+        val target = coordinator.renameTarget(A, snap(s100))!!
+        assertEquals("t1", target.thread.id)
+        assertEquals(ThreadState.Idle, target.thread.state)
+        assertTrue(target.runsSession)
+        assertEquals(ProcessId(100, Instant.ofEpochMilli(1_400)), target.claude)
+        assertEquals("t1", target.tab.id)
+        assertNull("no thread holds another session", coordinator.renameTarget(D, snap(s100)))
+    }
+
+    /** A thread resumed from History holds the session before its claude runs it: nothing to type into yet. */
+    @Test
+    fun aThreadWhoseClaudeIsNotThereYetIsNoTargetToTypeInto() {
+        coordinator.resume(HistoryEntry(A, "/p", "acme", 0, null), snap(), now = 1_000)
+        val target = coordinator.renameTarget(A, snap())!!
+        assertEquals(false, target.runsSession)
+        assertNull(target.claude)
+    }
+
+    /** After `/clear` the thread's claude runs another session; the old one is not there to rename. */
+    @Test
+    fun aThreadWhoseClaudeMovedToAnotherSessionDoesNotRunTheOldOne() {
+        startIdleThread()
+        val cleared = sessionFile(pid = 100, sessionId = D, cwd = "/p", startedAt = 1_500)
+        coordinator.onSnapshot(snap(cleared), viewed = { false }, now = 3_000)
+        assertNull(coordinator.renameTarget(A, snap(cleared)))
+        assertEquals(true, coordinator.renameTarget(D, snap(cleared))!!.runsSession)
+    }
+
+    /** A claude that is gone, or whose start can no longer be read, is no claude to type into. */
+    @Test
+    fun aClaudeThatIsGoneIsNoTarget() {
+        val s100 = startIdleThread()
+        probe.kill(100)
+        val target = coordinator.renameTarget(A, snap(s100))!!
+        assertNull(target.claude)
+    }
 }

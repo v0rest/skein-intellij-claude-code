@@ -74,6 +74,14 @@ sealed interface ResumeOutcome {
     data object Refused : ResumeOutcome
 }
 
+/**
+ * The thread that holds a session with a rename waiting for Claude Code ([ThreadCoordinator.renameTarget]), with what
+ * [RenameGate] needs to know of it. [runsSession]: the live status file of the claude under the tab's shell (its anchor)
+ * carries that session. [claude]: that claude with its start, read now; null when it is not there or its start cannot be
+ * read, so a later look can tell whether it is still the same process.
+ */
+data class RenameTarget(val thread: SkeinThread, val tab: ThreadTab, val runsSession: Boolean, val claude: ProcessId?)
+
 /** What a Close does ([ThreadCoordinator.close]): the threads it leaves open, and the tabs to close with what to end first. */
 data class CloseOutcome(val leftOpen: List<SkeinThread>, val closing: List<Ending>)
 
@@ -572,6 +580,18 @@ class ThreadCoordinator(
         } else {
             "its shell (pid ${shell.pid}) was not there yet $moment, so it is another terminal's"
         }
+    }
+
+    /**
+     * The thread that holds [sessionId] and its claude as [snapshot] and the process table show it now, for a rename
+     * waiting to be typed into it ([RenameGate]); null when no thread holds the session. The claude counts only when it
+     * is the one under the tab's shell that Skein follows the thread by, with a live status file for that very session.
+     */
+    fun renameTarget(sessionId: String, snapshot: SessionSnapshot): RenameTarget? {
+        val record = records.values.firstOrNull { it.sessionId == sessionId } ?: return null
+        val file = record.anchor?.let { mapper.processFor(it, snapshot.sessions.values) }?.takeIf { it.sessionId == sessionId }
+        val claude = file?.let { f -> mapper.startOf(f.pid)?.let { ProcessId(f.pid, it) } }
+        return RenameTarget(record.toThread(), record.tab, runsSession = file != null, claude = claude)
     }
 
     fun pin(threadIds: Collection<String>, pinned: Boolean) {

@@ -99,6 +99,31 @@ interface ThreadTerminal {
      */
     fun rename(threadId: String, title: String)
 
+    /**
+     * Whether claude's input in the tab is clean by the tab's key watch ([DraftGuard]): nothing typed since an Enter that
+     * a turn right after it showed sent it, and no key for [DraftGuard.SETTLE_MILLIS]; a claude Skein just started counts
+     * as dirty until then. A tab that cannot be watched is never clean, since then nobody can tell. Returns at once.
+     */
+    fun inputClean(tab: ThreadTab): Boolean
+
+    /**
+     * What Skein last saw each thread's claude do, for the key watch ([DraftGuard]): [enterMaySend] are the threads whose
+     * claude is idle, where an Enter on a draft may send it, and [atWorkSince] says since when each thread at work (a
+     * turn or a background task, not a dialog) has been so, in wall-clock millis - a turn that started right after such
+     * an Enter shows it sent the draft ([DraftGuard.proven]). Returns at once.
+     */
+    fun claudeSeen(enterMaySend: Set<String>, atWorkSince: Map<String, Long>)
+
+    /**
+     * Types `/rename <name>` and Enter into the tab's claude ([ClaudeRename]), only if right then, in one turn of the EDT,
+     * the tab's session runs and its input is still clean ([inputClean]), and [stillIdle], asked just before off the EDT,
+     * says the thread's claude is still there and idle. [beforeSend] runs in that same EDT turn right before the line goes:
+     * the caller takes the waiting rename there and says whether it still waits, so a rename the Rename dialog dropped or
+     * replaced meanwhile is not typed, and an IDE that quits right after never types it again. True when the line went;
+     * false and nothing typed otherwise.
+     */
+    suspend fun sendRename(tab: ThreadTab, name: String, stillIdle: () -> Boolean, beforeSend: () -> Boolean): Boolean
+
     fun setListener(listener: ThreadTerminalListener)
 }
 

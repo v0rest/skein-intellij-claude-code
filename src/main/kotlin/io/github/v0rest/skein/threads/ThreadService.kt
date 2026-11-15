@@ -22,10 +22,13 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.IdeFrame
 import com.intellij.openapi.wm.ToolWindowManager
 import io.github.v0rest.skein.claude.ClaudeCodeRequirement
+import io.github.v0rest.skein.claude.ClaudeEditorModeWatch
 import io.github.v0rest.skein.claude.ClaudeHome
 import io.github.v0rest.skein.claude.FileStamp
 import io.github.v0rest.skein.claude.FolderTrustReader
 import io.github.v0rest.skein.claude.HistoryEntry
+import io.github.v0rest.skein.claude.SessionFileParse
+import io.github.v0rest.skein.claude.SessionFileParser
 import io.github.v0rest.skein.claude.SessionMonitor
 import io.github.v0rest.skein.claude.SessionSnapshot
 import io.github.v0rest.skein.claude.Transcripts
@@ -40,7 +43,9 @@ import io.github.v0rest.skein.notify.ThreadNotifier
 import io.github.v0rest.skein.power.KeepAwakeService
 import io.github.v0rest.skein.process.JdkProcessProbe
 import io.github.v0rest.skein.process.LibcHangUp
+import io.github.v0rest.skein.process.ProcessId
 import io.github.v0rest.skein.settings.SkeinSettings
+import io.github.v0rest.skein.terminal.ClaudeRename
 import io.github.v0rest.skein.terminal.TabsInView
 import io.github.v0rest.skein.terminal.TerminalAdapter
 import io.github.v0rest.skein.terminal.ThreadTerminal
@@ -196,6 +201,26 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
     /** The sessions this project's threads hold, the saved ones not restored yet included. */
     fun heldSessionIds(): Set<String> = HeldSessions.of(restored, threads.value, saved.threads.map { it.sessionId })
 
+    /** Claude Code's vim mode setting, each file read again only when it changed ([ClaudeEditorModeWatch]); never on the EDT. */
+    private val editorMode = ClaudeEditorModeWatch(ClaudeHome.default())
+
+    /** Whether each thread's claude is in vim mode, by thread id, as [watchEditorMode] last read it; a thread missing is not. */
+    @Volatile
+    private var vimByThread: Map<String, Boolean> = emptyMap()
+
+    /** Set once a look at the vim mode failed, so a broken one does not fill the log every few seconds; IO only. */
+    @Volatile
+    private var editorModeFailed = false
+
+    /** The sessions whose waiting rename is on its way into claude now, so a look meanwhile does not type it twice; confined only. */
+    private val renamesOnTheirWay = HashSet<String>()
+
+    /** Set once a look at the waiting renames failed, so a broken one does not fill the log every second; confined only. */
+    private var renameLookFailed = false
+
+    /** Set once telling the key watch failed, so a service in shutdown does not fill the log on every tick; confined only. */
+    private var claudeSeenFailed = false
+
     /** Why Skein is off in this IDE, or null when it runs (local macOS or Linux). */
     val unsupported: Unsupported? = EnvironmentGate.check(currentEnvFacts(project))
 
@@ -240,6 +265,8 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
                 publish()
                 pushTitlesQuietly()
                 requestPreviews()
+                // every status change and every second: a key typed meanwhile only ever makes a rename wait longer
+                sendWaitingRenamesQuietly()
             }
         }
         if (unsupported == null) scope.launch(confined) {
@@ -250,6 +277,7 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
             for (threads in previewRequests) refreshPreviews(threads)
         }
         if (unsupported == null) scope.launch(Dispatchers.IO) { watchWorktrees() }
+        if (unsupported == null) scope.launch(Dispatchers.IO) { watchEditorMode() }
     }
 
     fun newThread(folder: String) {
@@ -686,18 +714,35 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
         sessionByThread = sessions
         KeepAwakeService.refreshQuietly()
         nudgeToolbarQuietly(latest, names)
+        claudeSeenQuietly(latest)
+    }
+
+    /** Tells the key watch what each thread's claude does now ([RenameGate.seen]); never throws. */
+    private fun claudeSeenQuietly(threads: List<SkeinThread>) {
+        try {
+            val seen = RenameGate.seen(threads)
+            terminal.claudeSeen(seen.enterMaySend, seen.atWorkSince)
+        } catch (_: ProcessCanceledException) {
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            if (!claudeSeenFailed) LOG.warn("Skein could not tell its key watch what its threads do", e)
+            claudeSeenFailed = true
+        }
     }
 
     /** Set once the name carry failed, so a service in shutdown does not fill the log on every tick. */
     private var nameCarryFailed = false
 
-    /** Moves Skein names along `/clear` (see [DisplayNames.carry]) and returns the names now; never throws. */
+    /**
+     * Moves Skein names along `/clear` (see [DisplayNames.carry]), and a rename waiting for Claude Code with its name
+     * ([SessionMarks.carry]), and returns the names now; never throws.
+     */
     private fun carryNamesQuietly(sessions: Map<String, String?>): Map<String, String> {
         try {
             val marks = SessionMarksService.getInstance(project)
-            val names = marks.marks.value.names
-            val carried = DisplayNames.carry(sessionByThread, sessions, names)
-            if (carried != names) marks.update { it.copy(names = DisplayNames.carry(sessionByThread, sessions, it.names)) }
+            val current = marks.marks.value
+            if (current.carry(sessionByThread, sessions) != current) marks.update { it.carry(sessionByThread, sessions) }
             return marks.marks.value.names
         } catch (_: ProcessCanceledException) {
         } catch (e: CancellationException) {
@@ -726,6 +771,151 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
         }
     }
 
+    /**
+     * Whether Claude Code's input is in vim mode for a session in any of [folders] ([ClaudeEditorModeWatch]): then the
+     * Rename dialog offers no rename in Claude Code. Blocking, a few file stats unless a file changed; never on the EDT.
+     */
+    fun claudeInVimMode(folders: Collection<String>): Boolean = editorMode.vim(folders)
+
+    /**
+     * Every [EDITOR_MODE_MILLIS], whether each thread's claude is in vim mode ([vimByThread]), for the look at the waiting
+     * renames. IO, for as long as the service runs: a failed look is logged once and the next one comes all the same, so
+     * a stuck value cannot hold a rename back for good.
+     */
+    private suspend fun watchEditorMode() {
+        while (true) {
+            try {
+                vimByThread = latest.associate { it.id to editorMode.vim(RenameGate.folders(it)) }
+            } catch (_: ProcessCanceledException) {
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                if (!editorModeFailed) LOG.warn("Skein could not read whether Claude Code is in vim mode", e)
+                editorModeFailed = true
+            }
+            delay(EDITOR_MODE_MILLIS)
+        }
+    }
+
+    /**
+     * Types each rename waiting for Claude Code ([SessionMarks.claudeRenames]) into the claude of the thread that holds
+     * its session, once [RenameGate] says so, and leaves the others waiting for the next look. A name Skein would never
+     * type stops waiting. Confined; never throws but for cancellation.
+     */
+    private fun sendWaitingRenamesQuietly() {
+        try {
+            val marks = SessionMarksService.getInstance(project)
+            val waiting = marks.marks.value.claudeRenames
+            if (waiting.isEmpty()) return
+            val snapshot = snapshot()
+            for ((sessionId, name) in waiting) {
+                if (sessionId in renamesOnTheirWay) continue
+                val target = coordinator.renameTarget(sessionId, snapshot)
+                val clean = target != null && terminal.inputClean(target.tab)
+                val vimMode = target != null && vimByThread[target.thread.id] == true
+                when (RenameGate.decide(name, target?.runsSession == true, target?.thread?.state, target?.claude != null, clean, vimMode)) {
+                    RenameGate.Decision.WAIT -> Unit
+                    RenameGate.Decision.DROP -> {
+                        LOG.warn("Skein will not type the name waiting for session $sessionId into claude, so it stays in Skein only")
+                        marks.update { it.claudeRenameSent(sessionId, name) }
+                    }
+                    RenameGate.Decision.SEND -> if (target != null) sendRename(target, sessionId, name)
+                }
+            }
+        } catch (_: ProcessCanceledException) {
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            if (!renameLookFailed) LOG.warn("Skein could not look at the renames waiting for Claude Code", e)
+            renameLookFailed = true
+        }
+    }
+
+    /**
+     * Hands one rename to the terminal ([ThreadTerminal.sendRename]) on the service scope, never on the confined
+     * dispatcher, and asks it to look once more right before: the claude is still the same process under the tab's
+     * shell, and its status file, read fresh, says idle for that session. A rename that went stops waiting and is never
+     * typed again; one that failed on the way may have gone, so it stops waiting too. One the last look turned down
+     * waits on. Then the transcript is watched for Claude Code's own record of the name ([confirmRename]).
+     */
+    private fun sendRename(target: RenameTarget, sessionId: String, name: String) {
+        val claude = target.claude ?: return
+        val anchor = target.thread.anchor ?: return
+        renamesOnTheirWay += sessionId
+        scope.launch {
+            var gone = false
+            try {
+                gone = terminal.sendRename(
+                    target.tab,
+                    name,
+                    stillIdle = { claudeStillIdle(claude, anchor, sessionId, RenameGate.folders(target.thread)) },
+                    // in the EDT turn of the send: only a rename that still waits goes, and an IDE that quits right after has
+                    // nothing left to type again
+                    beforeSend = { SessionMarksService.getInstance(project).claimClaudeRename(sessionId, name) },
+                )
+                if (gone) LOG.info("Skein typed a waiting rename into the claude of thread ${target.thread.id}")
+            } catch (_: ProcessCanceledException) {
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                gone = true
+                LOG.warn("Skein could not type a waiting rename into the claude of thread ${target.thread.id}; it does not try again", e)
+            } finally {
+                val sent = gone
+                scope.launch(confined) {
+                    renamesOnTheirWay -= sessionId
+                    if (sent) {
+                        SessionMarksService.getInstance(project).update { it.claudeRenameSent(sessionId, name) }
+                        // only once it stopped waiting, so the confirmation never meets it still there
+                        confirmRename(target.thread, sessionId, name)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * The last look before a rename goes, off the EDT ([RenameGate.lastLook]) on what is read now: [claude]'s start and
+     * the shell it hangs under, its status file and Claude Code's vim mode for the user and the thread's [folders].
+     * Blocking; false on any doubt.
+     */
+    private fun claudeStillIdle(claude: ProcessId, anchor: Long, sessionId: String, folders: List<String>): Boolean = try {
+        val home = ClaudeHome.default()
+        val text = home.readText(home.sessionsDir.resolve("${claude.pid}.json"), STATUS_MAX_BYTES)
+        val file = text?.let { (SessionFileParser.parse(it) as? SessionFileParse.Ok)?.file }
+        val vim = editorMode.vim(folders)
+        RenameGate.lastLook(claude, mapper.startOf(claude.pid), anchor, mapper.anchorOf(claude.pid), file, sessionId, vim)
+    } catch (e: Exception) {
+        LOG.debug("Skein could not check the claude of session $sessionId before a rename", e)
+        false
+    }
+
+    /**
+     * Watches the session's transcript for up to [CONFIRM_MILLIS] after a rename went, on Dispatchers.IO: once Claude
+     * Code shows [name] as the session's own name ([ClaudeRename.confirmedBy]), the Skein name goes
+     * ([SessionMarks.claudeNameConfirmed]), so a later `/rename` in claude is followed again. Until then the Skein name
+     * keeps the row right, and if the record never comes nothing else happens.
+     */
+    private fun confirmRename(thread: SkeinThread, sessionId: String, name: String) {
+        scope.launch(Dispatchers.IO) {
+            val until = now() + CONFIRM_MILLIS
+            while (now() < until) {
+                delay(CONFIRM_POLL_MILLIS)
+                val confirmed = try {
+                    ClaudeRename.confirmedBy(Transcripts.tailLines(ClaudeHome.default(), thread.folder, thread.sessionCwd, sessionId), name)
+                } catch (e: Exception) {
+                    LOG.debug("Skein could not read the transcript of session $sessionId", e)
+                    false
+                }
+                if (confirmed) {
+                    SessionMarksService.getInstance(project).update { it.claudeNameConfirmed(sessionId, name) }
+                    return@launch
+                }
+            }
+            LOG.info("Claude Code did not show the name Skein typed into session $sessionId; its Skein name stays")
+        }
+    }
+
     private fun snapshot(): SessionSnapshot = monitor.snapshots.value
 
     private fun now(): Long = System.currentTimeMillis()
@@ -736,6 +926,16 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
 
         /** How long a Close waits for a hung-up thread's terminal session to end before it closes the tab anyway. */
         private const val END_WAIT_MILLIS = 5_000L
+
+        /** How long after a rename went Skein looks for Claude Code's record of it in the transcript, and how often. */
+        private const val CONFIRM_MILLIS = 60_000L
+        private const val CONFIRM_POLL_MILLIS = 1_000L
+
+        /** A status file is a few hundred bytes; anything far larger is not one. */
+        private const val STATUS_MAX_BYTES = 64 * 1024
+
+        /** How often Skein looks whether Claude Code's vim mode setting changed. */
+        private const val EDITOR_MODE_MILLIS = 10_000L
 
         fun getInstance(project: Project): ThreadService = project.service()
 
