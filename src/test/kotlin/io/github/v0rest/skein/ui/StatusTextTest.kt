@@ -32,4 +32,12 @@ class StatusTextTest {
         assertEquals("3 d", StatusText.age(0, 3 * 86_400_000L))
         assertEquals("now", StatusText.age(5_000, 1_000))
     }
+
+    /** claude asks whether to trust the folder before it writes any status: the row and its tooltip say so in full. */
+    @Test
+    fun theTrustQuestionIsSaidInFull() {
+        val asking = ThreadState.NeedsYou(WaitReason.TRUST, 0)
+        assertEquals("claude asks whether to trust this folder", StatusText.line(asking))
+        assertEquals("claude asks whether to trust this folder", StatusText.tooltipLine(asking))
+    }
 }

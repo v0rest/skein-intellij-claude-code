@@ -66,4 +66,12 @@ class WaitingCounterTest {
         val threads = listOf(thread("pinned-recent", ThreadState.YourTurn(500), pinned = true), thread("older", ThreadState.YourTurn(100)))
         assertEquals("older", WaitingCounter.jumpTarget(threads))
     }
+
+    /** A thread whose claude asks about trust waits for the user like any other: counted, and where Jump goes. */
+    @Test
+    fun aThreadAskingAboutTrustCountsAndIsJumpedTo() {
+        val threads = listOf(thread("turn", ThreadState.YourTurn(1)), thread("trust", ThreadState.NeedsYou(WaitReason.TRUST, 900)))
+        assertEquals(1, WaitingCounter.of(threads, emptyMap()).count)
+        assertEquals("trust", WaitingCounter.jumpTarget(threads))
+    }
 }

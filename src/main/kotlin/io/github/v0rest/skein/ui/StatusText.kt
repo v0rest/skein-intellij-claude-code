@@ -10,6 +10,7 @@ object StatusText {
             WaitReason.PERMISSION -> "permission"
             WaitReason.QUESTION -> "question"
             WaitReason.OTHER -> "needs you"
+            WaitReason.TRUST -> TRUST_QUESTION
         }
         is ThreadState.YourTurn -> "your turn"
         ThreadState.Working, ThreadState.WorkingUnknown -> "working"
@@ -26,8 +27,16 @@ object StatusText {
     fun tooltipLine(state: ThreadState): String = when {
         state is ThreadState.NeedsYou && state.reason == WaitReason.PERMISSION -> "waiting for your permission"
         state is ThreadState.NeedsYou && state.reason == WaitReason.QUESTION -> "waiting for your answer"
+        state is ThreadState.NeedsYou && state.reason == WaitReason.TRUST -> TRUST_QUESTION
         else -> line(state)
     }
+
+    /**
+     * A sentence the tooltip adds under [tooltipLine], or null. Only the trust wait has one - a Claude home Skein does not
+     * see (CLAUDE_CONFIG_DIR set only in the terminal's settings) would keep a thread on that question for good.
+     */
+    fun tooltipHint(state: ThreadState): String? =
+        if (state is ThreadState.NeedsYou && state.reason == WaitReason.TRUST) TRUST_HINT else null
 
     /** "now", "4 min", "2 h", "3 d": the time since [since], rounded down. */
     fun age(since: Long, now: Long): String {
@@ -39,6 +48,12 @@ object StatusText {
             else -> "${elapsed / DAY} d"
         }
     }
+
+    /** Said in full on the row too: it is what the person has to answer in the tab, and no other row says it. */
+    private const val TRUST_QUESTION = "claude asks whether to trust this folder"
+
+    private const val TRUST_HINT =
+        "If claude is past that question already, Skein may be reading another Claude home than the terminal's - check CLAUDE_CONFIG_DIR."
 
     private const val MINUTE = 60_000L
     private const val HOUR = 60 * MINUTE

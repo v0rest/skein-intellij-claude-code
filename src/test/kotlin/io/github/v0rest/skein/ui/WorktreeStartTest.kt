@@ -1,5 +1,6 @@
 package io.github.v0rest.skein.ui
 
+import io.github.v0rest.skein.claude.FolderTrust
 import io.github.v0rest.skein.git.GitResult
 import io.github.v0rest.skein.git.GitWorktree
 import io.github.v0rest.skein.paths.PathStyle.UNIX
@@ -162,5 +163,23 @@ class WorktreeStartTest {
         // NTFS opens `Task-1` as the existing `task-1`, a reopen; on Unix it is a new worktree
         assertNull(WorktreeStart.baseWarningFor("Task-1", "task-2", existing, "behind", WINDOWS))
         assertEquals("behind", WorktreeStart.baseWarningFor("Task-1", "task-2", existing, "behind", UNIX))
+    }
+
+    /** claude --worktree turns away a folder nobody trusted yet: the dialog says so, and only when the file says so. */
+    @Test
+    fun theTrustWarningShowsOnlyForAFolderNobodyTrusted() {
+        assertEquals(
+            "claude --worktree refuses a folder Claude Code has not been told to trust yet. Start a plain thread in /w/acme once and answer its question, then come back.",
+            WorktreeStart.trustWarning("/w/acme", FolderTrust.NOT_TRUSTED, UNIX),
+        )
+        assertNull(WorktreeStart.trustWarning("/w/acme", FolderTrust.TRUSTED, UNIX))
+        assertNull(WorktreeStart.trustWarning("/w/acme", FolderTrust.UNKNOWN, UNIX))
+    }
+
+    /** The repository is named as the other messages name it, whichever shape the IDE or git gave. */
+    @Test
+    fun theTrustWarningNamesTheRepositoryInItsCanonicalForm() {
+        val text = WorktreeStart.trustWarning("C:/Users/skein/demo-shop/", FolderTrust.NOT_TRUSTED, WINDOWS)
+        assertTrue(text, text!!.contains("Start a plain thread in C:\\Users\\skein\\demo-shop once"))
     }
 }

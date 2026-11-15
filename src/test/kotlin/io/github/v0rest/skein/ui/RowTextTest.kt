@@ -74,4 +74,31 @@ class RowTextTest {
         assertEquals("worktree feat-x · Tests are green.", RowText.secondLine(ThreadState.Idle, worktree = "worktree feat-x", preview = "Tests are green."))
         assertEquals("worktree feat-x · working", RowText.secondLine(ThreadState.Working, worktree = "worktree feat-x", preview = null))
     }
+
+    /** Before its status file claude has no transcript to preview, so the row says what it waits on, and so does the tooltip. */
+    @Test
+    fun aThreadAskingAboutTrustSaysSoOnItsRowAndTooltip() {
+        val asking = ThreadState.NeedsYou(WaitReason.TRUST, 0)
+        assertEquals("claude asks whether to trust this folder", RowText.secondLine(asking, worktree = null, preview = null))
+        assertTrue(RowText.tooltip(thread(asking)).startsWith("<html>claude asks whether to trust this folder<br>"))
+        assertTrue(RowText.bold(asking))
+    }
+
+    /**
+     * A Claude home Skein does not see (CLAUDE_CONFIG_DIR set only in the terminal's settings) would keep the thread on
+     * the question for good, so the tooltip, and only the tooltip, says what to check (T6).
+     */
+    @Test
+    fun theTrustWaitsTooltipSaysWhatToCheckWhenItLingers() {
+        val tip = RowText.tooltip(thread(ThreadState.NeedsYou(WaitReason.TRUST, 0)))
+        val hint = "If claude is past that question already, Skein may be reading another Claude home than the terminal's - check CLAUDE_CONFIG_DIR."
+        assertEquals(hint, StatusText.tooltipHint(ThreadState.NeedsYou(WaitReason.TRUST, 0)))
+        val wrapped = WorktreeBadge.wrap(hint, indent = 0).joinToString("<br>") { com.intellij.openapi.util.text.StringUtil.escapeXmlEntities(it) }
+        assertEquals("<html>claude asks whether to trust this folder<br>$wrapped", tip)
+        assertFalse(RowText.secondLine(ThreadState.NeedsYou(WaitReason.TRUST, 0), worktree = null, preview = null).contains("CLAUDE_CONFIG_DIR"))
+        for (other in listOf(ThreadState.NeedsYou(WaitReason.OTHER, 0), ThreadState.Unknown, ThreadState.Idle)) {
+            assertEquals(null, StatusText.tooltipHint(other))
+            assertFalse(RowText.tooltip(thread(other)).contains("CLAUDE_CONFIG_DIR"))
+        }
+    }
 }

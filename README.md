@@ -14,7 +14,8 @@ Unofficial, for Claude Code, not affiliated with Anthropic.
   use, so your subscription, settings, slash commands, MCP servers and hooks work exactly as in your terminal. There
   is no chat panel that re-implements Claude Code and no API key to paste.
 - Nothing installed into Claude Code. Skein adds no hook and no setting and writes nothing into your Claude home; it
-  learns what each session does from Claude Code's own session files.
+  learns what each session does from Claude Code's own session files, and from `.claude.json` only whether a folder is
+  trusted.
 - No session waits unseen. Every thread shows whether it waits for you, finished its turn or still works, and Skein
   notifies you, plays a sound if you like and counts the threads waiting for you.
 - Every session of the project in one place. The History lists them by your name for them or Claude Code's title, and

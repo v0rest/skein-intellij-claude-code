@@ -21,6 +21,8 @@ import javax.swing.event.DocumentEvent
  * with the first `task-N` that neither git ([existing]) nor one of the project's threads ([inUse]) has and whose
  * `worktree-<name>` branch is not left among the repository's [branches], and left empty it stands for that name.
  * A [baseWarning] (the base is behind its remote) shows under the field for a new name, and OK goes on all the same.
+ * A [trustWarning] (Claude Code was not told to trust the repository, [WorktreeStart.trustWarning]) shows there for
+ * any name, and OK goes on as well.
  */
 class WorktreeNameDialog(
     project: Project,
@@ -28,6 +30,7 @@ class WorktreeNameDialog(
     inUse: Set<String>,
     branches: Set<String>,
     private val baseWarning: String? = null,
+    private val trustWarning: String? = null,
 ) : DialogWrapper(project) {
     private val suggested = WorktreeStart.defaultName(existing, inUse, branches)
     private val nameField = JTextField(suggested, 24)
@@ -59,6 +62,12 @@ class WorktreeNameDialog(
     override fun createCenterPanel(): JComponent = panel {
         row("Name:") {
             cell(nameField).align(AlignX.FILL).comment(if (existing.isEmpty()) null else "An existing name reopens that worktree")
+        }
+        if (trustWarning != null) {
+            row {
+                icon(AllIcons.General.Warning).gap(RightGap.SMALL)
+                text(StringUtil.escapeXmlEntities(trustWarning)).align(AlignX.FILL)
+            }
         }
         if (baseWarning != null) {
             warningRow = row {

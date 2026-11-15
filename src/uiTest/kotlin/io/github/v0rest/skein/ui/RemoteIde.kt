@@ -95,8 +95,28 @@ object RemoteIde {
         """,
     ).trim('[', ']').split(',').mapNotNull { it.trim().toLongOrNull() }.toSet()
 
-    /** Closes every project a UI test opened (`demo-…`), for a clean start. */
+    /**
+     * Closes every project a UI test opened (`demo-…`), for a clean start - after the modal dialogs a failed test may
+     * have left open, which would keep a project from closing.
+     */
     fun closeTestProjects() {
+        js(
+            """
+            // ModalityState.any(), since a runnable queued with the default one waits for the modal dialog to close
+            com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater(new java.lang.Runnable({
+                run: function() {
+                    var ws = java.awt.Window.getWindows();
+                    for (var i = 0; i < ws.length; i++) {
+                        var w = ws[i];
+                        if (!(w instanceof javax.swing.JDialog) || !w.isShowing() || !w.isModal()) continue;
+                        var dw = com.intellij.openapi.ui.DialogWrapper.findInstance(w.getContentPane());
+                        if (dw != null) dw.doCancelAction(); else w.dispose();
+                    }
+                }
+            }), com.intellij.openapi.application.ModalityState.any());
+            'ok'
+            """,
+        )
         val names = js(
             """
             var ps = com.intellij.openapi.project.ProjectManager.getInstance().getOpenProjects(); var out = new java.util.ArrayList();

@@ -124,6 +124,33 @@ class ClaudeHomeTest {
         assertEquals(Fixture.path("Users/u/.claude"), ClaudeHome.resolveRoot(mapOf("CLAUDE_CONFIG_DIR" to "cfg"), userHome = userFolder))
     }
 
+    /** Claude Code's global config sits in CLAUDE_CONFIG_DIR when that is set, else next to the home, in the user's home folder. */
+    @Test
+    fun theConfigFileFollowsTheSameRuleAsTheHome() {
+        val dir = mapOf("CLAUDE_CONFIG_DIR" to Fixture.root("opt/claude-cfg"))
+        assertEquals(Fixture.path("opt/claude-cfg/.claude.json"), ClaudeHome.resolveConfigFile(dir, emptyMap(), userFolder))
+        assertEquals(Fixture.path("opt/claude-cfg/.claude.json"), ClaudeHome.resolveConfigFile(emptyMap(), dir, userFolder))
+        assertEquals(Fixture.path("Users/u/.claude.json"), ClaudeHome.resolveConfigFile(emptyMap(), emptyMap(), userFolder))
+        assertEquals(Fixture.path("Users/u/.claude.json"), ClaudeHome.resolveConfigFile(mapOf("CLAUDE_CONFIG_DIR" to "cfg"), emptyMap(), userFolder))
+    }
+
+    /** The config is read as the caller parses it; a home that does not know it, a folder in its place or a missing file gives nothing. */
+    @Test
+    fun theConfigFileIsReadOnlyAsAWholeFileWithinItsLimit() {
+        val file = tmp.root.toPath().resolve("cfg.json")
+        val home = ClaudeHome(root(), configFile = file)
+        assertNull(home.readConfig(1_000) { it.readText() })
+        Files.writeString(file, "{}")
+        assertEquals("{}", home.readConfig(2) { it.readText() })
+        assertNull(home.readConfig(1) { it.readText() })
+        // too large by its size, the file is not even opened for the parser
+        var parsed = false
+        assertNull(home.readConfig(1) { parsed = true; it.readText() })
+        assertFalse(parsed)
+        assertNull(ClaudeHome(root()).readConfig(1_000) { it.readText() })
+        assertNull(ClaudeHome(root(), configFile = tmp.newFolder("a-folder").toPath()).readConfig(1_000) { it.readText() })
+    }
+
     @Test
     fun readsLeaveTreeUnchanged() {
         write("sessions/1.json", "{}")
@@ -169,5 +196,19 @@ class ClaudeHomeTest {
         Files.createSymbolicLink(acme.resolve(".claude"), userHome.resolve(".claude"))
         assertTrue(ClaudeHome(userHome.resolve(".claude")).holdsWorktreesOf(acme))
         assertFalse(ClaudeHome(userHome.resolve(".claude")).holdsWorktreesOf(Files.createDirectories(base.resolve("beta"))))
+    }
+
+    /** The cap counts the bytes as they are read, so a file that grew after the size was looked at still stops there (T5). */
+    @Test
+    fun theConfigReadStopsAtItsLimitWhateverTheSizeSaid() {
+        val text = "{\"projects\":{}}"
+        assertEquals(text, ClaudeHome.readAtMost(text.byteInputStream(), text.length.toLong()) { it.readText() })
+        assertNull(ClaudeHome.readAtMost(text.byteInputStream(), text.length - 1L) { it.readText() })
+        // bytes are counted, not characters
+        val accented = "\"caf\u00e9\""
+        assertEquals(accented, ClaudeHome.readAtMost(accented.byteInputStream(), 7) { it.readText() })
+        assertNull(ClaudeHome.readAtMost(accented.byteInputStream(), 6) { it.readText() })
+        // malformed UTF-8 is an error, not a replacement character
+        assertNull(ClaudeHome.readAtMost(byteArrayOf(0xC3.toByte(), 0x28).inputStream(), 10) { it.readText() })
     }
 }

@@ -24,6 +24,7 @@ import com.intellij.openapi.wm.ToolWindowManager
 import io.github.v0rest.skein.claude.ClaudeCodeRequirement
 import io.github.v0rest.skein.claude.ClaudeHome
 import io.github.v0rest.skein.claude.FileStamp
+import io.github.v0rest.skein.claude.FolderTrustReader
 import io.github.v0rest.skein.claude.HistoryEntry
 import io.github.v0rest.skein.claude.SessionMonitor
 import io.github.v0rest.skein.claude.SessionSnapshot
@@ -114,7 +115,11 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
             override fun leftNeedsYou(threadId: String): Unit = notifier.dismiss(threadId)
 
             override fun missingStatusFiles(): Unit = notifier.missingStatusFiles(ClaudeCodeRequirement.MIN_VERSION)
+
+            override fun untrustedWorktree(thread: SkeinThread): Unit = notifier.untrustedWorktree(thread.folder)
         },
+        // read on the confined dispatcher, once per launch that timed out with a reason to ask
+        trust = { folder -> FolderTrustReader.read(ClaudeHome.default(), folder) },
     )
     private val rows = MutableStateFlow<List<SkeinThread>>(emptyList())
 

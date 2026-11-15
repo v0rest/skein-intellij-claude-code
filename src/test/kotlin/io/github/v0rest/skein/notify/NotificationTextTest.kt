@@ -156,4 +156,18 @@ class NotificationTextTest {
         assertEquals(expected, NotificationText.missingStatusFiles("2.1.162", ClaudeLocator.Result.OnPath))
         assertEquals(expected, NotificationText.missingStatusFiles("2.1.162", ClaudeLocator.Result.NotFound))
     }
+
+    @Test
+    fun aTrustQuestionIsNamedInTheSubtitle() =
+        assertEquals("asks whether to trust this folder", NotificationText.subtitle(thread("acme", NeedsYou(io.github.v0rest.skein.claude.WaitReason.TRUST, 0)), NEEDS_YOU))
+
+    /** The balloon of a worktree thread a folder nobody trusted turned away: what to do, with the repository escaped. */
+    @Test
+    fun anUntrustedWorktreeBalloonSaysWhatToDo() {
+        val text = NotificationText.untrustedWorktree("/w/R&D <acme>", io.github.v0rest.skein.paths.PathStyle.UNIX)
+        assertEquals(
+            "claude --worktree refuses a folder Claude Code has not been told to trust yet. Start a plain thread in /w/R&amp;D &lt;acme&gt; once and answer its question, then come back.",
+            text,
+        )
+    }
 }

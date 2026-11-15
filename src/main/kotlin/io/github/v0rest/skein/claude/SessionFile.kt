@@ -9,8 +9,12 @@ import com.google.gson.JsonObject
  */
 enum class ClaudeActivity { IDLE, BUSY, BACKGROUND, WAITING, UNKNOWN }
 
-/** Why a waiting `claude` waits: the `waitingFor` value, reduced to what the UI distinguishes. */
-enum class WaitReason { PERMISSION, QUESTION, OTHER }
+/**
+ * Why a waiting `claude` waits: the `waitingFor` value, reduced to what the UI distinguishes. TRUST never comes from a
+ * status file - claude asks whether to trust its folder before it writes one, so Skein tells it from the process tree
+ * and Claude Code's config ([io.github.v0rest.skein.threads.LaunchTimeout]).
+ */
+enum class WaitReason { PERMISSION, QUESTION, OTHER, TRUST }
 
 fun waitReasonOf(waitingFor: String?): WaitReason = when (waitingFor) {
     "permission prompt" -> WaitReason.PERMISSION

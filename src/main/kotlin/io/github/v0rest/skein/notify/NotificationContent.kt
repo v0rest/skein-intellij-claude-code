@@ -48,6 +48,8 @@ object NotificationContent {
                 WaitReason.PERMISSION -> pendingTool(turn)?.let { toolLine(it, style) }
                 WaitReason.QUESTION -> pendingQuestion(turn)?.let(::question) ?: lastText(turn)
                 WaitReason.OTHER, null -> lastText(turn)
+                // asked before the session starts, so an older transcript of a resumed session says nothing about it
+                WaitReason.TRUST -> null
             }
         }
     }

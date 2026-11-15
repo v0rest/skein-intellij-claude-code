@@ -241,4 +241,11 @@ class NotificationContentTest {
         val old = """{"type":"assistant","message":{"role":"assistant","content":"Plain answer. More follows."}}"""
         assertEquals("Plain answer.", NotificationContent.fromTail(listOf(old), TURN_FINISHED, null))
     }
+
+    /** The trust question comes before the session, so an old transcript has nothing to say about it. */
+    @Test
+    fun aTrustQuestionHasNoContent() {
+        val lines = listOf(assistant(text("The earlier answer.")))
+        assertNull(NotificationContent.fromTail(lines, NEEDS_YOU, io.github.v0rest.skein.claude.WaitReason.TRUST))
+    }
 }
