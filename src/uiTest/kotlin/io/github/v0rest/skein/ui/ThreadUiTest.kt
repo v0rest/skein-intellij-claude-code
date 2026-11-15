@@ -16,6 +16,7 @@ import java.time.Duration
 class ThreadUiTest {
     private companion object {
         const val EMPTY_LIST = "//div[@class='JBList' and contains(@visible_text, 'No threads yet')]"
+        const val WORKTREE_BUTTON = "//div[@accessiblename='New Thread in Worktree…']"
     }
 
     private val demo = DemoProject()
@@ -63,13 +64,14 @@ class ThreadUiTest {
         trustTheFolder(frame)
         val before = RemoteIde.claudePids()
         RemoteIde.toFront(project)
-        // a click into the list gives the tool window the focus, which shows its title bar buttons
-        frame.find(ComponentFixture::class.java, byXpath(EMPTY_LIST), Duration.ofSeconds(30)).click(Point(20, 20))
-        val plus = frame.find(ComponentFixture::class.java, byXpath("//div[@accessiblename='New Thread']"), Duration.ofSeconds(15))
-        val width = plus.callJs<String>("'' + component.getWidth()").trim().toInt()
-        plus.click(Point(width - 4, 8)) // the chevron at its right edge
-        RemoteIde.robot.find(ComponentFixture::class.java, byXpath("//div[@class='HeavyWeightWindow']"), Duration.ofSeconds(10))
-            .findAllText().first { it.text.contains("Worktree") }.click()
+        // a click into the list gives the tool window the focus, which shows its title bar buttons; a project still
+        // loading can take it back, so the click repeats until the branch button next to "+" shows
+        val list = frame.find(ComponentFixture::class.java, byXpath(EMPTY_LIST), Duration.ofSeconds(30))
+        waitFor(Duration.ofSeconds(60), Duration.ofSeconds(3), "New Thread in Worktree… in the Skein title bar") {
+            list.click(Point(20, 20))
+            frame.findAll(ComponentFixture::class.java, byXpath(WORKTREE_BUTTON)).isNotEmpty()
+        }
+        frame.find(ComponentFixture::class.java, byXpath(WORKTREE_BUTTON)).click()
 
         val dialog = RemoteIde.robot.find(
             com.intellij.remoterobot.fixtures.CommonContainerFixture::class.java,

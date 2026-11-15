@@ -389,8 +389,8 @@ claude for the end-to-end tests is a POSIX script, so those tests skip on Window
   too: that the keep-awake assertion shows up in `pmset -g assertions` and the JNA module loads, that pins, names,
   colours and done marks survive a restart, the editor-tab tint, a click on the toolbar counter and the sound. The
   refreshed tool window waits for its checks as well, the tab titles after the move into the editor and after a
-  restart, the badge while the Skein window has not been opened yet, the split "+" in the title bar and the spinner
-  in the new row.
+  restart, the badge while the Skein window has not been opened yet, "+" and the branch button in the title bar and
+  the spinner in the new row.
   The lock and speech-bubble glyphs of a waiting thread in a light theme, and at 100 % and 200 % scale side by side.
   For worktree threads: the `cwd` in the status file of a first worktree session, a restored worktree thread
   resuming into its worktree, the notice about the worktrees `.gitignore` and the exclude line on a first worktree
@@ -443,10 +443,11 @@ and a failing one leaves a screenshot of that machine under `build/reports/ui-sc
 `test` nor CI runs them.
 
 The tests check that the Skein tool window is on, that a thread started from the empty list starts claude with its
-status file and that the tab's × ends both, and that New Thread in Worktree… starts claude with the worktree as its
-`cwd` while the repository's `git status` stays clean. After each test they end the claude processes the IDE under test
-still has, by pid, and delete the test's repository under `skein-ci/ui-work` in the home folder of that machine. "+" in the title bar is reached through a click into the list first, since the
-new UI shows a tool window's title bar buttons only while it has the focus.
+status file and that the tab's × ends both, and that New Thread in Worktree…, from its own button, starts claude
+with the worktree as its `cwd` while the repository's `git status` stays clean. After each test they end the claude
+processes the IDE under test still has, by pid, and delete the test's repository under `skein-ci/ui-work` in the home
+folder of that machine. The title bar's buttons are reached through a click into the list first, since the new UI
+shows a tool window's title bar buttons only while it has the focus.
 
 ## Releasing
 
