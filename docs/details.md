@@ -59,8 +59,11 @@ differs from the thread's name (its rename, Claude Code's title or the last prom
 same orange or blue dot as the list. Claude's answers, tool calls and questions never go into it.
 A thread has one balloon at a time, a newer event replaces it. A needs-you balloon stays until you act on it, a
 finished-turn one fades like any IDE notification, and either goes away as soon as you open the thread, close its
-tab, or the thread stops needing you. With the IDE in the background Skein also sends the event and the session's
-name on its own line to the system notification centre, unless you turned system notifications off under
+tab, or the thread stops needing you. With another project's window in front, or its tab when the IDE keeps projects
+as tabs of one window, or with that project the last one you were in before you left the IDE, the balloon shows there,
+its subtitle starting with the thread's project, and Open goes to the thread's project first. Closing the thread's
+project takes its balloons down wherever they show. With the IDE in the background Skein also sends the event and the
+session's name on its own line to the system notification centre, unless you turned system notifications off under
 Settings | Appearance & Behavior | Notifications.
 
 When the IDE restarts, Skein reopens the same thread tabs and runs `claude --resume <id>` in each one only when you

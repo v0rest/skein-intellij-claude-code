@@ -11,6 +11,8 @@ import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.text.StringUtil
+import com.intellij.openapi.wm.IdeFocusManager
+import com.intellij.openapi.wm.IdeFrame
 import com.intellij.ui.SystemNotifications
 import com.intellij.util.EnvironmentUtil
 import io.github.v0rest.skein.claude.ClaudeHome
@@ -69,6 +71,21 @@ object NotificationText {
     fun osText(subtitle: String, content: String?): String =
         (if (content == null) subtitle else "$subtitle\n$content").replace('<', '‹').replace('>', '›')
 
+    /** Where a thread's notification shows: [inFront] in the project the owner looks at instead of its own, [system] also in the OS. */
+    data class Placement(val inFront: Boolean, val system: Boolean)
+
+    /**
+     * When another project's window - or its tab, when the IDE keeps projects as tabs of one window - is in front, or
+     * was the last one before the IDE went to the background, a balloon in this project's own frame would sit where
+     * nobody sees it and only the sound would come through, so it shows in that project instead ([fromProject] names
+     * its own), where the owner looks or comes back to. With the IDE in the background the OS gets the same words too.
+     */
+    fun placement(appActive: Boolean, anotherProjectInFront: Boolean): Placement =
+        Placement(inFront = anotherProjectInFront, system = !appActive)
+
+    /** The subtitle of a balloon shown in another project: which project the thread is in, then what happened. */
+    fun fromProject(projectName: String, subtitle: String): String = "${StringUtil.escapeXmlEntities(projectName)} · $subtitle"
+
     fun enabled(kind: NotificationKind, settings: SkeinSettings.State): Boolean = when (kind) {
         NotificationKind.NEEDS_YOU -> settings.notifyNeedsYou
         NotificationKind.TURN_FINISHED -> settings.notifyTurnFinished
@@ -124,6 +141,8 @@ class ThreadNotifier(private val project: Project, private val open: (threadId: 
         val subtitle = NotificationText.subtitle(thread, kind)
         val content = NotificationText.text(title, sessionNameQuietly(thread, names))
         onEdt {
+            // the project is closing: its balloons were taken down, and one coming later would outlive it elsewhere
+            if (closed) return@onEdt
             // title and content are HTML to the platform: a `<` in a name must stay a `<`
             val notification = group(kind).createNotification(StringUtil.escapeXmlEntities(title), content?.let(StringUtil::escapeXmlEntities).orEmpty(), NotificationType.INFORMATION)
                 .setSubtitle(subtitle)
@@ -136,10 +155,41 @@ class ThreadNotifier(private val project: Project, private val open: (threadId: 
                 )
             notification.whenExpired { balloons.expired(thread.id, notification) }
             balloons.replace(thread.id, notification)
-            notification.notify(project)
-            if (!ApplicationManager.getApplication().isActive) notifySystemQuietly(title, NotificationText.osText(subtitle, content))
+            val front = frontProject()
+            val place = NotificationText.placement(ApplicationManager.getApplication().isActive, anotherProjectInFront = front != null)
+            if (place.inFront && front != null) {
+                notification.setSubtitle(NotificationText.fromProject(project.name, subtitle))
+                notification.notify(front)
+            } else {
+                notification.notify(project)
+            }
+            if (place.system) notifySystemQuietly(title, NotificationText.osText(subtitle, content))
         }
     }
+
+    /**
+     * The open project whose window or tab the owner was in last, when it is another one than this. A detached editor
+     * window counts as none: a balloon for its project would go to that project's main frame, which may be a hidden tab.
+     * EDT only.
+     */
+    private fun frontProject(): Project? {
+        val frame = IdeFocusManager.getGlobalInstance().lastFocusedFrame
+        if (frame == null || frame is IdeFrame.Child) return null
+        return frame.project?.takeIf { it !== project && !it.isDisposed && it.isOpen }
+    }
+
+    /**
+     * The thread's project is closing: its balloons go now, on the EDT and not through [onEdt], which drops work once
+     * the project is disposed - one shown in another project would otherwise stay there with an Open that leads nowhere.
+     */
+    fun dismissAllNow() {
+        closed = true
+        balloons.dismissAll()
+    }
+
+    /** Set once the project is closing, so a notify already on its way to the EDT shows nothing. */
+    @Volatile
+    private var closed = false
 
     /** Set once the OS notification failed, so one broken notifier does not fill the log on every event. */
     private var systemNotifyFailed = false

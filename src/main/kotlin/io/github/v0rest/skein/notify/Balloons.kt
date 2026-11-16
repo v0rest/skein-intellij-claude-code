@@ -20,6 +20,12 @@ class Balloons<T : Any>(private val expire: (T) -> Unit) {
         expire(old)
     }
 
+    /** Takes down and forgets every thread's balloon. */
+    fun dismissAll() {
+        val all = synchronized(current) { current.values.toList().also { current.clear() } }
+        all.forEach(expire)
+    }
+
     /** [balloon] went away on its own (the user acted on it, or it was replaced): forget it unless the thread has a newer one. */
     fun expired(threadId: String, balloon: T) {
         synchronized(current) { if (current[threadId] === balloon) current.remove(threadId) }

@@ -222,6 +222,44 @@ object RemoteIde {
         )
     }
 
+    /** Puts the window (or window tab) of project [name] in front with the focus, the way a person switches to it. */
+    fun focusProject(name: String) {
+        js(
+            """
+            var ps = com.intellij.openapi.project.ProjectManager.getInstance().getOpenProjects();
+            for (var i = 0; i < ps.length; i++) if (ps[i].getName() == '$name') {
+                var project = ps[i];
+                com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater(new java.lang.Runnable({
+                    run: function() { com.intellij.ide.impl.ProjectUtil.focusProjectWindow(project, true); }
+                }));
+            }
+            'ok'
+            """,
+        )
+    }
+
+    /** The project whose window or tab is in front with the IDE active, or "" when there is none. */
+    fun inFront(): String = js(
+        """
+        var f = com.intellij.openapi.wm.IdeFocusManager.getGlobalInstance().getLastFocusedFrame();
+        var active = com.intellij.openapi.application.ApplicationManager.getApplication().isActive();
+        (active && f != null && f.getProject() != null) ? '' + f.getProject().getName() : ''
+        """,
+        edt = true,
+    )
+
+    /** The title and subtitle of each notification project [name] shows now, one "title | subtitle" line each. */
+    fun notificationsOf(name: String): List<String> = js(
+        """
+        var ps = com.intellij.openapi.project.ProjectManager.getInstance().getOpenProjects(); var out = new java.util.ArrayList();
+        for (var i = 0; i < ps.length; i++) if (ps[i].getName() == '$name') {
+            var ns = com.intellij.notification.NotificationsManager.getNotificationsManager().getNotificationsOfType(com.intellij.notification.Notification, ps[i]);
+            for (var j = 0; j < ns.length; j++) out.add(ns[j].getTitle() + ' | ' + ns[j].getSubtitle());
+        }
+        '' + java.lang.String.join('\n', out)
+        """,
+    ).lines().filter { it.isNotBlank() }
+
     /** Brings the frame of [name] to the front, so a screenshot shows it. */
     fun toFront(name: String) {
         js(
