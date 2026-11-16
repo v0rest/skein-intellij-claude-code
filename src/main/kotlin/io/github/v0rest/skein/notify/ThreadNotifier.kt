@@ -22,6 +22,9 @@ import io.github.v0rest.skein.claude.Transcripts
 import io.github.v0rest.skein.claude.WaitReason
 import io.github.v0rest.skein.paths.PathStyle
 import io.github.v0rest.skein.settings.SkeinSettings
+import io.github.v0rest.skein.sound.SoundChoice
+import io.github.v0rest.skein.sound.SoundChoices
+import io.github.v0rest.skein.sound.SoundPlayer
 import io.github.v0rest.skein.threads.DisplayNames
 import io.github.v0rest.skein.threads.NotificationKind
 import io.github.v0rest.skein.threads.SessionMarksService
@@ -29,7 +32,6 @@ import io.github.v0rest.skein.threads.SkeinThread
 import io.github.v0rest.skein.threads.ThreadState
 import io.github.v0rest.skein.ui.SkeinIcons
 import io.github.v0rest.skein.ui.WorktreeStart
-import java.awt.Toolkit
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -96,6 +98,15 @@ object NotificationText {
         NotificationKind.TURN_FINISHED -> settings.soundTurnFinished
     }
 
+    /** The sound the event plays when its switch is on - whatever the setting holds, at worst the beep. */
+    fun soundChoice(kind: NotificationKind, settings: SkeinSettings.State, style: PathStyle = PathStyle.current): SoundChoice = SoundChoices.parse(
+        when (kind) {
+            NotificationKind.NEEDS_YOU -> settings.soundNeedsYouChoice
+            NotificationKind.TURN_FINISHED -> settings.soundTurnFinishedChoice
+        },
+        style,
+    )
+
     /**
      * The balloon's content, so a folder name is escaped like the other balloons' text. The installer's folder is a
      * hint only: Skein knows that no status file came, and PATH it can read is the IDE's, not the terminal's.
@@ -130,7 +141,7 @@ class ThreadNotifier(private val project: Project, private val open: (threadId: 
 
     fun notify(thread: SkeinThread, kind: NotificationKind) {
         val settings = SkeinSettings.getInstance().state
-        if (NotificationText.sound(kind, settings)) Toolkit.getDefaultToolkit().beep()
+        if (NotificationText.sound(kind, settings)) SoundPlayer.getInstance().play(kind, NotificationText.soundChoice(kind, settings))
         if (!NotificationText.enabled(kind, settings)) {
             // the thread moved on, so the balloon it had describes a state that no longer holds
             dismiss(thread.id)

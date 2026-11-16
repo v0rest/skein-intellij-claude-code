@@ -126,8 +126,16 @@ Skein's marks for them go with them; to keep sessions longer, change it in your 
 The History header reads "History (N)" with the number of sessions it lists, and its rows have the same two lines as
 the threads. In the new UI's main toolbar a counter shows how many threads need you, only those, and its switch is
 under Settings | Tools | Skein. The tool window icon is the Skein spark, with an orange dot while a thread needs you.
-Skein can play a sound when a thread needs you or finishes its turn, each on its own switch. On macOS it can keep the
-computer awake while a thread works, through an IOKit power assertion held inside the IDE process, so no helper
+Skein can play a sound when a thread needs you or finishes its turn, each on its own switch and with its own sound
+picked next to it - the system beep, which stays the default, one of the alert sounds your system already has, or a
+file of your own from Choose File…, a `.wav` or `.aiff` anywhere, a `.caf` on macOS and an `.au` elsewhere, and ▶
+plays it once. The system's sounds come from `/System/Library/Sounds` and `~/Library/Sounds` on macOS,
+`C:\Windows\Media` on Windows and the `.wav` files under `/usr/share/sounds` on Linux, Skein ships none of its own and
+plays them at the system's volume. On macOS it plays through the system's own alert sound service, so nothing there
+ever asks for the microphone, and that service plays short alert sounds, up to 30 seconds. The list marks a choice
+that would only beep, a file or a system sound that is gone, a file over 5 MB or one with another extension, and a
+file the system cannot decode beeps when it plays. Threads that finish together sound once. On macOS Skein can keep
+the computer awake while a thread works, through an IOKit power assertion held inside the IDE process, so no helper
 process runs and nothing is written. What happens when a turn ends while a background process (a build, a dev server)
 still runs is your choice next to the switch: no, 15 minutes, 30 minutes (the default), an hour, or as long as it
 runs. Outside macOS both controls are shown disabled.

@@ -105,6 +105,85 @@ class ArchitectureTest {
         )
     }
 
+    /**
+     * The sound rules - what is stored, what the OS offers, play or beep, the list's items, which output plays - work on
+     * what they are handed, so they are tested for all three systems on any one. The disk is read in SoundDisk. Java Sound
+     * is touched in JavaSoundOutput alone, which only ever reads a file, and the player makes that output only off macOS -
+     * on macOS Java Sound opens the input side too, and the system asks for the microphone. There the sound goes through
+     * MacSystemSound, which never mentions Java Sound.
+     */
+    @Test
+    fun soundRulesArePureAndJavaSoundStaysOffMacOs() {
+        val sound = mainRoot.resolve("io/github/v0rest/skein/sound")
+        val pure = listOf("SoundChoice.kt", "SoundCatalog.kt", "SoundPlan.kt", "SoundMenu.kt", "SoundWalk.kt", "SoundSlot.kt", "SoundOutput.kt")
+            .map { sound.resolve(it) }
+        val offenders = pure.flatMap { f ->
+            SourceRules.offenders(
+                SourceRules.codeLines(f),
+                listOf("Files.", "Path.of", "Paths.", "java.nio.file", "java.io.", "javax.sound", "AudioSystem", "com.sun.jna", "Native."),
+            ).map { "${SourceRules.relative(mainRoot, f)}: $it" }
+        }
+        assertEquals(emptyList<String>(), offenders)
+        assertEquals(listOf("io/github/v0rest/skein/sound/JavaSoundOutput.kt"), filesContaining("javax.sound", "AudioSystem"))
+        val javaSound = SourceRules.codeLines(sound.resolve("JavaSoundOutput.kt"))
+        assertEquals(listOf("Files.newInputStream(Path.of(path)).buffered().use { input ->"), SourceRules.offenders(javaSound, listOf("Files.", "Path.of")))
+        // every line of the macOS file, its imports included
+        val mac = sound.resolve("MacSystemSound.kt").toFile().readLines()
+        assertEquals(emptyList<String>(), SourceRules.offenders(mac, listOf("javax.sound", "AudioSystem", "Clip", "JavaSoundOutput", "java.io.", "java.nio")))
+        // the output is chosen in one place, by the tested rule, and made only there
+        assertEquals(listOf("io/github/v0rest/skein/sound/SoundPlayer.kt"), filesContaining("JavaSoundOutput(", "MacSoundOutput(", "SoundOutputs.kind("))
+        val player = SourceRules.codeLines(sound.resolve("SoundPlayer.kt"))
+        assertEquals(
+            listOf(
+                "output ?: when (SoundOutputs.kind(SoundOs.current)) {",
+                "SoundOutputs.Kind.SYSTEM_SOUND_SERVICE -> MacSoundOutput()",
+                "SoundOutputs.Kind.JAVA_SOUND -> JavaSoundOutput()",
+            ),
+            SourceRules.offenders(player, listOf("JavaSoundOutput(", "MacSoundOutput(", "SoundOutputs.kind(")),
+        )
+        // the notifier hands the event's own choice to the player, and the bare beep is the player's fallback alone
+        assertEquals(listOf("io/github/v0rest/skein/sound/SoundPlayer.kt"), filesContaining(".beep()"))
+        val notifier = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/notify/ThreadNotifier.kt"))
+        assertEquals(
+            listOf("if (NotificationText.sound(kind, settings)) SoundPlayer.getInstance().play(kind, NotificationText.soundChoice(kind, settings))"),
+            SourceRules.offenders(notifier, listOf("SoundPlayer.")),
+        )
+    }
+
+    /**
+     * The settings page never reads the disk on the EDT - a share that hangs would freeze the IDE. Its sounds and the
+     * checks of the stored and chosen files go through SoundPicker.onPool, which reads on a pooled thread and only shows
+     * the answer on the EDT, and the player reads in its own pooled work.
+     */
+    @Test
+    fun theSoundsPageReadsTheDiskOffTheEdt() {
+        assertEquals(
+            listOf("io/github/v0rest/skein/settings/SoundPicker.kt", "io/github/v0rest/skein/sound/SoundPlayer.kt"),
+            filesContaining("SoundDisk.", "SoundDisk::").sorted(),
+        )
+        val picker = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/settings/SoundPicker.kt"))
+        assertEquals(
+            listOf(
+                "onPool({ mapOf(file to SoundDisk.problem(file, emptyList())) }) { mark(it) }",
+                "val sounds = SoundDisk.systemSounds()",
+                "sounds.map { it.name } to choices.associateWith { SoundDisk.problem(it, sounds) }",
+            ),
+            SourceRules.offenders(picker, listOf("SoundDisk.", "SoundDisk::")),
+        )
+        val load = picker.indexOf("val sounds = SoundDisk.systemSounds()")
+        assertEquals("onPool({", picker[load - 1])
+        val onPool = picker.indexOf("private fun <T> onPool(read: () -> T, show: (T) -> Unit) {")
+        assertEquals(
+            listOf(
+                "val application = ApplicationManager.getApplication()", "application.executeOnPooledThread {", "val answer = read()",
+                "application.invokeLater({ show(answer) }, ModalityState.any())",
+            ),
+            picker.subList(onPool + 1, onPool + 5),
+        )
+        val player = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/sound/SoundPlayer.kt"))
+        assertEquals(listOf("val plan = SoundDisk.plan(choice)"), SourceRules.offenders(player, listOf("SoundDisk.", "SoundDisk::")))
+    }
+
     @Test
     fun worktreesIsPure() {
         val lines = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/claude/Worktrees.kt"))
@@ -187,14 +266,23 @@ class ArchitectureTest {
     }
 
     /**
-     * The native libraries Skein loads are IOKit for the power assertion (SleepBlocker) and libc for the SIGHUP a closing
-     * thread's claude and shell get (HangUp); nothing else touches JNA loading.
+     * The native libraries Skein loads are IOKit for the power assertion (SleepBlocker), libc for the SIGHUP a closing
+     * thread's claude and shell get (HangUp), and CoreFoundation and AudioToolbox for a sound on macOS (MacSystemSound),
+     * and nothing else touches JNA loading.
      */
     @Test
-    fun onlySleepBlockerAndHangUpLoadNativeLibraries() {
+    fun onlySleepBlockerHangUpAndTheMacSoundLoadNativeLibraries() {
         assertEquals(
-            listOf("io/github/v0rest/skein/power/SleepBlocker.kt", "io/github/v0rest/skein/process/HangUp.kt"),
+            listOf("io/github/v0rest/skein/power/SleepBlocker.kt", "io/github/v0rest/skein/process/HangUp.kt", "io/github/v0rest/skein/sound/MacSystemSound.kt"),
             filesContaining("Native.load(", "NativeLibrary.getInstance(").sorted(),
+        )
+        val mac = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/sound/MacSystemSound.kt"))
+        assertEquals(
+            listOf(
+                "private val coreFoundation by lazy { Native.load(\"CoreFoundation\", CoreFoundationLib::class.java) }",
+                "private val audioToolbox by lazy { Native.load(\"AudioToolbox\", AudioToolbox::class.java) }",
+            ),
+            SourceRules.offenders(mac, listOf("Native.load(")),
         )
     }
 
