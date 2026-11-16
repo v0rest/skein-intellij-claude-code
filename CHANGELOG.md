@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.4.1...v1.5.0) (2026-11-16)
+
+
+### Features
+
+* choose the sound for each kind of notification ([#31](https://github.com/v0rest/skein-intellij-claude-code/issues/31)) ([28edabe](https://github.com/v0rest/skein-intellij-claude-code/commit/28edabee54d481f1b626af9ff8c7682b64c9e20a))
+
 ## [1.4.1](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.4.0...v1.4.1) (2026-11-16)
 
 
