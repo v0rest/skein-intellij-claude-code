@@ -67,9 +67,12 @@ When the IDE restarts, Skein reopens the same thread tabs and runs `claude --res
 first open it. The history under the threads lists the project's past sessions, including those started elsewhere and
 those started in a folder inside the project, which show that folder after their title,
 but leaves out the runs a program made through the Agent SDK on its own, so they do not bury yours; a run you went on
-with in a terminal stays, and a session that moved to another folder shows up where it moved to. A click selects a
-session, and a double click on it, Enter or Open in its right-click menu resumes it in a new tab; a session still
-running in another terminal asks first. Drag the line above the history to give it more room; Skein remembers the
+with in a terminal stays, and a session that moved to another folder shows up where it moved to. An open history reads
+the transcripts again when a thread comes or goes, and also when you come back to the IDE from another app or move into
+the Skein panel from anywhere else in the IDE, at most every few seconds, so a session you went on with in a plain
+terminal shows its new state then. A click selects a session,
+and a double click on it, Enter or Open in its right-click menu resumes it in a new tab; a session still running in
+another terminal asks first. Drag the line above the history to give it more room; Skein remembers the
 size and whether you left it open, the same for all projects.
 
 Right-click a thread to pin it, rename it, give it a colour or close it. Close ends claude in the tab right away, and

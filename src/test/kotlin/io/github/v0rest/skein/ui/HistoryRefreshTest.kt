@@ -29,6 +29,25 @@ class HistoryRefreshTest {
     }
 
     @Test
+    fun comingBackRescansAnOpenHistoryAtOnceOrRightAfterTheGap() {
+        // closed: nothing to show, and it scans when it opens anyway
+        assertEquals(null, returnRescanDelay(expanded = false, lastScanAt = null, now = 10_000))
+        assertEquals(null, returnRescanDelay(expanded = false, lastScanAt = 0, now = 10_000))
+        // open and never scanned, or scanned long enough ago: now
+        assertEquals(0L, returnRescanDelay(expanded = true, lastScanAt = null, now = 10_000))
+        assertEquals(0L, returnRescanDelay(expanded = true, lastScanAt = 10_000 - RETURN_RESCAN_GAP_MILLIS, now = 10_000))
+        // right after a scan: not dropped, only put off until the gap has passed, since that scan may have come too early
+        assertEquals(1L, returnRescanDelay(expanded = true, lastScanAt = 10_000 - RETURN_RESCAN_GAP_MILLIS + 1, now = 10_000))
+        assertEquals(RETURN_RESCAN_GAP_MILLIS, returnRescanDelay(expanded = true, lastScanAt = 10_000, now = 10_000))
+    }
+
+    @Test
+    fun theToolWindowIdTheHistoryWatchesForIsTheOnePluginXmlRegisters() {
+        val descriptor = java.nio.file.Path.of("src/main/resources/META-INF/plugin.xml").toFile().readText()
+        assertEquals(true, descriptor.contains("<toolWindow id=\"${SkeinToolWindowFactory.TOOL_WINDOW_ID}\""))
+    }
+
+    @Test
     fun runningLabelsFollowSessionsStartingAndStoppingNotTheirStatus() {
         val a = sessionFile(pid = 1, sessionId = "a")
         val b = sessionFile(pid = 2, sessionId = "b")
