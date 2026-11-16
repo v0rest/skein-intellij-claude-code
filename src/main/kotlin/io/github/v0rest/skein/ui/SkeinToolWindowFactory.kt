@@ -48,6 +48,8 @@ class SkeinToolWindowFactory : ToolWindowFactory, DumbAware {
     }
 
     companion object {
+        /** The id plugin.xml gives the tool window. */
+        const val TOOL_WINDOW_ID = "Skein"
         const val NEW_THREAD_ACTION_ID = "Skein.NewThread"
         const val NEW_WORKTREE_THREAD_ACTION_ID = "Skein.NewWorktreeThread"
     }

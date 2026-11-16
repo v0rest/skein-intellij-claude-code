@@ -5,6 +5,8 @@ import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.application.ApplicationActivationListener
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.diagnostic.logger
@@ -12,6 +14,8 @@ import com.intellij.openapi.project.DumbAwareToggleAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.ui.Messages
+import com.intellij.openapi.wm.IdeFrame
+import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.ui.CollectionListModel
 import com.intellij.ui.PopupHandler
 import com.intellij.ui.components.JBLabel
@@ -35,20 +39,27 @@ import io.github.v0rest.skein.threads.ThreadService
 import io.github.v0rest.skein.ui.actions.HistoryMenu
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.awt.BorderLayout
 import java.awt.Color
+import java.awt.Component
 import java.awt.Cursor
 import java.awt.GridBagLayout
+import java.awt.KeyboardFocusManager
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.beans.PropertyChangeListener
 import java.nio.file.Files
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
@@ -57,6 +68,7 @@ import javax.swing.Icon
 import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.SwingConstants
+import javax.swing.SwingUtilities
 
 /**
  * When an open history needs a rescan: a thread came or went, or its session changed, since a closed or `/clear`-ed
@@ -65,6 +77,22 @@ import javax.swing.SwingConstants
  */
 internal fun historyRescans(threads: Flow<List<SkeinThread>>): Flow<Unit> =
     threads.map { list -> list.mapTo(HashSet()) { it.id to it.sessionId } }.distinctUntilChanged().drop(1).map { }
+
+/**
+ * When coming back to the IDE, or moving the focus into the Skein tool window, rescans the history: null for a closed
+ * one, 0 for now, else the milliseconds left until [RETURN_RESCAN_GAP_MILLIS] after its last scan. A session that
+ * changed outside Skein - continued in a plain terminal, or a transcript copied into the project's folder by hand -
+ * reaches an open history no other way, since it rescans on Skein's own threads only. The gap keeps switching back and
+ * forth from reading the transcripts over and over, and a return inside it is put off rather than dropped, since the
+ * scan before it may have come before the change.
+ */
+internal fun returnRescanDelay(expanded: Boolean, lastScanAt: Long?, now: Long): Long? = when {
+    !expanded -> null
+    lastScanAt == null -> 0L
+    else -> (RETURN_RESCAN_GAP_MILLIS - (now - lastScanAt)).coerceAtLeast(0L)
+}
+
+internal const val RETURN_RESCAN_GAP_MILLIS = 3_000L
 
 /** The ids of the sessions running right now, emitted when one starts or stops, not on every status change. */
 internal fun liveSessionIds(snapshots: Flow<SessionSnapshot>): Flow<Set<String>> =
@@ -93,6 +121,18 @@ class HistoryPanel(private val project: Project, private val scope: CoroutineSco
         cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
     }
     private var expanded = false
+
+    /** When the last scan started, on the monotonic clock, for [returnRescanDelay]. EDT only. */
+    private var lastScanAt: Long? = null
+
+    /** Whether the keyboard focus was inside the Skein tool window at the last focus change. EDT only. */
+    private var focusInSkein = false
+
+    /** The rescan put off until the gap after the last scan has passed ([returnRescanDelay]). EDT only. */
+    private var putOff: Job? = null
+
+    /** When the owner last came back, on the monotonic clock, a return merged into a waiting [putOff] too. EDT only. */
+    private var lastReturnAt = Long.MIN_VALUE
 
     /** Whether sessions marked done are listed; the eye in the header switches it. EDT only. */
     private var showDone = false
@@ -210,6 +250,30 @@ class HistoryPanel(private val project: Project, private val scope: CoroutineSco
             // a session that starts or stops anywhere flips its "running" label; that needs no rescan
             liveSessionIds(SessionMonitor.getInstance().snapshots).collect(::relabel)
         }
+        // coming back from another app to this project's window: on the EDT
+        ApplicationManager.getApplication().messageBus.connect(scope).subscribe(
+            ApplicationActivationListener.TOPIC,
+            object : ApplicationActivationListener {
+                override fun applicationActivated(ideFrame: IdeFrame) {
+                    if (ideFrame.project === project) cameBack()
+                }
+            },
+        )
+        // the focus moving into the Skein tool window from anywhere else - the editor, a thread's tab, the IDE's own
+        // terminal, another tool window; the tool window manager says nothing when the focus leaves for the editor, so
+        // the focus itself is watched. AWT tells it on the EDT, and the check is one walk up the component tree
+        val focus = KeyboardFocusManager.getCurrentKeyboardFocusManager()
+        val focusListener = PropertyChangeListener { event ->
+            // the listener is app-wide and goes only once the scope's job has completed, which a running scan delays;
+            // a closed project must not be asked for its tool window meanwhile
+            if (!scope.isActive || project.isDisposed) return@PropertyChangeListener
+            val skein = ToolWindowManager.getInstance(project).getToolWindow(SkeinToolWindowFactory.TOOL_WINDOW_ID)?.component
+            val inside = skein != null && (event.newValue as? Component)?.let { SwingUtilities.isDescendingFrom(it, skein) } == true
+            if (inside && !focusInSkein) cameBack()
+            focusInSkein = inside
+        }
+        focus.addPropertyChangeListener(PERMANENT_FOCUS_OWNER, focusListener)
+        scope.coroutineContext.job.invokeOnCompletion { focus.removePropertyChangeListener(PERMANENT_FOCUS_OWNER, focusListener) }
     }
 
     private fun toggle() {
@@ -257,8 +321,24 @@ class HistoryPanel(private val project: Project, private val scope: CoroutineSco
     /** What the IO side of a reload brings to the EDT. */
     private class Sampled(val scan: HistoryScanner.Scan, val examined: Set<String>, val onDisk: Set<String>)
 
+    /** The owner came back to this window or into the Skein tool window: rescan an open history, now or once the gap has passed. */
+    private fun cameBack() {
+        val now = monotonicMillis()
+        lastReturnAt = now
+        val wait = returnRescanDelay(expanded, lastScanAt, now) ?: return
+        if (wait == 0L) return reload()
+        if (putOff?.isActive == true) return
+        putOff = scope.launch(Dispatchers.EDT) {
+            delay(wait)
+            putOff = null
+            // a scan that started after the latest return, merged ones included, has already seen what changed
+            if (expanded && (lastScanAt ?: Long.MIN_VALUE) < lastReturnAt) reload()
+        }
+    }
+
     private fun reload() {
         val generation = ++reloadGeneration
+        lastScanAt = monotonicMillis()
         scope.launch {
             val folders = readAction { ProjectFolders.of(project) }
             val sampled = withContext(Dispatchers.IO) {
@@ -356,6 +436,9 @@ class HistoryPanel(private val project: Project, private val scope: CoroutineSco
         val LOG = logger<HistoryPanel>()
 
         const val HEADER_TOOLBAR_PLACE = "SkeinHistoryHeader"
+        fun monotonicMillis(): Long = System.nanoTime() / 1_000_000
+
+        const val PERMANENT_FOCUS_OWNER = "permanentFocusOwner"
     }
 }
 
