@@ -33,6 +33,18 @@ class BalloonsTest {
     }
 
     @Test
+    fun dismissAllTakesEveryThreadsBalloonDown() {
+        balloons.replace("t1", "first")
+        balloons.replace("t2", "other")
+        balloons.dismissAll()
+        assertEquals(listOf("first", "other"), expired.sorted())
+        assertNull(balloons.current("t1"))
+        assertNull(balloons.current("t2"))
+        balloons.dismissAll()
+        assertEquals(2, expired.size)
+    }
+
+    @Test
     fun expiringOnItsOwnForgets() {
         balloons.replace("t1", "first")
         balloons.expired("t1", "first")

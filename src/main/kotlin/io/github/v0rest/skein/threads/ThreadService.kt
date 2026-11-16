@@ -238,7 +238,10 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
             ProjectCloseListener.TOPIC,
             object : ProjectCloseListener {
                 override fun projectClosing(project: Project) {
-                    if (project == this@ThreadService.project) projectClosing = true
+                    if (project != this@ThreadService.project) return
+                    projectClosing = true
+                    // a balloon of this project may show in another project's window, which outlives this one
+                    notifier.dismissAllNow()
                 }
             },
         )

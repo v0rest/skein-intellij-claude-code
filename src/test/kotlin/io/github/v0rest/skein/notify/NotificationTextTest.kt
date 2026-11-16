@@ -22,6 +22,25 @@ class NotificationTextTest {
         SkeinThread(id = "t1", folder = "/p", sessionId = null, name = name, state = state, stateSince = 0, createdAt = 0, anchor = null)
 
     @Test
+    fun aThreadOfAProjectBehindAnotherInTheSameIdeShowsItsBalloonWhereTheOwnerLooks() {
+        // the owner looks at this very project, or was last in it before leaving the IDE: as before
+        assertEquals(NotificationText.Placement(inFront = false, system = false), NotificationText.placement(appActive = true, anotherProjectInFront = false))
+        assertEquals(NotificationText.Placement(inFront = false, system = true), NotificationText.placement(appActive = false, anotherProjectInFront = false))
+        // another project's window or tab is in front, or was the last one before the IDE went to the background: the
+        // balloon goes there, so it waits where the owner comes back to; the OS gets the words only in the background
+        assertEquals(NotificationText.Placement(inFront = true, system = false), NotificationText.placement(appActive = true, anotherProjectInFront = true))
+        assertEquals(NotificationText.Placement(inFront = true, system = true), NotificationText.placement(appActive = false, anotherProjectInFront = true))
+    }
+
+    @Test
+    fun aBalloonShownInAnotherProjectSaysWhichProjectItIsAbout() {
+        assertEquals("acme · needs your permission", NotificationText.fromProject("acme", "needs your permission"))
+        assertEquals("demo-shop · finished its turn", NotificationText.fromProject("demo-shop", "finished its turn"))
+        // the subtitle is HTML to the platform, like the title: a project folder named with a `<` stays a `<`
+        assertEquals("a&lt;b&gt; · needs you", NotificationText.fromProject("a<b>", "needs you"))
+    }
+
+    @Test
     fun titleIsTheNameAlone() {
         assertEquals("acme", NotificationText.title("acme"))
         assertEquals("Fix login", NotificationText.title("Fix login"))
