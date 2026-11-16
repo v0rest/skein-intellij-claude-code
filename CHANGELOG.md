@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.1](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.4.0...v1.4.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* rescan an open History when you come back to the IDE or into the Skein panel ([#28](https://github.com/v0rest/skein-intellij-claude-code/issues/28)) ([ef86d4f](https://github.com/v0rest/skein-intellij-claude-code/commit/ef86d4fb7c6ae34a1d59c4feb64bb65b435cc5e5))
+* show a thread's balloon in the project in front when its own project is behind ([#29](https://github.com/v0rest/skein-intellij-claude-code/issues/29)) ([2c68a49](https://github.com/v0rest/skein-intellij-claude-code/commit/2c68a49f40d54709fd38e7574442ba5b29b6f060))
+
 ## [1.4.0](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.3.1...v1.4.0) (2026-11-15)
 
 
