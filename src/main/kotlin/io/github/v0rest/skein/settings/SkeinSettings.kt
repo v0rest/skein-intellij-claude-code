@@ -20,6 +20,13 @@ class SkeinSettings : SimplePersistentStateComponent<SkeinSettings.State>(State(
         var onlyWaitingThreads by property(false)
         var soundNeedsYou by property(true)
         var soundTurnFinished by property(false)
+
+        /** The sound a thread that needs you plays, as SoundChoices stores it - nothing stored is the system beep. */
+        var soundNeedsYouChoice by string()
+
+        /** The sound a finished turn plays, as SoundChoices stores it - nothing stored is the system beep. */
+        var soundTurnFinishedChoice by string()
+
         var keepAwake by property(false)
 
         /** Show the toolbar counter of threads that need you. */

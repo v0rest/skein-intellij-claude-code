@@ -4,7 +4,9 @@ import io.github.v0rest.skein.claude.ClaudeLocator
 import io.github.v0rest.skein.claude.WaitReason.OTHER
 import io.github.v0rest.skein.claude.WaitReason.PERMISSION
 import io.github.v0rest.skein.claude.WaitReason.QUESTION
+import io.github.v0rest.skein.paths.PathStyle
 import io.github.v0rest.skein.settings.SkeinSettings
+import io.github.v0rest.skein.sound.SoundChoice
 import io.github.v0rest.skein.threads.NotificationKind.NEEDS_YOU
 import io.github.v0rest.skein.threads.NotificationKind.TURN_FINISHED
 import io.github.v0rest.skein.threads.SkeinThread
@@ -146,6 +148,17 @@ class NotificationTextTest {
         s.soundNeedsYou = false
         assertFalse(NotificationText.sound(NEEDS_YOU, s))
         assertTrue(NotificationText.enabled(NEEDS_YOU, s))
+    }
+
+    @Test
+    fun eachEventPlaysItsOwnChosenSoundAndTheBeepByDefault() {
+        val s = SkeinSettings.State()
+        assertEquals(SoundChoice.Beep, NotificationText.soundChoice(NEEDS_YOU, s))
+        assertEquals(SoundChoice.Beep, NotificationText.soundChoice(TURN_FINISHED, s))
+        s.soundNeedsYouChoice = "system:Glass"
+        s.soundTurnFinishedChoice = "file:/Users/dev/chime.wav"
+        assertEquals(SoundChoice.System("Glass"), NotificationText.soundChoice(NEEDS_YOU, s, PathStyle.UNIX))
+        assertEquals(SoundChoice.File("/Users/dev/chime.wav"), NotificationText.soundChoice(TURN_FINISHED, s, PathStyle.UNIX))
     }
 
     @Test

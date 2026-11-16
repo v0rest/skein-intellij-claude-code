@@ -6,6 +6,7 @@ import com.intellij.openapi.util.SystemInfo
 import com.intellij.ui.dsl.builder.bindItem
 import com.intellij.ui.dsl.builder.bindSelected
 import com.intellij.ui.dsl.builder.panel
+import io.github.v0rest.skein.threads.NotificationKind
 
 /** Settings | Tools | Skein: notifications, sounds, keep-awake, where thread tabs open and the thread list. */
 class SkeinConfigurable : BoundConfigurable("Skein") {
@@ -29,8 +30,11 @@ class SkeinConfigurable : BoundConfigurable("Skein") {
                 row { comment("Skein uses the IDE's notifications. Whether they also appear in the system notification centre is set in Settings | Appearance & Behavior | Notifications.") }
             }
             group("Sounds") {
-                row { checkBox("Play a sound when a thread needs you").bindSelected(state::soundNeedsYou) }
-                row { checkBox("Play a sound when a thread finishes its turn").bindSelected(state::soundTurnFinished) }
+                val needsYou = SoundPicker(NotificationKind.NEEDS_YOU, state::soundNeedsYouChoice)
+                val turnFinished = SoundPicker(NotificationKind.TURN_FINISHED, state::soundTurnFinishedChoice)
+                row { needsYou.cells(this, checkBox("Play a sound when a thread needs you").bindSelected(state::soundNeedsYou)) }
+                row { turnFinished.cells(this, checkBox("Play a sound when a thread finishes its turn").bindSelected(state::soundTurnFinished)) }
+                SoundPicker.load(listOf(needsYou, turnFinished))
             }
             group("Keep awake") {
                 row {
