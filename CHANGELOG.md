@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.1](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.5.0...v1.5.1) (2026-11-17)
+
+
+### Bug Fixes
+
+* end claude when a tab closes right after it starts or its project closes ([#33](https://github.com/v0rest/skein-intellij-claude-code/issues/33)) ([0c3924a](https://github.com/v0rest/skein-intellij-claude-code/commit/0c3924a6ba9738441b92628e6a5133ff6201b5c4))
+* name the other project in the balloon's text and keep the sound pickers inside narrow settings ([#34](https://github.com/v0rest/skein-intellij-claude-code/issues/34)) ([0d388b8](https://github.com/v0rest/skein-intellij-claude-code/commit/0d388b8339e855146004a41ee4892bb6b7e19c64))
+
 ## [1.5.0](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.4.1...v1.5.0) (2026-11-16)
 
 
