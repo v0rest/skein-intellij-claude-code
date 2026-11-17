@@ -15,6 +15,7 @@ import io.github.v0rest.skein.terminal.ClaudeCommand
 import io.github.v0rest.skein.terminal.ShellsAtCommand
 import io.github.v0rest.skein.terminal.ThreadTab
 import io.github.v0rest.skein.terminal.ThreadTerminal
+import kotlinx.coroutines.CancellationException
 import java.util.UUID
 
 /** One row of the Skein panel. */
@@ -365,35 +366,70 @@ class ThreadCoordinator(
         }
 
     /**
-     * The tab's shell and the one claude under it that has no status file, or null on any doubt. An IDE child counts only
-     * as the bracket of [doubtAbout] proves it the tab's own (there when Skein typed and when the tab's session started,
-     * not there before the tab's own shell), is still that very process and is not some other thread's. The bracket is
-     * only as fine as a tick, so whatever else the IDE started in that tick passes it too. Each child left gets its kind
-     * ([ThreadMapper.kindOf]) - the IDE's own helpers (conhost, fsnotifier, JCEF) are ignored, and the tab's shell is
-     * taken only when it is the one shell left and nothing unrecognised stands beside it. An unrecognised child may be
-     * the tab's own shell (wsl.exe, tmux, a wrapper, a command the system does not give), with a listed shell beside it
-     * being another terminal's, and Close would hang that one up. A tab with its anchor already has its shell. Two
-     * claudes under the shell, or none, are no answer either. Never throws - a process listing that fails is no answer.
+     * The tab's shell and the one claude under it that has no status file, or null on any doubt. A tab with its anchor
+     * has its shell already, while [doubtAbout] still proves it the tab's own, and a tab without one takes the shell its
+     * bracket proves ([bracketedShell]). Two claudes under the shell, or none, are no answer either. Never throws - a
+     * process listing that fails is no answer.
      */
     private fun claudeWithoutStatus(record: Record, snapshot: SessionSnapshot): Pair<Long, ProcessId>? =
         try {
             val withStatus = snapshot.sessions.keys + snapshot.unrecognized
-            val owned = slot.ownedAnchors() - setOfNotNull(record.anchor)
-            val listed = record.anchor?.let { anchor -> listOfNotNull(mapper.startOf(anchor)?.let { ProcessId(anchor, it) }) }
-                ?: (record.tab.shellsAtCommand as? ShellsAtCommand.Listed)?.processes?.known.orEmpty()
-            val bracketed = listed.filter { it.pid !in owned && mapper.startOf(it.pid) == it.start && doubtAbout(record, it) == null }
-            val shell = if (record.anchor != null) bracketed.singleOrNull() else loneShell(bracketed)
+            val shell = when (val anchor = record.anchor) {
+                null -> (bracketedShell(record) as? TabShell.Proved)?.shell
+                else -> mapper.startOf(anchor)?.let { ProcessId(anchor, it) }?.takeIf { doubtAbout(record, it) == null }
+            }
             shell?.let { mapper.clisUnder(it.pid).filter { claude -> claude.pid !in withStatus }.singleOrNull()?.let { claude -> it.pid to claude } }
         } catch (e: Exception) {
             null
         }
 
-    /** The one shell among [children], or null when there is none, there are more, or a child Skein does not know stands beside it. */
-    private fun loneShell(children: List<ProcessId>): ProcessId? {
-        val kinds = children.groupBy { mapper.kindOf(it.pid) }
-        if (kinds[IdeChild.UNRECOGNISED].orEmpty().isNotEmpty()) return null
-        return kinds[IdeChild.SHELL]?.singleOrNull()
+    /** What the bracket says about the shell of a tab Skein has not tied to one yet ([bracketedShell]). */
+    private sealed interface TabShell {
+        data class Proved(val shell: ProcessId) : TabShell
+
+        /** [why] in words for the log, as they follow "Skein had not tied the tab to its shell yet, and". */
+        data class Doubt(val why: String) : TabShell
     }
+
+    /**
+     * The shell of [record]'s tab before Skein tied the thread to one, proved by the bracket alone, or why it is not.
+     * An IDE child listed when Skein typed into the tab counts only as it is still that very process, passes
+     * [doubtAbout] (not there before the tab's own shell started, and once a tick saw the tab's session started, there
+     * then too) and is no thread's anchor, in this window or another. The bracket is only as fine as a tick, so whatever
+     * else the IDE started in that tick passes it too. Each child left gets its kind ([ThreadMapper.kindOf]) - the IDE's
+     * own helpers (conhost, fsnotifier, JCEF) are ignored, and the tab's shell is taken only when it is the one shell
+     * left and nothing unrecognised stands beside it. An unrecognised child may be the tab's own shell (wsl.exe, tmux, a
+     * wrapper, a command the system does not give), with a listed shell beside it being another terminal's, and Close
+     * would hang that one up. A child whose start could not be read as Skein typed counts as unrecognised too, unless it
+     * is a thread's anchor, was there before the tab's own shell or is gone by now, since it cannot be bracketed and may
+     * be the tab's own shell - a pid nobody holds any more is no running shell. The trust wait ([claudeWithoutStatus]) and a Close ([untiedEnding]) both take the tab's shell this way.
+     */
+    private fun bracketedShell(record: Record): TabShell {
+        val listing = when (val shells = record.tab.shellsAtCommand) {
+            ShellsAtCommand.NoCommandYet -> return TabShell.Doubt("it has not typed into the tab, so it cannot tell its shell")
+            ShellsAtCommand.NotListed -> return TabShell.Doubt("it could not list the IDE's processes when it typed into the tab")
+            is ShellsAtCommand.Listed -> shells.processes
+        }
+        val owned = slot.ownedAnchors()
+        val unreadable = listing.startUnknown.filter { it !in owned && !record.baseline.hasPid(it) && mapper.isAlive(it) }
+        val bracketed = listing.known.filter { mapper.startOf(it.pid) == it.start && doubtAbout(record, it) == null }
+        val (held, free) = bracketed.partition { it.pid in owned }
+        val kinds = free.groupBy { mapper.kindOf(it.pid) }
+        val unrecognised = kinds[IdeChild.UNRECOGNISED].orEmpty()
+        val shells = kinds[IdeChild.SHELL].orEmpty()
+        return when {
+            unrecognised.isNotEmpty() -> TabShell.Doubt("something it does not know as a shell started with the tab too (${pids(unrecognised.map { it.pid })}) and may be the tab's own shell")
+            unreadable.isNotEmpty() -> TabShell.Doubt("a process that started with the tab has no readable start (${pids(unreadable)}) and may be the tab's own shell")
+            shells.size == 1 -> TabShell.Proved(shells.single())
+            shells.isNotEmpty() -> TabShell.Doubt("several shells started with the tab (${pids(shells.map { it.pid })}), so it cannot tell which one is the tab's")
+            held.isNotEmpty() -> TabShell.Doubt("the shell that started with the tab is another thread's (${pids(held.map { it.pid })})")
+            else -> TabShell.Doubt("no shell that started with the tab is still there")
+        }
+    }
+
+    /** "pid 10" or "pids 10, 11", for the log. */
+    private fun pids(pids: Collection<Long>): String =
+        pids.sorted().joinToString(", ", prefix = if (pids.size == 1) "pid " else "pids ")
 
     /**
      * Shows the thread as waiting on claude's trust question. The tab's shell becomes its anchor (so Close ends it as
@@ -481,14 +517,35 @@ class ThreadCoordinator(
      * the user agreed to close although busy ([CloseRule]); a thread busy now but not among them turned busy after the
      * question, so it stays open and comes back in [CloseOutcome.leftOpen], for the caller to say so. The closed threads
      * stay until a tab reports that it closed ([onTabClosed]), which then runs the usual close path, the worktree
-     * question included.
+     * question included. A thread whose processes cannot be read gets nothing hung up and a doubt for the log, and the
+     * others still end ([endingQuietly]).
      */
     fun close(threadIds: Collection<String>, confirmed: Set<String>, snapshot: SessionSnapshot): CloseOutcome {
         val asked = threadIds.mapNotNull { records[it] }
         val (leftOpen, closing) = asked.partition { CloseRule.isBusy(it.state) && it.id !in confirmed }
         val sessions = snapshot.sessions.values
-        return CloseOutcome(leftOpen.map { it.toThread() }, closing.map { ending(it, sessions) })
+        return CloseOutcome(leftOpen.map { it.toThread() }, closing.map { endingQuietly(it, sessions) })
     }
+
+    /**
+     * What to end in each thread as the project closes ([CloseSequence.endOnly]), every thread in the order they came,
+     * asking nothing - a busy one too, since the close is decided by then and its terminal goes either way. Like [close],
+     * it closes and changes nothing, so the threads are still all there when the project saves them.
+     */
+    fun endingsAtProjectClose(snapshot: SessionSnapshot): List<Ending> {
+        val sessions = snapshot.sessions.values
+        return records.values.map { endingQuietly(it, sessions) }
+    }
+
+    /** [ending], where a failure costs only this thread its hangup, with a doubt for the log, and never the whole close. */
+    private fun endingQuietly(record: Record, sessions: Collection<SessionFile>): Ending =
+        try {
+            ending(record, sessions)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Ending(record.tab, shell = null, claude = null, doubt = "Skein could not tell what runs in its tab: $e")
+        }
 
     /**
      * Brackets each tab's own shell between two listings of the IDE's children, one listing per tick for all tabs that
@@ -533,7 +590,7 @@ class ThreadCoordinator(
      * shell (to within a tick) nor before it. It leaves out a terminal the user opened in the same folder at any other
      * time, whose claude may have been taken for the thread's. Only start instants are compared, never with the wall
      * clock, which the JDK's start instants drift from on Linux. An anchor that fails gets nothing hung up, and
-     * [Ending.doubt] says why.
+     * [Ending.doubt] says why. A tab without an anchor yet goes through [untiedEnding].
      *
      * A claude whose start cannot be read is left out ([Ending.claude] null), so the shell is hung up first; the tab is
      * still open and read then, and the shell passes the hangup on to its jobs, claude among them. Skein then does not
@@ -541,7 +598,7 @@ class ThreadCoordinator(
      * macOS and Linux, so this is a corner case.
      */
     private fun ending(record: Record, sessions: Collection<SessionFile>): Ending {
-        val anchor = record.anchor ?: return Ending(record.tab, shell = null, claude = null)
+        val anchor = record.anchor ?: return untiedEnding(record, sessions)
         val start = mapper.startOf(anchor)
             ?: return Ending(record.tab, shell = null, claude = null, doubt = "the start of its shell (pid $anchor) cannot be read now")
         val shell = ProcessId(anchor, start)
@@ -553,7 +610,47 @@ class ThreadCoordinator(
         return Ending(record.tab, shell, claude)
     }
 
-    /** Why [shell], [record]'s anchor as it is now, is not proved the tab's own ([ending]), in words for the log; null when it is. */
+    /**
+     * [ending] for a tab Skein has not tied to its shell yet. claude may be up already with its status file not matched
+     * (the monitor looks once a second, and a claude asking about trust gets its anchor only at the launch timeout), and
+     * closed then, a claude that writes while it exits hangs on for good with its tab gone. So the tab's shell is taken
+     * the way the trust wait takes it ([bracketedShell]), and its claude is the one with a live session file under that
+     * shell, else the one CLI under it with a readable start. Without either the shell alone is hung up - the tab is still
+     * open and read then, and the shell passes the hangup on to its jobs. The thread's anchor and the launch slot stay as
+     * they are, the tab is closing. A tab whose session never started (a restored tab never shown) has no shell to hang
+     * up and closes without a word, as it always did, and one that cannot say counts as started, so the log still says
+     * why nothing was hung up. Never throws - a probe that fails before the shell is proved hangs up nothing and says so,
+     * one that fails while looking for claude leaves the shell to hang up alone.
+     */
+    private fun untiedEnding(record: Record, sessions: Collection<SessionFile>): Ending {
+        val started = try {
+            terminal.sessionStarted(record.tab)
+        } catch (e: Exception) {
+            true
+        }
+        if (!started) return Ending(record.tab, shell = null, claude = null)
+        val proof = try {
+            bracketedShell(record)
+        } catch (e: Exception) {
+            TabShell.Doubt("it could not look at the IDE's processes: $e")
+        }
+        val shell = when (proof) {
+            is TabShell.Proved -> proof.shell
+            is TabShell.Doubt -> return Ending(record.tab, shell = null, claude = null, doubt = "Skein had not tied the tab to its shell yet, and ${proof.why}")
+        }
+        val claude = try {
+            mapper.processFor(shell.pid, sessions)?.pid?.let { pid -> mapper.startOf(pid)?.let { ProcessId(pid, it) } }
+                ?: mapper.clisUnder(shell.pid).singleOrNull()
+        } catch (e: Exception) {
+            null
+        }
+        return Ending(record.tab, shell, claude)
+    }
+
+    /**
+     * Why [shell], [record]'s anchor as it is now or a candidate for it ([bracketedShell]), is not proved the tab's own
+     * ([ending]), in words for the log, null when it is.
+     */
     private fun doubtAbout(record: Record, shell: ProcessId): String? {
         val anchor = shell.pid
         val atCommand = when (val shells = record.tab.shellsAtCommand) {

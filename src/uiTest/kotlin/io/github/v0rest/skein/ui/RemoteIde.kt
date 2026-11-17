@@ -89,6 +89,52 @@ object RemoteIde {
         waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "the frame of $name closed") { frames(name).isEmpty() }
     }
 
+    /** Closes the project named [name] the way File | Close Project does (`ProjectManager.closeAndDispose`), on the EDT. */
+    fun closeAndDispose(name: String) {
+        // invokeLater for the write-intent lock, as in [close]
+        js(
+            """
+            var ps = com.intellij.openapi.project.ProjectManager.getInstance().getOpenProjects();
+            for (var i = 0; i < ps.length; i++) if (ps[i].getName() == '$name') {
+                var project = ps[i];
+                com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater(new java.lang.Runnable({
+                    run: function() { com.intellij.openapi.project.ProjectManager.getInstance().closeAndDispose(project); }
+                }));
+            }
+            'ok'
+            """,
+        )
+        waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "the frame of $name closed") { frames(name).isEmpty() }
+    }
+
+    /**
+     * How many rows the Skein thread list of the project named [name] shows, or -1 while there is no such list. The
+     * thread list keeps its "No threads" empty text with rows too, which tells it from the History's list.
+     */
+    fun threadRows(name: String): Int =
+        frames(name).firstOrNull()?.findAll(ComponentFixture::class.java, byXpath("//div[@class='JBList']"))?.maxOfOrNull { list ->
+            list.callJs<String>("('' + component.getEmptyText().getText()).indexOf('No threads') == 0 ? '' + component.getModel().getSize() : '-1'")
+                .trim().toIntOrNull() ?: -1
+        } ?: -1
+
+    /** When process [pid] started, as the IDE under test reads it, or "" when it is gone or does not say. */
+    fun startOf(pid: Long): String = js(
+        """
+        var h = java.lang.ProcessHandle.of($pid);
+        var start = h.isPresent() ? h.get().info().startInstant() : java.util.Optional.empty();
+        start.isPresent() ? '' + start.get() : ''
+        """,
+    )
+
+    /** Whether process [pid] still runs on the machine under test, whoever its parent is now. */
+    fun alive(pid: Long): Boolean = js("var h = java.lang.ProcessHandle.of($pid); '' + (h.isPresent() && h.get().isAlive())") == "true"
+
+    /** Ends process [pid], but only while it is still the one that started at [start], so a pid reused since is left alone. */
+    fun destroy(pid: Long, start: String) {
+        if (start.isEmpty() || startOf(pid) != start) return
+        js("java.lang.ProcessHandle.of($pid).ifPresent(function(p) { p.destroy(); }); 'ok'")
+    }
+
     /** Whether the project named [name] is indexing (dumb mode); false once it is not, or when no such project is open. */
     fun isDumb(name: String): Boolean = js(
         """

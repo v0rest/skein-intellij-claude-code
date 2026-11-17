@@ -12,10 +12,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * A thread tab to close and what to hang up in it first: [shell], the tab's anchor (the claude ancestor right below the
- * IDE, [ThreadMapper.anchorOf]) as Skein proved it the tab's own, and [claude], the thread's claude from its live session
- * file. Either may be null: claude exited, or Skein never learned the tab's shell, or could not prove it, and then
- * nothing is hung up and the tab closes as it always did; [doubt] says why a known anchor was not proved.
+ * A thread tab to close and what to hang up in it first. [shell] is the tab's shell right below the IDE as Skein proved
+ * it the tab's own, its anchor ([ThreadMapper.anchorOf]) or, before a status file tied the thread to one, the lone shell
+ * the tab's bracket proves. [claude] is the thread's claude under it, from its live session file or seen there without
+ * one, and null when claude exited or cannot be told - the shell then passes the hangup on. [shell] is null when Skein
+ * could not prove the tab's shell, and then nothing is hung up and the tab closes as it always did, while [doubt] says
+ * why.
  */
 data class Ending(val tab: ThreadTab, val shell: ProcessId?, val claude: ProcessId?, val doubt: String? = null)
 
@@ -34,6 +36,8 @@ data class Ending(val tab: ThreadTab, val shell: ProcessId?, val claude: Process
  * Nothing is signalled unless the tab's session runs, and each signal goes out only while its target is still the very
  * process Skein recorded (same pid, same start instant, still in the tab's tree): a pid freed by an exited process may
  * belong to anyone by now. IDE-free; runs off the EDT and off the coordinator's confined dispatcher.
+ *
+ * A project that closes uses [endOnly], with the short window its close leaves, since the close waits for it.
  */
 class CloseSequence(
     private val hangUp: HangUp,
@@ -45,28 +49,49 @@ class CloseSequence(
     /** Ends the threads of [closing] and closes their tabs; a thread that does not end in time is closed anyway, and logged. */
     suspend fun run(closing: List<Ending>) {
         if (closing.isEmpty()) return
-        val deadline = System.nanoTime() + timeoutMillis * NANOS_PER_MILLI
-        for (ending in closing) {
-            if (ending.shell == null && ending.doubt != null) {
-                log("Skein hangs up nothing in thread ${ending.tab.id}, ${ending.doubt}; its tab closes as before")
-            }
-        }
-        val known = closing.filter { it.shell != null }
-        if (known.isNotEmpty()) {
-            terminal.markEnding(known.map { it.tab })
-            try {
-                coroutineScope { known.map { async { end(it, deadline) } }.awaitAll() }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                log("Skein could not end the threads it closes: $e")
-            }
-        }
+        endAll(closing, Then.CLOSE_TABS, timeoutMillis)
         terminal.close(closing.map { it.tab })
     }
 
+    /**
+     * Ends the threads of [closing] as [run] does, all within one deadline [withinMillis] from now, but marks and closes
+     * no tab - for a project that closes, which closes the tabs itself once this returns. Never throws but for
+     * cancellation.
+     */
+    suspend fun endOnly(closing: List<Ending>, withinMillis: Long = timeoutMillis) {
+        if (closing.isEmpty()) return
+        endAll(closing, Then.PROJECT_CLOSES, withinMillis)
+    }
+
+    /** What comes after the ending, in words for the log. */
+    private enum class Then(val words: String) {
+        CLOSE_TABS("closes the tab anyway"),
+        PROJECT_CLOSES("lets the project close anyway"),
+    }
+
+    private suspend fun endAll(closing: List<Ending>, then: Then, withinMillis: Long) {
+        val deadline = System.nanoTime() + withinMillis * NANOS_PER_MILLI
+        for (ending in closing) {
+            if (ending.shell == null && ending.doubt != null) {
+                val after = if (then == Then.CLOSE_TABS) "its tab closes as before" else "the project closes as before"
+                log("Skein hangs up nothing in thread ${ending.tab.id}, ${ending.doubt}; $after")
+            }
+        }
+        val known = closing.filter { it.shell != null }
+        if (known.isEmpty()) return
+        // the close check holds a tab that is being ended, and a project that closes lets every tab go anyway
+        if (then == Then.CLOSE_TABS) terminal.markEnding(known.map { it.tab })
+        try {
+            coroutineScope { known.map { async { end(it, deadline, then, withinMillis) } }.awaitAll() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log("Skein could not end the threads it closes: $e")
+        }
+    }
+
     /** One thread: SIGHUP to claude, wait for it to leave, SIGHUP to the shell, wait for the session to end. */
-    private suspend fun end(ending: Ending, deadline: Long) {
+    private suspend fun end(ending: Ending, deadline: Long, then: Then, withinMillis: Long) {
         val shell = ending.shell ?: return
         // a session that does not run has no shell of its own left, and the recorded pids may be anyone's
         if (!running(ending)) return
@@ -74,12 +99,12 @@ class CloseSequence(
         if (claude != null && hangUpIfOurs(ending, claude) && !awaitGone(ending, claude, deadline)) {
             // past the deadline: the shell still gets its signal and passes it on, as a closing terminal's would
             hangUpIfOurs(ending, shell)
-            log("claude in thread ${ending.tab.id} did not end within $timeoutMillis ms of SIGHUP; Skein hung up its shell and closes the tab anyway")
+            log("claude in thread ${ending.tab.id} did not end within $withinMillis ms of SIGHUP; Skein hung up its shell and ${then.words}")
             return
         }
         if (!running(ending) || !hangUpIfOurs(ending, shell)) return
         if (!awaitSessionEnded(ending, deadline)) {
-            log("The terminal session of thread ${ending.tab.id} did not end within $timeoutMillis ms of SIGHUP; Skein closes the tab anyway")
+            log("The terminal session of thread ${ending.tab.id} did not end within $withinMillis ms of SIGHUP; Skein ${then.words}")
         }
     }
 

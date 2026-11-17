@@ -336,6 +336,26 @@ class TerminalAdapter(
         this.listener = listener
     }
 
+    /**
+     * The project closes from now on, which `ProjectCloseListener.projectClosing` would say only later. The service ends
+     * the threads before the project saves, and the terminal then closes each tab whose shell ended by itself - such a
+     * tab is no thread closing, so the saved threads keep it, and the close check lets every tab go. Set once, never
+     * cleared, like the listener's own flag.
+     */
+    fun projectCloses() {
+        projectClosing = true
+    }
+
+    /**
+     * The counterpart of [projectCloses], for a close refused after Skein ended the threads - the project stays open.
+     * A tab's close is a thread's close again, and a tab the IDE closed meanwhile, its shell ended, is reported closed
+     * now, so its row does not stay behind. EDT.
+     */
+    fun projectStaysOpen() {
+        projectClosing = false
+        for (handle in handles.values) if (handle.disposed) closed(handle.id)
+    }
+
     override fun open(threadId: String, folder: String, tabName: String, focus: Boolean): ThreadTab {
         val handle = Handle(threadId, folder)
         handles[threadId] = handle

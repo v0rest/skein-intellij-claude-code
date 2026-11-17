@@ -85,8 +85,9 @@ may also get the IDE's own question. A thread that starts working after you answ
 so. Close, the editor tab's × and the close of a thread tab in the Terminal tool window first send claude and the
 tab's shell the hangup a closing terminal sends, wait up to five seconds for them to finish while the tab still shows
 them, and only then close the tab, since the IDE would otherwise leave both hanging with a dead terminal
-(IJPL-259859). The editor tab's × asks nothing, in the Terminal tool window the IDE may ask its own question first, and
-moving a tab there or out of it ends nothing. A Close All or Close Others with a running
+(IJPL-259859). Closing the project does the same for all its threads before the project goes, waiting about two
+seconds at most for all of them together. The editor tab's × asks nothing, in the Terminal tool window the IDE may
+ask its own question first, and moving a tab there or out of it ends nothing. A Close All or Close Others with a running
 thread in it closes the other files at once and the thread tabs once their claude has ended. With the editor split
 into several windows it closes only the thread tabs at first, so run it again for the rest. With several threads the
 tab in front closes last. A worktree thread then asks whether to keep its worktree, as after the tab's own close

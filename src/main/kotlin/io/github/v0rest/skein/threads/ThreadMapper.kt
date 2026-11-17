@@ -62,6 +62,9 @@ class ThreadMapper(private val probe: ProcessProbe, private val style: PathStyle
     /** When [pid] started, or null when it is gone or the system does not say. */
     fun startOf(pid: Long): Instant? = probe.startInstant(pid)
 
+    /** Whether some process holds [pid] now, whichever one it is. */
+    fun isAlive(pid: Long): Boolean = probe.isAlive(pid)
+
     /** The ancestor of [pid] whose parent is the IDE process, or null when [pid] does not descend from the IDE. */
     fun anchorOf(pid: Long): Long? {
         val ide = probe.currentPid()

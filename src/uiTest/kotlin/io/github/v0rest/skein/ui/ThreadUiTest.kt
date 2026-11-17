@@ -66,6 +66,80 @@ class ThreadUiTest {
         assertEquals("", RemoteIde.gitStatus(repo).trim())
     }
 
+    /**
+     * An end-to-end guard for a tab closed the moment claude's status file appears - claude still has to end. The status
+     * file is polled every 100 ms and the tab's close button is found beforehand, so the click usually lands before
+     * Skein's next look (once a second) ties the thread to the tab's shell, but not always, and then it is an ordinary
+     * close.
+     */
+    @Test
+    fun aTabClosedAsSoonAsClaudeIsUpStillEndsIt() {
+        val before = RemoteIde.claudePids()
+        val frame = RemoteIde.frame(project)
+        RemoteIde.startClaudeFromTheEmptyList(project)
+
+        var started = emptySet<Long>()
+        waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "a new claude.exe") {
+            started = RemoteIde.claudePids() - before
+            started.size == 1
+        }
+        val pid = started.single()
+        val start = RemoteIde.startOf(pid)
+        try {
+            // found before the answer, so nothing but the poll stands between the status file and the click
+            val close = threadsTabCloseButton(frame)
+            // a fresh folder, so claude writes its status file only once the trust question is answered
+            RemoteIde.acceptTheTrustQuestion(project)
+            waitFor(Duration.ofSeconds(60), Duration.ofMillis(100), "the status file of claude $pid") { pid in RemoteIde.sessionPids() }
+            close.click()
+
+            // by pid, since a claude whose shell is gone no longer counts among the IDE's claudes
+            waitFor(Duration.ofSeconds(30), Duration.ofSeconds(1), "claude $pid gone") { !RemoteIde.alive(pid) }
+            waitFor(Duration.ofSeconds(30), Duration.ofSeconds(1), "the status file of claude $pid gone") { pid !in RemoteIde.sessionPids() }
+            assertEquals("", RemoteIde.gitStatus(repo).trim())
+        } finally {
+            // a claude left hanging must not outlive the test, and the clean-up after it finds one only by its shell
+            RemoteIde.destroy(pid, start)
+        }
+    }
+
+    /**
+     * An end-to-end guard that closing the project ends its threads' claude too. File | Close Project ends in
+     * `closeAndDispose`, and the terminals go with the project, so a claude still running would be left behind with no
+     * one reading its terminal. An idle thread, the project closed on the EDT, then claude and its status file gone. The
+     * project opened again shows the thread once more, as the threads are saved after Skein ended them.
+     */
+    @Test
+    fun closingTheProjectEndsItsThreadsClaude() {
+        val before = RemoteIde.claudePids()
+        RemoteIde.startClaudeFromTheEmptyList(project)
+        var started = emptySet<Long>()
+        waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "a new claude.exe") {
+            started = RemoteIde.claudePids() - before
+            started.size == 1
+        }
+        val pid = started.single()
+        val start = RemoteIde.startOf(pid)
+        try {
+            // a fresh folder, so claude writes its status file only once the trust question is answered
+            RemoteIde.acceptTheTrustQuestion(project)
+            waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "the status file of claude $pid") { pid in RemoteIde.sessionPids() }
+            waitFor(Duration.ofSeconds(30), Duration.ofSeconds(1), "claude $pid idle") { RemoteIde.sessionField(pid, "status") == "idle" }
+
+            RemoteIde.closeAndDispose(project)
+            // by pid, since a claude whose shell is gone no longer counts among the IDE's claudes
+            waitFor(Duration.ofSeconds(30), Duration.ofSeconds(1), "claude $pid gone") { !RemoteIde.alive(pid) }
+            waitFor(Duration.ofSeconds(30), Duration.ofSeconds(1), "the status file of claude $pid gone") { pid !in RemoteIde.sessionPids() }
+
+            RemoteIde.open(repo)
+            RemoteIde.activateSkein(project)
+            waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "the thread back in the reopened project") { RemoteIde.threadRows(project) == 1 }
+        } finally {
+            // a claude left hanging must not outlive the test, and the clean-up after it finds one only by its shell
+            RemoteIde.destroy(pid, start)
+        }
+    }
+
     @Test
     fun aWorktreeThreadStartsInItsWorktreeAndGitStaysClean() {
         val frame = RemoteIde.frame(project)
@@ -178,10 +252,12 @@ class ThreadUiTest {
         waitFor(Duration.ofSeconds(30), Duration.ofSeconds(1), "claude $pid gone") { pid !in RemoteIde.claudePids() }
     }
 
-    private fun closeTheThreadsTab(frame: CommonContainerFixture) {
-        // the thread's editor tab is the one whose close button sits next to a terminal tab; README.md may be open too
+    private fun closeTheThreadsTab(frame: CommonContainerFixture) = threadsTabCloseButton(frame).click()
+
+    /** The close button of the thread's editor tab, the one tab that is not README.md, which may be open too. */
+    private fun threadsTabCloseButton(frame: CommonContainerFixture): ComponentFixture {
         val tabs = frame.findAll(CommonContainerFixture::class.java, byXpath("//div[@class='EditorTabLabel']"))
         val thread = tabs.first { tab -> tab.findAllText().none { it.text.contains("README") } }
-        thread.find(ComponentFixture::class.java, byXpath(".//div[@class='InplaceButton']")).click()
+        return thread.find(ComponentFixture::class.java, byXpath(".//div[@class='InplaceButton']"))
     }
 }

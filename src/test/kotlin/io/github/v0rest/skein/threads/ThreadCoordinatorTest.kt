@@ -11,6 +11,8 @@ import io.github.v0rest.skein.process.HangUp
 import io.github.v0rest.skein.process.ProcessId
 import io.github.v0rest.skein.process.ProcessProbe
 import io.github.v0rest.skein.terminal.ClaudeCommand
+import io.github.v0rest.skein.terminal.ThreadTab
+import io.github.v0rest.skein.terminal.ThreadTerminal
 import io.github.v0rest.skein.terminal.ThreadTerminalListener
 import io.github.v0rest.skein.testutil.FakeProcessProbe
 import io.github.v0rest.skein.testutil.FakeThreadTerminal
@@ -366,13 +368,18 @@ class ThreadCoordinatorTest {
         assertNull(ending.claude)
     }
 
-    /** A tab whose shell Skein never learned (its claude not matched yet) has nothing to hang up and closes as before. */
+    /**
+     * A tab closed right after Skein typed, before claude is up and long before Skein tied the thread to the tab's shell -
+     * the bracket alone proves that shell, which is hung up and passes the hangup on to whatever it started.
+     */
     @Test
-    fun closeWithoutAnAnchorHangsUpNothing() {
+    fun aCloseBeforeClaudeIsUpHangsUpTheTabsShellAlone() {
         coordinator.newThread("/w/acme", now = 1_000)
         val ending = coordinator.close(listOf("t1"), confirmed = setOf("t1"), snap()).closing.single()
-        assertNull(ending.shell)
+        assertEquals(ProcessId(10, t0), ending.shell)
         assertNull(ending.claude)
+        assertNull(ending.doubt)
+        assertNull(thread().anchor)
     }
 
     /** A session running in another terminal is never this thread's to hang up, even with the same session id. */
@@ -1675,5 +1682,305 @@ class ThreadCoordinatorTest {
         probe.kill(100)
         val target = coordinator.renameTarget(A, snap(s100))!!
         assertNull(target.claude)
+    }
+
+    // a close before Skein tied the thread to the tab's shell (its status file not matched yet)
+
+    private fun hangUpAndKill() = HangUp { pid ->
+        terminal.calls += "hup $pid"
+        probe.kill(pid)
+        true
+    }
+
+    /**
+     * claude is up and its status file is there, but the monitor's next look, which ties the thread to the tab's shell,
+     * has not come yet. The bracket alone proves the shell and the status file under it gives claude, so the close ends
+     * both as for any thread. The thread's anchor and the launch slot stay as they were, the tab is closing anyway.
+     */
+    @Test
+    fun aCloseBeforeTheStatusFileIsMatchedEndsTheTabsClaudeAndShell() {
+        coordinator.newThread("/p", now = 1_000)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 1_500) // the tick that sees the tab's session started
+        val s100 = claude(100, under = 10, startedAt = 1_800)
+        val ending = coordinator.close(listOf("t1"), confirmed = setOf("t1"), snap(s100)).closing.single()
+        assertEquals(ProcessId(10, t0), ending.shell)
+        assertEquals(ProcessId(100, Instant.ofEpochMilli(1_700)), ending.claude)
+        assertNull(ending.doubt)
+        assertNull(thread().anchor)
+        assertEquals("t1", slot.holder(now = 1_800))
+        assertTrue(slot.ownedAnchors().isEmpty())
+        runBlocking { CloseSequence(hangUpAndKill(), terminal, ThreadMapper(probe), timeoutMillis = 2_000) {}.run(listOf(ending)) }
+        assertEquals(listOf("ending t1", "hup 100", "hup 10", "await t1", "close t1"), terminal.calls)
+    }
+
+    /**
+     * In a fresh folder the person answered claude's trust question well before the launch timeout, so Skein never saw
+     * it asking. Closed right then, the claude comes from its status file, or while the monitor has not read that yet,
+     * as the one CLI under the proved shell. A close reads no trust.
+     */
+    @Test
+    fun aCloseRightAfterTheTrustAnswerEndsTheClaudeThatAsked() {
+        folderTrust = FolderTrust.NOT_TRUSTED
+        coordinator.newThread("/p", now = 1_000)
+        askingClaude(100, under = 10)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 2_000)
+        assertEquals(ThreadState.Starting, thread().state)
+        val answered = sessionFile(pid = 100, activity = ClaudeActivity.IDLE, sessionId = A, cwd = "/p", name = "acme-api", startedAt = 1_500)
+        for (seen in listOf(snap(answered), snap())) {
+            val ending = coordinator.close(listOf("t1"), confirmed = setOf("t1"), seen).closing.single()
+            assertEquals(ProcessId(10, t0), ending.shell)
+            assertEquals(ProcessId(100, Instant.ofEpochMilli(1_400)), ending.claude)
+            assertNull(ending.doubt)
+        }
+        assertTrue("a close reads no trust", trustAsked.isEmpty())
+        assertNull(thread().anchor)
+        // the claude found without a status file passes the sequence's own checks too
+        val ending = coordinator.close(listOf("t1"), confirmed = setOf("t1"), snap()).closing.single()
+        runBlocking { CloseSequence(hangUpAndKill(), terminal, ThreadMapper(probe), timeoutMillis = 2_000) {}.run(listOf(ending)) }
+        assertEquals(listOf("ending t1", "hup 100", "hup 10", "await t1", "close t1"), terminal.calls)
+    }
+
+    /** Two shells started with the tab, and either may be its own, so nothing is hung up and the log says why. */
+    @Test
+    fun twoShellsThatStartedWithTheTabHangUpNothingAtTheClose() {
+        terminal.onOpen = { spawnShell(); spawnShell() } // the tab's shell 10, and 11 of a terminal opened in the same tick
+        coordinator.newThread("/p", now = 1_000)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 1_500)
+        val s100 = claude(100, under = 10, startedAt = 1_800)
+        val ending = coordinator.close(listOf("t1"), confirmed = setOf("t1"), snap(s100)).closing.single()
+        assertNull(ending.shell)
+        assertNull(ending.claude)
+        assertTrue(ending.doubt.orEmpty(), ending.doubt.orEmpty().contains("not tied the tab to its shell yet"))
+        assertTrue(ending.doubt.orEmpty(), ending.doubt.orEmpty().contains("pids 10, 11"))
+        val logged = mutableListOf<String>()
+        runBlocking { CloseSequence(signalNothing(), terminal, ThreadMapper(probe), timeoutMillis = 2_000) { logged += it }.run(listOf(ending)) }
+        assertEquals(listOf("close t1"), terminal.calls)
+        assertEquals(1, logged.size)
+        assertTrue(logged.single(), logged.single().contains("thread t1") && logged.single().contains("pids 10, 11"))
+    }
+
+    /** Something the IDE started with the tab that Skein does not know as a shell may be the tab's own shell - a doubt. */
+    @Test
+    fun anUnrecognisedProcessBesideTheShellHangsUpNothingAtTheClose() {
+        terminal.onOpen = {
+            spawnShell()
+            probe.add(20, parent = 1, start = t0) // its command not given, as for another user's process
+        }
+        coordinator.newThread("/p", now = 1_000)
+        val s100 = claude(100, under = 10, startedAt = 1_800)
+        val ending = coordinator.close(listOf("t1"), confirmed = setOf("t1"), snap(s100)).closing.single()
+        assertNull(ending.shell)
+        assertNull(ending.claude)
+        assertTrue(ending.doubt.orEmpty(), ending.doubt.orEmpty().contains("(pid 20)"))
+    }
+
+    /** The one shell that started with the tab is another thread's anchor (another window holds it), not this tab's to end. */
+    @Test
+    fun aShellAnotherThreadHoldsIsNotHungUpAtTheClose() {
+        coordinator.newThread("/p", now = 1_000)
+        slot.claimAnchor(Any(), 10)
+        val s100 = claude(100, under = 10, startedAt = 1_800)
+        val ending = coordinator.close(listOf("t1"), confirmed = setOf("t1"), snap(s100)).closing.single()
+        assertNull(ending.shell)
+        assertNull(ending.claude)
+        assertTrue(ending.doubt.orEmpty(), ending.doubt.orEmpty().contains("another thread's (pid 10)"))
+    }
+
+    /**
+     * A tab whose session started but that Skein never typed into (a restored thread on screen, the person typed claude
+     * there by hand) gives no bracket, so nothing is hung up, and the log says so.
+     */
+    @Test
+    fun aTabSkeinNeverTypedIntoHangsUpNothingAndSaysSo() {
+        coordinator.restore(listOf(saved("r1", A)), snap(), now = 1_000) // its shell 10 starts, nothing is typed
+        val byHand = claude(100, under = 10, startedAt = 1_800, sessionId = D)
+        val ending = coordinator.close(listOf("r1"), confirmed = setOf("r1"), snap(byHand)).closing.single()
+        assertNull(ending.shell)
+        assertNull(ending.claude)
+        assertTrue(ending.doubt.orEmpty(), ending.doubt.orEmpty().contains("has not typed into the tab"))
+    }
+
+    /** A restored tab never shown has no shell yet, so there is nothing to hang up and nothing worth a log line. */
+    @Test
+    fun aTabWhoseSessionNeverStartedClosesWithoutADoubt() {
+        restoreLazily(saved("r1", A))
+        assertEquals(Ending(terminal.opened.single(), shell = null, claude = null), coordinator.close(listOf("r1"), confirmed = setOf("r1"), snap()).closing.single())
+    }
+
+    /** A terminal that cannot say whether the tab's session started counts as started, so the log still says why nothing is hung up. */
+    @Test
+    fun aSessionStateThatCannotBeReadKeepsTheDoubt() {
+        val unsure = object : ThreadTerminal by terminal {
+            override fun sessionStarted(tab: ThreadTab): Boolean = error("no view for the tab")
+        }
+        val window = ThreadCoordinator(unsure, ThreadMapper(probe), slot, events) { "w1" }
+        terminal.lazyShells = true
+        window.restore(listOf(saved("w1", A)), snap(), now = 1_000)
+        val ending = window.close(listOf("w1"), confirmed = setOf("w1"), snap()).closing.single()
+        assertNull(ending.shell)
+        assertTrue(ending.doubt.orEmpty(), ending.doubt.orEmpty().contains("has not typed into the tab"))
+    }
+
+    /**
+     * The tab's own shell had no readable start when Skein typed, and a terminal opened in the same tick did. That one
+     * must not pass for the lone shell, so nothing is hung up, and the log names the pid it could not place.
+     */
+    @Test
+    fun aShellWithAnUnreadableStartBesideTheTabsLeavesNothingToHangUp() {
+        terminal.onOpen = {
+            spawnShell() // the tab's own shell 10, its start unreadable as Skein types
+            probe.unknownStart += 10L
+            spawnShell() // 11, a terminal opened in the same tick
+        }
+        coordinator.newThread("/p", now = 1_000)
+        probe.unknownStart -= 10L
+        val s100 = claude(100, under = 10, startedAt = 1_800)
+        val ending = coordinator.close(listOf("t1"), confirmed = setOf("t1"), snap(s100)).closing.single()
+        assertNull(ending.shell)
+        assertNull(ending.claude)
+        assertTrue(ending.doubt.orEmpty(), ending.doubt.orEmpty().contains("no readable start (pid 10)"))
+    }
+
+    /**
+     * A child of the IDE whose start could not be read as Skein typed (one going away right then) and that is gone by the
+     * close cannot be the tab's running shell, so it leaves the lone shell proved.
+     */
+    @Test
+    fun anUnreadablePidGoneByTheCloseLeavesTheShellProved() {
+        terminal.onOpen = {
+            spawnShell() // the tab's own shell 10
+            probe.add(20, parent = 1, start = t0) // something of the IDE's, exiting as Skein types
+            probe.unknownStart += 20L
+        }
+        coordinator.newThread("/p", now = 1_000)
+        probe.kill(20)
+        val s100 = claude(100, under = 10, startedAt = 1_800)
+        val ending = coordinator.close(listOf("t1"), confirmed = setOf("t1"), snap(s100)).closing.single()
+        assertEquals(ProcessId(10, t0), ending.shell)
+        assertEquals(ProcessId(100, Instant.ofEpochMilli(1_700)), ending.claude)
+        assertNull(ending.doubt)
+    }
+
+    /** The trust wait takes its shell the same way, so there it gives no answer either, and the launch times out as before. */
+    @Test
+    fun aShellWithAnUnreadableStartBesideTheTabsGivesTheTrustWaitNoAnswer() {
+        folderTrust = FolderTrust.NOT_TRUSTED
+        terminal.onOpen = {
+            spawnShell()
+            probe.unknownStart += 10L
+            spawnShell()
+        }
+        coordinator.newThread("/p", now = 1_000)
+        probe.unknownStart -= 10L
+        askingClaude(110, under = 11) // the other terminal's claude, asking about its own folder
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 31_001)
+        assertEquals(ThreadState.Unknown, thread().state)
+        assertNull(thread().anchor)
+        assertTrue(trustAsked.isEmpty())
+    }
+
+    /** A probe that throws on one thread's anchored path costs that thread its hangup, with a doubt, and the others still end. */
+    @Test
+    fun aProbeThatFailsOnOneAnchoredThreadLosesNotTheWholeClose() {
+        var failOn: Long? = null
+        val failing = object : ProcessProbe by probe {
+            override fun startInstant(pid: Long): Instant? = if (pid == failOn) error("start unreadable") else probe.startInstant(pid)
+        }
+        var n = 0
+        val window = ThreadCoordinator(terminal, ThreadMapper(failing), slot, events) { "w${++n}" }
+        window.newThread("/p", now = 1_000) // w1, shell 10
+        val s100 = claude(100, under = 10)
+        window.onSnapshot(snap(s100), viewed = { false }, now = 2_000)
+        window.newThread("/q", now = 3_000) // w2, shell 11
+        val s101 = claude(101, under = 11, startedAt = 3_500, cwd = "/q", sessionId = D)
+        window.onSnapshot(snap(s100, s101), viewed = { false }, now = 4_000)
+        assertEquals(listOf(10L, 11L), window.threads.sortedBy { it.id }.map { it.anchor })
+        failOn = 10
+        val closing = window.close(listOf("w1", "w2"), confirmed = setOf("w1", "w2"), snap(s100, s101)).closing
+        assertEquals(listOf("w1", "w2"), closing.map { it.tab.id })
+        assertNull(closing[0].shell)
+        assertTrue(closing[0].doubt.orEmpty(), closing[0].doubt.orEmpty().contains("could not tell what runs in its tab") && closing[0].doubt.orEmpty().contains("start unreadable"))
+        assertEquals(ProcessId(11, t0), closing[1].shell)
+        assertEquals(ProcessId(101, Instant.ofEpochMilli(3_400)), closing[1].claude)
+    }
+
+    /** A process listing that fails while Skein looks for claude under the proved shell still hangs up that shell. */
+    @Test
+    fun aListingThatFailsWhileLookingForClaudeStillHangsUpTheShell() {
+        coordinator.newThread("/p", now = 1_000)
+        askingClaude(100, under = 10)
+        probe.childrenFail = true
+        val ending = coordinator.close(listOf("t1"), confirmed = setOf("t1"), snap()).closing.single()
+        assertEquals(ProcessId(10, t0), ending.shell)
+        assertNull(ending.claude)
+    }
+
+    /** A probe that fails while the bracket is checked costs nothing but the hangup - the close goes on, with a doubt. */
+    @Test
+    fun aProbeThatFailsDuringTheBracketHangsUpNothingAndSaysSo() {
+        var fail = false
+        val failing = object : ProcessProbe by probe {
+            override fun command(pid: Long): List<String> = if (fail) error("process table unreadable") else probe.command(pid)
+        }
+        val window = ThreadCoordinator(terminal, ThreadMapper(failing), slot, events) { "w1" }
+        window.newThread("/p", now = 1_000)
+        fail = true
+        val ending = window.close(listOf("w1"), confirmed = setOf("w1"), snap()).closing.single()
+        assertNull(ending.shell)
+        assertTrue(ending.doubt.orEmpty(), ending.doubt.orEmpty().contains("process table unreadable"))
+    }
+
+    // the project closes - every thread ends while its terminal is still read, and the IDE then closes the tabs
+
+    /**
+     * At a project's close every thread is ended, asking nothing - a working one too, since the close is decided by
+     * then - and one Skein has not tied to its shell yet gets the bracket's proof. A restored tab never shown has nothing
+     * to end. The threads, their anchors and the launch slot stay as they were, and no tab is closed by Skein.
+     */
+    @Test
+    fun aProjectCloseEndsEveryRunningThreadAskingNothing() {
+        startIdleThread() // t1, shell 10, claude 100
+        val working = claude(100, under = 10, activity = ClaudeActivity.BUSY)
+        coordinator.onSnapshot(snap(working), viewed = { false }, now = 3_000)
+        assertEquals(ThreadState.Working, thread("t1").state)
+        coordinator.newThread("/q", now = 4_000) // t2, shell 11
+        val s101 = claude(101, under = 11, startedAt = 4_500, cwd = "/q", sessionId = D) // its status file not matched yet
+        terminal.lazyShells = true
+        coordinator.restore(listOf(saved("r1", R)), snap(working), now = 4_600) // its shell starts only when shown
+        val endings = coordinator.endingsAtProjectClose(snap(working, s101))
+        assertEquals(listOf("t1", "t2", "r1"), endings.map { it.tab.id })
+        assertEquals(Ending(endings[0].tab, ProcessId(10, t0), ProcessId(100, Instant.ofEpochMilli(1_400))), endings[0])
+        assertEquals(Ending(endings[1].tab, ProcessId(11, t0), ProcessId(101, Instant.ofEpochMilli(4_400))), endings[1])
+        assertEquals(Ending(endings[2].tab, shell = null, claude = null), endings[2])
+        assertEquals(setOf("t1", "t2", "r1"), coordinator.threads.mapTo(HashSet()) { it.id })
+        assertEquals(10L, thread("t1").anchor)
+        assertNull(thread("t2").anchor)
+        assertEquals("t2", slot.holder(now = 4_600))
+        assertTrue(closed.isEmpty())
+        runBlocking { CloseSequence(hangUpAndKill(), terminal, ThreadMapper(probe), timeoutMillis = 2_000) {}.endOnly(endings) }
+        assertEquals(listOf("hup 100", "hup 10", "await t1", "hup 101", "hup 11", "await t2"), terminal.calls)
+        assertTrue(terminal.closed.isEmpty())
+    }
+
+    /** A probe that fails on one thread at the project's close costs that thread its hangup, with a doubt, and never the rest. */
+    @Test
+    fun aProbeThatFailsAtTheProjectsCloseLosesNotTheOtherThreads() {
+        var failOn: Long? = null
+        val failing = object : ProcessProbe by probe {
+            override fun startInstant(pid: Long): Instant? = if (pid == failOn) error("start unreadable") else probe.startInstant(pid)
+        }
+        var n = 0
+        val window = ThreadCoordinator(terminal, ThreadMapper(failing), slot, events) { "w${++n}" }
+        window.newThread("/p", now = 1_000)
+        val s100 = claude(100, under = 10)
+        window.onSnapshot(snap(s100), viewed = { false }, now = 2_000)
+        window.newThread("/q", now = 3_000)
+        val s101 = claude(101, under = 11, startedAt = 3_500, cwd = "/q", sessionId = D)
+        window.onSnapshot(snap(s100, s101), viewed = { false }, now = 4_000)
+        failOn = 10
+        val endings = window.endingsAtProjectClose(snap(s100, s101))
+        assertNull(endings[0].shell)
+        assertTrue(endings[0].doubt.orEmpty(), endings[0].doubt.orEmpty().contains("start unreadable"))
+        assertEquals(ProcessId(11, t0), endings[1].shell)
     }
 }
