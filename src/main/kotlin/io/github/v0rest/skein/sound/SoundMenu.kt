@@ -48,8 +48,9 @@ object SoundMenu {
     fun choiceOf(item: SoundItem?): SoundChoice = item?.choice ?: SoundChoice.Beep
 
     /**
-     * An item's words - its name, then in brackets its folder for a file, so two `chime.wav` from different folders differ,
-     * and why it would beep, so a file that is gone still shows as the one chosen.
+     * An item's words - its name, then in brackets why it would beep, so a file that is gone still shows as the one
+     * chosen, and its folder for a file, so two `chime.wav` from different folders differ. The reason comes before the
+     * folder, since the field has a fixed width and cuts its end first.
      */
     fun label(item: SoundItem, problem: SoundProblem?): String {
         val why = when (problem) {
@@ -59,7 +60,7 @@ object SoundMenu {
             SoundProblem.TOO_LARGE -> "over 5 MB"
             SoundProblem.UNREADABLE -> "cannot read"
         }
-        val details = listOfNotNull(item.folder, why)
+        val details = listOfNotNull(why, item.folder)
         return if (details.isEmpty()) item.name else "${item.name} (${details.joinToString(", ")})"
     }
 

@@ -35,11 +35,12 @@ class NotificationTextTest {
     }
 
     @Test
-    fun aBalloonShownInAnotherProjectSaysWhichProjectItIsAbout() {
-        assertEquals("acme · needs your permission", NotificationText.fromProject("acme", "needs your permission"))
-        assertEquals("demo-shop · finished its turn", NotificationText.fromProject("demo-shop", "finished its turn"))
-        // the subtitle is HTML to the platform, like the title: a project folder named with a `<` stays a `<`
-        assertEquals("a&lt;b&gt; · needs you", NotificationText.fromProject("a<b>", "needs you"))
+    fun aBalloonShownInAnotherProjectSaysWhichProjectItIsAboutInItsText() {
+        // its own line in the balloon's text, which wraps, rather than in the one-line title and subtitle, which get cut
+        assertEquals("in acme", NotificationText.inProject("acme", null))
+        assertEquals("in demo-shop<br>Discount codes", NotificationText.inProject("demo-shop", "Discount codes"))
+        // the text is HTML to the platform: a project folder or a session name with a `<` stays a `<`
+        assertEquals("in a&lt;b&gt;<br>x &lt; y", NotificationText.inProject("a<b>", "x < y"))
     }
 
     @Test

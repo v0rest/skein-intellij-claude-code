@@ -79,14 +79,19 @@ object NotificationText {
     /**
      * When another project's window - or its tab, when the IDE keeps projects as tabs of one window - is in front, or
      * was the last one before the IDE went to the background, a balloon in this project's own frame would sit where
-     * nobody sees it and only the sound would come through, so it shows in that project instead ([fromProject] names
+     * nobody sees it and only the sound would come through, so it shows in that project instead ([inProject] names
      * its own), where the owner looks or comes back to. With the IDE in the background the OS gets the same words too.
      */
     fun placement(appActive: Boolean, anotherProjectInFront: Boolean): Placement =
         Placement(inFront = anotherProjectInFront, system = !appActive)
 
-    /** The subtitle of a balloon shown in another project: which project the thread is in, then what happened. */
-    fun fromProject(projectName: String, subtitle: String): String = "${StringUtil.escapeXmlEntities(projectName)} · $subtitle"
+    /**
+     * The text of a balloon shown in another project, as HTML: which project the thread is in, on a line of its own, then
+     * the session's name ([text]) when there is one. The text wraps, while the title and subtitle share one line that a
+     * long project name would cut short.
+     */
+    fun inProject(projectName: String, content: String?): String =
+        listOfNotNull("in ${StringUtil.escapeXmlEntities(projectName)}", content?.let(StringUtil::escapeXmlEntities)).joinToString("<br>")
 
     fun enabled(kind: NotificationKind, settings: SkeinSettings.State): Boolean = when (kind) {
         NotificationKind.NEEDS_YOU -> settings.notifyNeedsYou
@@ -154,8 +159,12 @@ class ThreadNotifier(private val project: Project, private val open: (threadId: 
         onEdt {
             // the project is closing: its balloons were taken down, and one coming later would outlive it elsewhere
             if (closed) return@onEdt
+            val front = frontProject()
+            val place = NotificationText.placement(ApplicationManager.getApplication().isActive, anotherProjectInFront = front != null)
+            val inFront = place.inFront && front != null
             // title and content are HTML to the platform: a `<` in a name must stay a `<`
-            val notification = group(kind).createNotification(StringUtil.escapeXmlEntities(title), content?.let(StringUtil::escapeXmlEntities).orEmpty(), NotificationType.INFORMATION)
+            val html = if (inFront) NotificationText.inProject(project.name, content) else content?.let(StringUtil::escapeXmlEntities).orEmpty()
+            val notification = group(kind).createNotification(StringUtil.escapeXmlEntities(title), html, NotificationType.INFORMATION)
                 .setSubtitle(subtitle)
                 .setIcon(SkeinIcons.forKind(kind))
                 .addAction(
@@ -166,14 +175,7 @@ class ThreadNotifier(private val project: Project, private val open: (threadId: 
                 )
             notification.whenExpired { balloons.expired(thread.id, notification) }
             balloons.replace(thread.id, notification)
-            val front = frontProject()
-            val place = NotificationText.placement(ApplicationManager.getApplication().isActive, anotherProjectInFront = front != null)
-            if (place.inFront && front != null) {
-                notification.setSubtitle(NotificationText.fromProject(project.name, subtitle))
-                notification.notify(front)
-            } else {
-                notification.notify(project)
-            }
+            notification.notify(front?.takeIf { inFront } ?: project)
             if (place.system) notifySystemQuietly(title, NotificationText.osText(subtitle, content))
         }
     }

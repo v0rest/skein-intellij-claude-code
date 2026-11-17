@@ -65,10 +65,9 @@ class NotifyUiTest {
         // a switch that did not happen would look like the balloon going astray
         waitFor(Duration.ofSeconds(10), Duration.ofMillis(250), "${other!!} in front") { RemoteIde.inFront() == other }
 
-        // the turn ends with the other project in front: its balloon names this project and says what happened
-        val expected = "$project · finished its turn"
+        // the turn ends with the other project in front: its balloon says what happened and, in its text, which project
         waitFor(Duration.ofSeconds(150), Duration.ofSeconds(2), "a balloon in ${other!!} about the thread of $project") {
-            RemoteIde.notificationsOf(other!!).any { it.endsWith("| $expected") }
+            RemoteIde.notificationsOf(other!!).any { it.contains("| finished its turn | in $project") }
         }
         assertTrue(
             "the balloon also went to $project, which is behind",

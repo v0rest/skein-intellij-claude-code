@@ -3,6 +3,8 @@ package io.github.v0rest.skein.settings
 import com.intellij.openapi.options.BoundConfigurable
 import com.intellij.openapi.ui.DialogPanel
 import com.intellij.openapi.util.SystemInfo
+import com.intellij.ui.components.JBCheckBox
+import com.intellij.ui.dsl.builder.Cell
 import com.intellij.ui.dsl.builder.bindItem
 import com.intellij.ui.dsl.builder.bindSelected
 import com.intellij.ui.dsl.builder.panel
@@ -32,8 +34,14 @@ class SkeinConfigurable : BoundConfigurable("Skein") {
             group("Sounds") {
                 val needsYou = SoundPicker(NotificationKind.NEEDS_YOU, state::soundNeedsYouChoice)
                 val turnFinished = SoundPicker(NotificationKind.TURN_FINISHED, state::soundTurnFinishedChoice)
-                row { needsYou.cells(this, checkBox("Play a sound when a thread needs you").bindSelected(state::soundNeedsYou)) }
-                row { turnFinished.cells(this, checkBox("Play a sound when a thread finishes its turn").bindSelected(state::soundTurnFinished)) }
+                // each switch on a row of its own and its sound under it, so the list, ▶ and Choose File… never push past the
+                // right edge of a narrow Settings window
+                lateinit var needsYouBox: Cell<JBCheckBox>
+                lateinit var turnFinishedBox: Cell<JBCheckBox>
+                row { needsYouBox = checkBox("Play a sound when a thread needs you").bindSelected(state::soundNeedsYou) }
+                indent { row { needsYou.cells(this, needsYouBox) } }
+                row { turnFinishedBox = checkBox("Play a sound when a thread finishes its turn").bindSelected(state::soundTurnFinished) }
+                indent { row { turnFinished.cells(this, turnFinishedBox) } }
                 SoundPicker.load(listOf(needsYou, turnFinished))
             }
             group("Keep awake") {

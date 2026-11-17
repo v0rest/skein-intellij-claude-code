@@ -248,13 +248,13 @@ object RemoteIde {
         edt = true,
     )
 
-    /** The title and subtitle of each notification project [name] shows now, one "title | subtitle" line each. */
+    /** The title, subtitle and text of each notification project [name] shows now, one "title | subtitle | text" line each. */
     fun notificationsOf(name: String): List<String> = js(
         """
         var ps = com.intellij.openapi.project.ProjectManager.getInstance().getOpenProjects(); var out = new java.util.ArrayList();
         for (var i = 0; i < ps.length; i++) if (ps[i].getName() == '$name') {
             var ns = com.intellij.notification.NotificationsManager.getNotificationsManager().getNotificationsOfType(com.intellij.notification.Notification, ps[i]);
-            for (var j = 0; j < ns.length; j++) out.add(ns[j].getTitle() + ' | ' + ns[j].getSubtitle());
+            for (var j = 0; j < ns.length; j++) out.add(ns[j].getTitle() + ' | ' + ns[j].getSubtitle() + ' | ' + ns[j].getContent());
         }
         '' + java.lang.String.join('\n', out)
         """,
