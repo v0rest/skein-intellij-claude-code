@@ -6,7 +6,7 @@ on a permission prompt.
 
 Unofficial, for Claude Code, not affiliated with Anthropic.
 
-![Skein's panel beside a thread that waits for a permission: three threads, a kept worktree with its counts and the History](docs/images/skein-overview.png)
+![Skein's panel beside a thread that waits for a permission: two threads waiting for you, one that finished its turn, a worktree thread with its counts and the History](docs/images/skein-overview.png)
 
 ## Why Skein
 
@@ -17,9 +17,11 @@ Unofficial, for Claude Code, not affiliated with Anthropic.
   learns what each session does from Claude Code's own session files, and from `.claude.json` only whether a folder is
   trusted.
 - No session waits unseen. Every thread shows whether it waits for you, finished its turn or still works, and Skein
-  notifies you, plays a sound if you like and counts the threads waiting for you.
-- Every session of the project in one place. The History lists them by your name for them or Claude Code's title, and
-  you resume, pin, rename or mark them done - a rename can go to Claude Code too, so `claude -r` shows it as well.
+  counts the threads waiting for you and notifies you in the project window you are looking at, even when the thread
+  lives in another one, with the sound you picked for that kind of event.
+- Every session of the project in one place. The History lists them by your name for them or Claude Code's title,
+  picks up the ones you went on with in a plain terminal, and you resume, pin, rename or mark them done - a rename can
+  go to Claude Code too, so `claude -r` shows it as well.
 - The model and the context in use on every thread's row.
 - Parallel work in git worktrees. A worktree thread runs `claude --worktree`, its row counts changed files and commits
   not yet merged, and a kept worktree can be opened again or removed safely - Skein never forces a remove without a
@@ -54,7 +56,20 @@ have not looked yet. A click opens its tab, and Tools | Skein | Jump to Waiting 
 keyboard. The eye in the title bar filters and groups the threads, a right click
 on a thread pins, renames, colours or closes it, and a double click on a History session resumes it in a new tab.
 
-![A thread's menu in the Skein panel: Pin, Rename, Color and Close](docs/images/skein-thread-menu.png)
+![A worktree thread's menu in the Skein panel: Pin, Rename…, Color, Show Changes and Close](docs/images/skein-thread-menu.png)
+
+Rename… names a thread or a History session in Skein, and with Also rename in Claude Code ticked Skein types
+`/rename` into its claude too, once claude is idle and nothing was typed in its tab since your last message.
+
+![The Rename dialog with Also rename in Claude Code ticked](docs/images/skein-rename.png)
+
+When a thread needs you while another project's window or tab is in front, its balloon shows there and says which
+project the thread is in, and Open takes you to it. Settings | Tools | Skein has a switch and a sound for each kind of
+event: the system beep, one of your system's own alert sounds or a file of your own.
+
+![A balloon in the acme-blog tab about a thread of acme-shop that needs a permission](docs/images/skein-notify-other-project.png)
+
+![The Sounds part of Settings | Tools | Skein: Submarine when a thread needs you, Pop when it finishes its turn](docs/images/skein-sounds.png)
 
 Worktrees (N) lists the worktrees Claude Code left in `.claude/worktrees` that no thread holds, with the same counts,
 and opens, reveals or removes them. Show Changes, in the right-click menu of a worktree thread or of a kept worktree,
