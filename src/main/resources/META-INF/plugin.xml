@@ -13,8 +13,11 @@
         unmodified <code>claude</code>.</li>
       <li>Each thread's state, model and context use at a glance, with a lock when claude waits for a permission and a
         speech bubble when it asks a question.</li>
+      <li>Notifications where you are looking: a thread's balloon shows in the project window or tab in front, even
+        when the thread lives in another project, with the sound you pick for each kind of event.</li>
       <li>New Thread Here starts a thread in a folder of the project, from the Project view or an editor tab.</li>
-      <li>Resume past sessions from the History; pin, name and mark them done.</li>
+      <li>Resume past sessions from the History, which also picks up sessions you went on with in a plain terminal;
+        pin, name and mark them done. A name can go to Claude Code too, so <code>claude -r</code> shows it.</li>
       <li>Start threads in git worktrees, see a worktree's changes in the IDE's diff viewer, and keep, open or remove
         the worktrees they leave.</li>
       <li>Closing a thread's tab ends its claude cleanly, so no session keeps running behind a closed tab.</li>
@@ -26,9 +29,9 @@
     shell the hangup signal a closing terminal would send, waits up to five seconds for them to exit while the tab is
     still open, and only then closes the tab. A claude you start in a plain terminal tab, outside Skein, is still left
     behind. On Windows the IDE ends claude itself when a tab closes, so there Skein closes the tab at once.</p>
-    <p>Skein adds no hooks or settings to Claude Code. Needs Claude Code 2.1.162 or newer. Tested on macOS, Windows
-    support is new, and Linux is supported but has seen less use. For projects in WSL or Remote Development Skein turns
-    itself off and says why. Unofficial, not affiliated with Anthropic.</p>
+    <p>Skein adds no hooks or settings to Claude Code. Needs Claude Code 2.1.162 or newer. Tested on macOS and Windows;
+    Linux is supported but has seen less use. For projects in WSL or Remote Development Skein turns itself off and says
+    why. Unofficial, not affiliated with Anthropic.</p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
