@@ -122,10 +122,10 @@ class SoundMenuTest {
     fun aChoiceThatCannotPlaySaysWhy() {
         val chime = SoundMenu.item(SoundChoice.File("/Users/dev/chime.wav"), home, UNIX)
         assertEquals("Sosumi (missing)", SoundMenu.label(SoundMenu.item(SoundChoice.System("Sosumi"), home, UNIX), SoundProblem.MISSING))
-        assertEquals("chime.wav (~, missing)", SoundMenu.label(chime, SoundProblem.MISSING))
-        assertEquals("chime.wav (~, over 5 MB)", SoundMenu.label(chime, SoundProblem.TOO_LARGE))
-        assertEquals("chime.wav (~, cannot read)", SoundMenu.label(chime, SoundProblem.UNREADABLE))
-        assertEquals("song.mp3 (~, cannot play)", SoundMenu.label(SoundMenu.item(SoundChoice.File("/Users/dev/song.mp3"), home, UNIX), SoundProblem.UNSUPPORTED))
+        assertEquals("chime.wav (missing, ~)", SoundMenu.label(chime, SoundProblem.MISSING))
+        assertEquals("chime.wav (over 5 MB, ~)", SoundMenu.label(chime, SoundProblem.TOO_LARGE))
+        assertEquals("chime.wav (cannot read, ~)", SoundMenu.label(chime, SoundProblem.UNREADABLE))
+        assertEquals("song.mp3 (cannot play, ~)", SoundMenu.label(SoundMenu.item(SoundChoice.File("/Users/dev/song.mp3"), home, UNIX), SoundProblem.UNSUPPORTED))
     }
 
     @Test

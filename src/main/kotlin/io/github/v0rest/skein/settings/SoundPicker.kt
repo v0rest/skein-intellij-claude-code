@@ -12,6 +12,7 @@ import com.intellij.ui.dsl.builder.Row
 import com.intellij.ui.dsl.builder.bindItem
 import com.intellij.ui.dsl.builder.selected
 import com.intellij.ui.dsl.listCellRenderer.textListCellRenderer
+import com.intellij.util.ui.JBUI
 import io.github.v0rest.skein.sound.SoundCatalog
 import io.github.v0rest.skein.sound.SoundChoice
 import io.github.v0rest.skein.sound.SoundChoices
@@ -43,12 +44,15 @@ internal class SoundPicker(private val kind: NotificationKind, private val store
 
     private val choice: SoundChoice get() = SoundMenu.choiceOf(combo.selectedItem as? SoundItem)
 
-    /** The list, ▶ and Choose File… in [row], after the event's switch [box], whose tick turns them on. */
+    /** The list, ▶ and Choose File… in [row], the indented row under the event's switch [box], whose tick turns them on. */
     fun cells(row: Row, box: Cell<JBCheckBox>) {
         combo = row.comboBox(model, textListCellRenderer { item -> item?.let { SoundMenu.label(it, problems[it.choice]) } })
             .bindItem({ SoundMenu.item(SoundChoices.parse(stored.get()), home) }, { stored.set(SoundChoices.format(SoundMenu.choiceOf(it))) })
             .enabledIf(box.selected)
             .component
+        // a fixed width, so a long file name is cut in the field (the open list shows it whole, the tooltip its path)
+        // instead of widening the row
+        combo.setMinimumAndPreferredWidth(JBUI.scale(COMBO_WIDTH))
         combo.addActionListener { combo.toolTipText = SoundMenu.tooltip(choice) }
         row.button("▶") { SoundPlayer.getInstance().play(kind, choice, preview = true) }
             .applyToComponent { toolTipText = "Play this sound once" }
@@ -84,6 +88,9 @@ internal class SoundPicker(private val kind: NotificationKind, private val store
     }
 
     companion object {
+        /** The sound list's width in points: a system sound's name fits, a long file name is cut. */
+        private const val COMBO_WIDTH = 240
+
         /** One look at the disk for all of a page's [pickers] - the OS's sounds once, then each stored choice. */
         fun load(pickers: List<SoundPicker>) {
             val choices = pickers.map { it.initial }

@@ -61,7 +61,7 @@ A thread has one balloon at a time, a newer event replaces it. A needs-you ballo
 finished-turn one fades like any IDE notification, and either goes away as soon as you open the thread, close its
 tab, or the thread stops needing you. With another project's window in front, or its tab when the IDE keeps projects
 as tabs of one window, or with that project the last one you were in before you left the IDE, the balloon shows there,
-its subtitle starting with the thread's project, and Open goes to the thread's project first. Closing the thread's
+its text starting with "in" and the thread's project, and Open goes to the thread's project first. Closing the thread's
 project takes its balloons down wherever they show. With the IDE in the background Skein also sends the event and the
 session's name on its own line to the system notification centre, unless you turned system notifications off under
 Settings | Appearance & Behavior | Notifications.
@@ -128,7 +128,7 @@ The History header reads "History (N)" with the number of sessions it lists, and
 the threads. In the new UI's main toolbar a counter shows how many threads need you, only those, and its switch is
 under Settings | Tools | Skein. The tool window icon is the Skein spark, with an orange dot while a thread needs you.
 Skein can play a sound when a thread needs you or finishes its turn, each on its own switch and with its own sound
-picked next to it - the system beep, which stays the default, one of the alert sounds your system already has, or a
+picked under it - the system beep, which stays the default, one of the alert sounds your system already has, or a
 file of your own from Choose File…, a `.wav` or `.aiff` anywhere, a `.caf` on macOS and an `.au` elsewhere, and ▶
 plays it once. The system's sounds come from `/System/Library/Sounds` and `~/Library/Sounds` on macOS,
 `C:\Windows\Media` on Windows and the `.wav` files under `/usr/share/sounds` on Linux, Skein ships none of its own and
