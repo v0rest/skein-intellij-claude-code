@@ -143,7 +143,7 @@ class CloseSequenceTest {
         assertTrue(logged.single(), logged.single().contains("t1"))
     }
 
-    /** Nothing to hang up (Skein never learned the tab's shell): nothing to wait for, the tab closes at once. */
+    /** Nothing to hang up, as Skein could not prove the tab's shell - nothing to wait for, the tab closes at once. */
     @Test
     fun aTabWithNothingToHangUpClosesWithoutWaiting() {
         terminal.ends = { awaitCancellation() }
@@ -227,5 +227,69 @@ class CloseSequenceTest {
     fun nothingToCloseDoesNothing() {
         runBlocking { sequence().run(emptyList()) }
         assertTrue(terminal.calls.isEmpty())
+    }
+
+    // a project that closes ends its threads the same way, and the IDE closes their tabs itself
+
+    /** At a project's close each thread ends as for a Close, claude then the shell, and no tab is marked or closed by Skein. */
+    @Test
+    fun endOnlyEndsEachThreadAndLeavesTheTabsToTheProjectsClose() {
+        runBlocking { sequence().endOnly(listOf(t1, t2)) }
+        assertEquals(listOf("hup 100", "hup 10", "await t1", "hup 101", "hup 11", "await t2"), terminal.calls)
+        assertTrue(terminal.closed.isEmpty())
+        assertTrue(logged.isEmpty())
+    }
+
+    /**
+     * Two claudes that ignore the hang-up share one short deadline, so the project's close waits about that long in all,
+     * not that long per thread. Past it both shells still get their signal, and the log names each thread.
+     */
+    @Test
+    fun endOnlySharesOneDeadlineForAllThreads() {
+        val started = System.nanoTime()
+        runBlocking { sequence(hangUp = ignored, timeoutMillis = 500).endOnly(listOf(t1, t2)) }
+        val tookMillis = (System.nanoTime() - started) / 1_000_000
+        assertEquals(listOf("hup 100", "hup 101", "hup 10", "hup 11"), terminal.calls)
+        assertTrue("took $tookMillis ms", tookMillis in 500 until 1_000)
+        assertEquals(2, logged.size)
+        assertTrue(logged.toString(), logged[0].contains("thread t1") && logged[1].contains("thread t2"))
+        assertTrue(logged.toString(), logged.none { it.contains("closes the tab") })
+    }
+
+    /**
+     * claude leaves late in the window and the session then never ends - the wait for the session gets only what is left
+     * of the one deadline, so the whole ending takes about the window, where a deadline per step would take almost twice
+     * that. Roomy numbers, so a busy CI runner does not tip it over.
+     */
+    @Test
+    fun endOnlyGivesTheLaterStepOnlyWhatIsLeftOfTheDeadline() {
+        val shellObeys = HangUp { pid ->
+            terminal.calls += "hup $pid"
+            if (pid == 10L) probe.kill(pid)
+            true
+        }
+        terminal.ends = { awaitCancellation() }
+        val started = System.nanoTime()
+        runBlocking {
+            launch {
+                delay(800)
+                probe.kill(100)
+            }
+            sequence(hangUp = shellObeys, timeoutMillis = 60_000).endOnly(listOf(t1), withinMillis = 1_000)
+        }
+        val tookMillis = (System.nanoTime() - started) / 1_000_000
+        assertEquals(listOf("hup 100", "hup 10", "await t1"), terminal.calls)
+        assertTrue("took $tookMillis ms", tookMillis in 900 until 1_600)
+        assertEquals(1, logged.size)
+        assertTrue(logged.single(), logged.single().contains("session of thread t1") && logged.single().contains("1000 ms"))
+    }
+
+    /** A thread Skein could not prove the shell of is left alone at the project's close too, and the log says why. */
+    @Test
+    fun endOnlyLogsADoubtedShellAndSignalsNothing() {
+        runBlocking { sequence().endOnly(listOf(Ending(tab("t1"), shell = null, claude = null, doubt = "its shell (pid 20) was open before"))) }
+        assertTrue(terminal.calls.isEmpty())
+        assertEquals(1, logged.size)
+        assertTrue(logged.single(), logged.single().contains("pid 20"))
     }
 }

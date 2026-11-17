@@ -7,6 +7,7 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.application.ApplicationActivationListener
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.components.BaseState
 import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.Service
@@ -21,6 +22,7 @@ import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.IdeFrame
 import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.platform.ide.progress.runWithModalProgressBlocking
 import io.github.v0rest.skein.claude.ClaudeCodeRequirement
 import io.github.v0rest.skein.claude.ClaudeEditorModeWatch
 import io.github.v0rest.skein.claude.ClaudeHome
@@ -46,6 +48,7 @@ import io.github.v0rest.skein.process.LibcHangUp
 import io.github.v0rest.skein.process.ProcessId
 import io.github.v0rest.skein.settings.SkeinSettings
 import io.github.v0rest.skein.terminal.ClaudeRename
+import io.github.v0rest.skein.terminal.CloseGate
 import io.github.v0rest.skein.terminal.TabsInView
 import io.github.v0rest.skein.terminal.TerminalAdapter
 import io.github.v0rest.skein.terminal.ThreadTerminal
@@ -55,6 +58,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -65,7 +69,9 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 
@@ -141,9 +147,12 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
     @Volatile
     private var restored = false
 
-    /** The project started closing: a worktree thread's close no longer asks anything. */
-    @Volatile
-    private var projectClosing = false
+    /**
+     * Whether the project closes - a worktree thread's close no longer asks anything then. Set before the project saves
+     * when Skein ends its threads then ([endThreadsBeforeTheProjectCloses]), else when it closes, and lifted again for a
+     * close refused after that ([watchForARefusedClose]).
+     */
+    private val projectClose = ProjectClosing()
 
     /**
      * The worktree folders a close flow or the Worktrees section's Remove is asking about or removing, so a second one
@@ -237,9 +246,13 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
         ApplicationManager.getApplication().messageBus.connect(scope).subscribe(
             ProjectCloseListener.TOPIC,
             object : ProjectCloseListener {
+                override fun projectClosingBeforeSave(project: Project) {
+                    if (project == this@ThreadService.project) endThreadsBeforeTheProjectCloses()
+                }
+
                 override fun projectClosing(project: Project) {
                     if (project != this@ThreadService.project) return
-                    projectClosing = true
+                    projectClose.platformCloses()
                     // a balloon of this project may show in another project's window, which outlives this one
                     notifier.dismissAllNow()
                 }
@@ -326,7 +339,7 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
      * The user closed thread tabs in the IDE while one of them still runs its shell
      * ([ThreadTerminalListener.closeRequested]): Skein takes that close over, ends the threads and closes all those
      * tabs itself in one batch, the one in front last, asking nothing (that close was the user's own), and returns true.
-     * A thread Skein cannot tie to its shell is closed as it always was, without a signal. False, and the tabs close at
+     * A thread whose shell Skein cannot prove is closed as it always was, without a signal. False, and the tabs close at
      * once as before, when Skein is off, the project closes or a thread is unknown. Called on the EDT; returns at once,
      * never throws.
      */
@@ -686,7 +699,94 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
         }
     }
 
-    private fun closing(): Boolean = projectClosing || project.isDisposed
+    private fun closing(): Boolean = projectClose.closing || project.isDisposed
+
+    /**
+     * The project closes - File | Close Project, its window's close, another project opened in that window, a forced
+     * close, and the IDE quitting closes each open project the same way (javap of ProjectManagerImpl, 2026.3). Its
+     * terminals go with it, and a closed terminal's pty is no longer read (IJPL-259859), so a claude that writes while it
+     * exits would hang on for good. `ProjectCloseListener.projectClosingBeforeSave` comes on the EDT once every veto was
+     * asked (`canClose`) and before the save, the cancel of the project's scope and the terminal's own
+     * `closeTerminalProcesses` at `projectClosing`. So Skein ends every thread here as a Close does, claude first and
+     * then the shell, while the terminals are open and read, and the close goes on once that is done or one deadline,
+     * [PROJECT_CLOSE_MILLIS] from here, has passed - for the look at what runs in the threads and their ending together.
+     *
+     * The flags come first - from here on the terminal closes each tab whose shell ended by itself, and such a close must
+     * not drop the thread from the state the project saves next, nor ask about a worktree. The wait runs under the
+     * platform's modal progress, as the terminal's own one does, so the IDE stays painted and the tick holding the
+     * coordinator can finish its trip to the EDT (it asks for any modality). Never vetoes and never asks - a failure, or
+     * Cancel in the progress, logs at most and the close goes on as before. Nothing on Windows, where the IDE ends claude
+     * and its shell itself, nor for a project without threads.
+     */
+    private fun endThreadsBeforeTheProjectCloses() {
+        try {
+            if (unsupported != null || !CloseGate.closeCanHang || latest.isEmpty()) return
+            projectClose.endingThreads()
+            adapter.projectCloses()
+            // off the EDT a close is not one EDT turn, and the watch could come in the middle of it
+            if (ApplicationManager.getApplication().isDispatchThread) watchForARefusedClose()
+            val deadline = System.nanoTime() + PROJECT_CLOSE_MILLIS * NANOS_PER_MILLI
+            // the look runs as soon as the coordinator is free, and what it finds counts whenever it comes before the deadline
+            val look = scope.async(confined) {
+                try {
+                    coordinator.endingsAtProjectClose(snapshot())
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    LOG.warn("Skein could not tell what runs in its threads before the project closed", e)
+                    emptyList()
+                }
+            }
+            val end: suspend () -> Unit = {
+                val endings = withTimeoutOrNull(millisLeft(deadline)) { look.await() }
+                if (endings == null) {
+                    look.cancel()
+                    LOG.info("Skein could not tell what runs in its threads in time, and hangs up nothing before the project closes")
+                } else {
+                    closeSequence.endOnly(endings, withinMillis = millisLeft(deadline))
+                }
+            }
+            // the sequence keeps to the deadline itself, so this only stops a step that would never return
+            val bounded: suspend () -> Unit = { withTimeoutOrNull(millisLeft(deadline) + PROJECT_CLOSE_MARGIN_MILLIS) { end() } }
+            if (ApplicationManager.getApplication().isDispatchThread) {
+                runWithModalProgressBlocking(project, "Ending Claude Code in Skein threads") { bounded() }
+            } else {
+                runBlocking { bounded() }
+            }
+        } catch (_: ProcessCanceledException) {
+        } catch (_: CancellationException) {
+        } catch (e: Throwable) {
+            LOG.warn("Skein could not end its threads before the project closed", e)
+        }
+    }
+
+    private fun millisLeft(deadline: Long): Long = ((deadline - System.nanoTime()) / NANOS_PER_MILLI).coerceAtLeast(0)
+
+    /**
+     * A close refused after [endThreadsBeforeTheProjectCloses] - a failed save the person does not want to close over -
+     * leaves the project open with the closing flags set, so a tab's close would end nothing there any more. Everything
+     * from that hook to the project's dispose runs on the EDT in one go (`closeProject`, and the batch of an IDE that
+     * quits), and the only events it lets through meanwhile come from modal loops - the save's progress, the terminal's
+     * own progress, a dialog - which a non-modal runnable never runs in. So this runnable comes once the close attempt
+     * is over, which is why it is queued only for a close on the EDT. A project that did close is disposed by then,
+     * which expires it, and one still open gets both flags back, its tabs that the IDE closed meanwhile counted as
+     * closed now.
+     */
+    private fun watchForARefusedClose() {
+        ApplicationManager.getApplication().invokeLater(
+            {
+                try {
+                    if (projectClose.closeAttemptOver(projectOpen = !project.isDisposed && project.isOpen)) adapter.projectStaysOpen()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    LOG.warn("Skein could not take its threads back after a refused project close", e)
+                }
+            },
+            ModalityState.nonModal(),
+            project.disposed,
+        )
+    }
 
     /** One failing step must never freeze every thread's status. */
     private suspend fun guarded(block: suspend () -> Unit) {
@@ -929,6 +1029,17 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
 
         /** How long a Close waits for a hung-up thread's terminal session to end before it closes the tab anyway. */
         private const val END_WAIT_MILLIS = 5_000L
+
+        /**
+         * How long a project's close waits for Skein in all - the look at what runs in its threads and their ending
+         * together - since the close waits for that.
+         */
+        private const val PROJECT_CLOSE_MILLIS = 2_000L
+
+        /** How long past [PROJECT_CLOSE_MILLIS] the close waits at most for a step that ought to have kept to it. */
+        private const val PROJECT_CLOSE_MARGIN_MILLIS = 300L
+
+        private const val NANOS_PER_MILLI = 1_000_000L
 
         /** How long after a rename went Skein looks for Claude Code's record of it in the transcript, and how often. */
         private const val CONFIRM_MILLIS = 60_000L
