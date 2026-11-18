@@ -1,0 +1,9 @@
+<!-- What Skein does around a branch switch made through the IDE, loaded only while the IDE's Version Control plugin is on
+     (the optional dependency in plugin.xml), so this part adds no need for that plugin of its own. The dependency names
+     the plugin, and the platform then puts the plugin's content modules - BranchChangeListener's among them - on this
+     part's class path, while the plugin verifier reads their jars. Nothing else to declare here -->
+<idea-plugin>
+    <projectListeners>
+        <listener class="io.github.v0rest.skein.threads.BranchSwitchListener" topic="com.intellij.openapi.vcs.BranchChangeListener"/>
+    </projectListeners>
+</idea-plugin>

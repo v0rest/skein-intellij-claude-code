@@ -393,6 +393,219 @@ object RemoteIde {
         )
     }
 
+    /** A new branch [branch] at the commit [repo] has checked out, left unchecked-out. */
+    fun newBranch(repo: String, branch: String) {
+        js(
+            """
+            $GIT
+            git(new java.io.File('${slashed(repo)}'), ['branch', '${slashed(branch)}']);
+            'ok'
+            """,
+        )
+    }
+
+    /** The branch [repo] has checked out, as git says. */
+    fun currentBranch(repo: String): String = js(
+        """
+        $GIT
+        gitOut(new java.io.File('${slashed(repo)}'), ['rev-parse', '--abbrev-ref', 'HEAD'])
+        """,
+    ).trim()
+
+    /** Whether project [name] has the IDE's Git as an active version control, which a checkout through the IDE needs. */
+    fun gitActive(name: String): Boolean = js(
+        """
+        $PROJECT
+        $GIT_CLASS
+        var project = projectNamed('$name');
+        '' + (project != null && gitClass(project, 'git4idea.branch.GitBrancher') != null)
+        """,
+    ) == "true"
+
+    /**
+     * Turns the IDE's "Restore workspace on branch switching" on for project [name] (`VcsConfiguration.RELOAD_CONTEXT`,
+     * on by default), so a checkout of a branch the IDE saved a workspace for restores it.
+     */
+    fun restoreWorkspaceOnBranchSwitch(name: String) {
+        js(
+            """
+            $PROJECT
+            $GIT_CLASS
+            var project = projectNamed('$name');
+            var cls = gitClass(project, 'com.intellij.openapi.vcs.VcsConfiguration');
+            var config = cls.getMethod('getInstance', com.intellij.openapi.project.Project).invoke(null, project);
+            cls.getField('RELOAD_CONTEXT').setBoolean(config, true);
+            'ok'
+            """,
+        )
+    }
+
+    /**
+     * Checks out [branch] in project [name] through the IDE's own Git (`GitBrancher`, its class loaded through the Git
+     * version control's own class loader), as the branch popup does. The IDE saves the workspace of the branch it leaves
+     * and restores the one of the branch it reaches, if it has one. Returns at once, and the checkout runs in the background.
+     */
+    fun checkoutThroughTheIde(name: String, branch: String) {
+        js(
+            """
+            $PROJECT
+            $GIT_CLASS
+            var project = projectNamed('$name');
+            var manager = gitClass(project, 'git4idea.repo.GitRepositoryManager').getMethod('getInstance', com.intellij.openapi.project.Project).invoke(null, project);
+            var brancher = gitClass(project, 'git4idea.branch.GitBrancher').getMethod('getInstance', com.intellij.openapi.project.Project).invoke(null, project);
+            brancher.checkout('${slashed(branch)}', false, manager.getRepositories(), null);
+            'ok'
+            """,
+        )
+    }
+
+    /** Whether project [name] shows the IDE's balloon that it restored the workspace of a branch. */
+    fun workspaceRestored(name: String): Boolean = js(
+        """
+        $PROJECT
+        var project = projectNamed('$name'); var out = 'false';
+        if (project != null) {
+            var ns = com.intellij.notification.NotificationsManager.getNotificationsManager().getNotificationsOfType(com.intellij.notification.Notification, project);
+            for (var j = 0; j < ns.length; j++) if (ns[j].getGroupId() == 'Branch Context group') out = 'true';
+        }
+        out
+        """,
+    ) == "true"
+
+    /** The editor files project [name] has open, each as its name and its class, "README.md{VirtualFileImpl}". */
+    fun openEditorFiles(name: String): List<String> = js(
+        """
+        $PROJECT
+        var project = projectNamed('$name'); var out = new java.util.ArrayList();
+        if (project != null) {
+            var fs = com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).getOpenFiles();
+            for (var i = 0; i < fs.length; i++) out.add('' + fs[i].getName() + '{' + fs[i].getClass().getSimpleName() + '}');
+        }
+        '' + java.lang.String.join('\n', out)
+        """,
+    ).lines().filter { it.isNotBlank() }
+
+    /** The selected editor file of project [name], as its name and its class, or "" without one. */
+    fun selectedEditorFile(name: String): String = js(
+        """
+        $PROJECT
+        var project = projectNamed('$name');
+        var f = project == null ? null : com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).getSelectedEditor();
+        f == null || f.getFile() == null ? '' : '' + f.getFile().getName() + '{' + f.getFile().getClass().getSimpleName() + '}'
+        """,
+        edt = true,
+    )
+
+    /**
+     * Announces a branch switch to project [name]'s listeners (`BranchChangeListener.branchWillChange`), the way the IDE's
+     * Git does right before a checkout, on the EDT, without checking anything out - Skein marks its thread tabs then. The
+     * topic's class is loaded through the Git version control's class loader, as in [checkoutThroughTheIde].
+     */
+    fun announceBranchSwitch(name: String, branch: String) {
+        js(
+            """
+            $PROJECT
+            $GIT_CLASS
+            var project = projectNamed('$name');
+            var topic = gitClass(project, 'com.intellij.openapi.vcs.BranchChangeListener').getField('VCS_BRANCH_CHANGED').get(null);
+            com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater(new java.lang.Runnable({
+                run: function() { project.getMessageBus().syncPublisher(topic).branchWillChange('${slashed(branch)}'); }
+            }));
+            'ok'
+            """,
+        )
+    }
+
+    /**
+     * Announces the end of a branch switch to project [name]'s listeners (`BranchChangeListener.branchHasChanged`), the
+     * way the IDE's Git does after a checkout, on the EDT, without checking anything out. For a [branch] the IDE saved no
+     * workspace for, nothing is restored.
+     */
+    fun announceBranchSwitchOver(name: String, branch: String) {
+        js(
+            """
+            $PROJECT
+            $GIT_CLASS
+            var project = projectNamed('$name');
+            var topic = gitClass(project, 'com.intellij.openapi.vcs.BranchChangeListener').getField('VCS_BRANCH_CHANGED').get(null);
+            com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater(new java.lang.Runnable({
+                run: function() { project.getMessageBus().syncPublisher(topic).branchHasChanged('${slashed(branch)}'); }
+            }));
+            'ok'
+            """,
+        )
+    }
+
+    /**
+     * Whether the thread's terminal tab in project [name]'s editor carries the IDE's "closes to reopen" mark
+     * (`FileEditorManagerKeys.CLOSING_TO_REOPEN`), which Skein puts there when a branch switch is announced.
+     */
+    fun threadTabMarkedToReopen(name: String): Boolean = js(
+        """
+        $PROJECT
+        var project = projectNamed('$name'); var out = 'false';
+        if (project != null) {
+            var fs = com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).getOpenFiles();
+            for (var i = 0; i < fs.length; i++) {
+                if (fs[i].getClass().getSimpleName() == 'TerminalViewVirtualFile' &&
+                    fs[i].getUserData(com.intellij.openapi.fileEditor.FileEditorManagerKeys.CLOSING_TO_REOPEN) == java.lang.Boolean.TRUE) out = 'true';
+            }
+        }
+        out
+        """,
+        edt = true,
+    ) == "true"
+
+    /**
+     * Closes the thread's terminal tab in project [name]'s editor the way a middle click or an Alt+click on a tab does,
+     * `closeFile(file, window)` without the close checks, through invokeLater for the write-intent lock.
+     */
+    fun closeTheThreadsTabWithoutChecks(name: String) {
+        js(
+            """
+            $PROJECT
+            var project = projectNamed('$name');
+            var editors = com.intellij.openapi.fileEditor.ex.FileEditorManagerEx.getInstanceEx(project);
+            com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater(new java.lang.Runnable({
+                run: function() {
+                    var fs = editors.getOpenFiles();
+                    for (var i = 0; i < fs.length; i++) {
+                        if (fs[i].getClass().getSimpleName() != 'TerminalViewVirtualFile') continue;
+                        var ws = editors.getWindows();
+                        for (var j = 0; j < ws.length; j++) if (ws[j].isFileOpen(fs[i])) { editors.closeFile(fs[i], ws[j]); return; }
+                    }
+                }
+            }));
+            'ok'
+            """,
+        )
+    }
+
+    /** Whether project [name] has a thread's terminal open in the editor area. */
+    fun terminalInTheEditor(name: String): Boolean = openEditorFiles(name).any { it.contains("{TerminalViewVirtualFile}") }
+
+    /**
+     * Clears project [name]'s workspace the way the restore balloon's Rollback and the Tasks plugin's Load Context do,
+     * `WorkingContextManager.clearContext()`, which closes every editor without asking. Its class is loaded through the
+     * class loader of one of the Tasks plugin's own context providers, and it runs through invokeLater for the
+     * write-intent lock, as in [close].
+     */
+    fun clearWorkspace(name: String) {
+        js(
+            """
+            $PROJECT
+            var project = projectNamed('$name');
+            var providers = com.intellij.openapi.extensions.ExtensionPointName.create('com.intellij.tasks.contextProvider').getExtensionList();
+            var cls = java.lang.Class.forName('com.intellij.tasks.context.WorkingContextManager', true, providers.get(0).getClass().getClassLoader());
+            var manager = cls.getMethod('getInstance', com.intellij.openapi.project.Project).invoke(null, project);
+            com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater(new java.lang.Runnable({
+                run: function() { manager.clearContext(); }
+            }));
+            'ok'
+            """,
+        )
+    }
+
     /** `git status --porcelain` in [repo], `--ignored` left out. */
     fun gitStatus(repo: String): String = js(
         """
@@ -451,6 +664,29 @@ object RemoteIde {
 
     /** [path] as a JavaScript string literal's content: forward slashes, and a quote or backslash escaped. */
     private fun slashed(path: String) = path.replace('\\', '/').replace("'", "\\'")
+
+    /** The open project named by its argument, or null. */
+    private const val PROJECT = """
+        function projectNamed(name) {
+            var ps = com.intellij.openapi.project.ProjectManager.getInstance().getOpenProjects();
+            for (var i = 0; i < ps.length; i++) if (ps[i].getName() == name) return ps[i];
+            return null;
+        }
+    """
+
+    /**
+     * A class of the IDE's Git plugin or of what it depends on, loaded through the class loader of the project's active
+     * Git version control, since the robot's own scripts do not see that plugin, and null while Git is not active there.
+     */
+    private const val GIT_CLASS = """
+        function gitClass(project, name) {
+            var vcss = com.intellij.openapi.vcs.ProjectLevelVcsManager.getInstance(project).getAllActiveVcss();
+            for (var i = 0; i < vcss.length; i++) {
+                if (('' + vcss[i].getClass().getName()).indexOf('git4idea') >= 0) return java.lang.Class.forName(name, true, vcss[i].getClass().getClassLoader());
+            }
+            return null;
+        }
+    """
 
     /** git on the IDE's machine, with a throwaway identity for the commits a test makes. */
     private const val GIT = """

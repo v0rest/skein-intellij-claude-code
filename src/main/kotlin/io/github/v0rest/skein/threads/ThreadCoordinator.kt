@@ -100,6 +100,13 @@ class ThreadCoordinator(
      * a launch past its timeout, and blocking, since it reads Claude Code's config.
      */
     private val trust: (folder: String) -> FolderTrust = { FolderTrust.UNKNOWN },
+    /**
+     * Whether a session has a conversation on disk that `claude --resume` can go on with
+     * ([io.github.v0rest.skein.claude.Transcripts.resumable]), asked with the thread's folder, the cwd its claude reported
+     * and the session id. Asked only when a thread comes back after a lost tab ([onTabLost]), and blocking, since it reads
+     * the transcript's head.
+     */
+    private val conversation: (folder: String, sessionCwd: String?, sessionId: String) -> Boolean = { _, _, _ -> true },
     private val ids: () -> String = { UUID.randomUUID().toString() },
 ) {
     private class Record(
@@ -151,6 +158,15 @@ class ThreadCoordinator(
         /** Waiting for the launch slot before it can be typed. */
         var queued: String? = null
         var queuedResumeId: String? = null
+
+        /**
+         * How the thread comes back once the IDE has closed its tab past Skein's close check ([TabLoss.resumesNow]),
+         * decided before Skein hung its claude up ([endingsBeforeLoss]), and null while no such close is under way.
+         */
+        var resumeAfterLoss: Boolean? = null
+
+        /** The thread came back after such a close while its session still ran in the old tab's claude, and resumes once that is gone. */
+        var resumeWhenFree = false
 
         fun toThread() = SkeinThread(id, folder, sessionId, name ?: worktree ?: folderName(folder), state, stateSince, createdAt, anchor, pinned, color, sessionCwd, worktree, base)
     }
@@ -307,7 +323,13 @@ class ThreadCoordinator(
             if (elsewhere != null) {
                 setState(record, ThreadState.RunningElsewhere(elsewhere.pid), now)
             } else if (record.state is ThreadState.RunningElsewhere) {
-                setState(record, ThreadState.NotStarted, now)
+                if (record.resumeWhenFree) {
+                    // the old tab's claude is gone now, so the thread goes on in its new tab ([onTabLost])
+                    record.resumeWhenFree = false
+                    resumeAfterLoss(record, now)
+                } else {
+                    setState(record, ThreadState.NotStarted, now)
+                }
             }
         }
         for (record in records.values) {
@@ -356,6 +378,17 @@ class ThreadCoordinator(
             events.missingStatusFiles()
         }
     }
+
+    /**
+     * [conversation], with a failure read as a conversation there - a transcript Skein could not read may well hold one,
+     * and starting afresh would leave it behind, while a wrong Resume only has claude say it found none.
+     */
+    private fun conversationQuietly(record: Record, sessionId: String): Boolean =
+        try {
+            conversation(record.folder, record.sessionCwd, sessionId)
+        } catch (e: RuntimeException) {
+            true
+        }
 
     /** [trust], with a failure read as a trust Skein cannot tell. */
     private fun trustQuietly(folder: String): FolderTrust =
@@ -535,6 +568,77 @@ class ThreadCoordinator(
     fun endingsAtProjectClose(snapshot: SessionSnapshot): List<Ending> {
         val sessions = snapshot.sessions.values
         return records.values.map { endingQuietly(it, sessions) }
+    }
+
+    /**
+     * What to end in each of [threadIds] before the IDE closes their tabs past Skein's close check
+     * ([io.github.v0rest.skein.terminal.ThreadTerminalListener.tabClosingPastCheck]), asking nothing, as for a project
+     * close, and how each comes back once its tab is gone ([onTabLost]) - decided now, while claude still runs, since the
+     * hang-up turns the thread exited before the tab goes. Closes and changes nothing else.
+     */
+    fun endingsBeforeLoss(threadIds: Collection<String>, snapshot: SessionSnapshot): List<Ending> {
+        val sessions = snapshot.sessions.values
+        return threadIds.mapNotNull { records[it] }.map { record ->
+            record.resumeAfterLoss = TabLoss.resumesNow(record.state)
+            endingQuietly(record, sessions)
+        }
+    }
+
+    /**
+     * The IDE closed thread [threadId]'s tab past Skein's close check and its terminal is gone (a Rollback, Load Context,
+     * a restore whose reopen mark the IDE did not honour). The thread stays, with its id, name, pin, colour, worktree and
+     * session, in a new tab. A thread whose claude ran in the old one ([TabLoss.resumesNow], decided before the hang-up
+     * where Skein ended it) has its shell started at once and its session resumed when it has a conversation to go on
+     * with ([resumeAfterLoss]), so the conversation goes on, and its
+     * tab is selected when [select] says the old one was the selected editor. Any other comes back as an IDE restart
+     * brings it back, not shown, its claude resumed once the user opens it. A claude of that session still running (the
+     * old tab's, which the IDE ends a moment later on Windows) is waited for, as running elsewhere, and the resume
+     * follows once it is gone. No close is reported, so nothing asks about the worktree.
+     */
+    fun onTabLost(threadId: String, select: Boolean, snapshot: SessionSnapshot, now: Long) {
+        val old = records[threadId] ?: return
+        val resume = old.resumeAfterLoss ?: TabLoss.resumesNow(old.state)
+        // the old tab's launch and shell are no one's any more
+        slot.release(old.id)
+        old.anchor?.let { slot.releaseAnchor(this, it) }
+        val preexisting = mapper.ideChildren() // before the new tab exists, so its own shell is not among them
+        val baseline = mapper.ideChildList()
+        val tab = terminal.open(threadId, old.folder, old.toThread().name, focus = resume && select, start = resume)
+        val record = Record(threadId, old.folder, tab, createdAt = old.createdAt, preexisting = preexisting, baseline = baseline, baselineFinal = resume)
+        record.sessionId = old.sessionId
+        record.sessionCwd = old.sessionCwd
+        record.name = old.name
+        record.pinned = old.pinned
+        record.color = old.color
+        record.worktree = old.worktree
+        record.base = old.base
+        record.state = old.state
+        record.stateSince = old.stateSince
+        records[threadId] = record // the same key keeps its place in the map
+        // a status file of the old tab's claude may still be in the snapshot after that claude is gone
+        val elsewhere = liveElsewhere(record, snapshot)?.takeIf { mapper.isAlive(it.pid) }
+        when {
+            elsewhere != null -> {
+                setState(record, ThreadState.RunningElsewhere(elsewhere.pid), now)
+                record.resumeWhenFree = resume
+            }
+            resume -> resumeAfterLoss(record, now)
+            else -> setState(record, ThreadState.NotStarted, now)
+        }
+    }
+
+    /**
+     * The launch of a thread that came back in a new tab ([onTabLost]) - a Resume of its session when that has a
+     * conversation on disk ([conversation]), else what a thread without a session starts, a plain `claude` or, for a
+     * worktree thread, `claude --worktree`. A claude that never had a turn leaves no conversation, and `claude --resume`
+     * would only say it found none. The thread keeps its session id until the new claude's status file brings the new
+     * one, so its name follows it there.
+     */
+    private fun resumeAfterLoss(record: Record, now: Long) {
+        val sessionId = record.sessionId?.takeIf(ClaudeCommand::isSessionId)?.takeIf { conversationQuietly(record, it) }
+        val worktree = record.worktree
+        val command = if (sessionId == null && worktree != null) ClaudeCommand.worktree(worktree) else ClaudeCommand.forSession(sessionId)
+        requestLaunch(record, command, resumeId = sessionId, now = now)
     }
 
     /** [ending], where a failure costs only this thread its hangup, with a doubt for the log, and never the whole close. */

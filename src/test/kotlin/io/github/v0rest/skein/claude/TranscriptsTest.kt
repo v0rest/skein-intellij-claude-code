@@ -19,6 +19,23 @@ class TranscriptsTest {
         return file
     }
 
+    /**
+     * A session is resumable when its transcript records where it ran, as the History lists sessions. A claude that never
+     * had a turn leaves no transcript, or one with nothing but bookkeeping, and `claude --resume` would find no
+     * conversation there.
+     */
+    @Test
+    fun onlyATranscriptWithAConversationIsResumable() {
+        val home = tempHome()
+        assertEquals(false, Transcripts.resumable(home, "/w/acme", sessionCwd = null, sessionId = session))
+        val file = transcriptFor(home, "/w/acme")
+        assertEquals(false, Transcripts.resumable(home, "/w/acme", sessionCwd = null, sessionId = session))
+        Files.writeString(file, "{\"type\":\"file-history-snapshot\",\"messageId\":\"m1\"}\n")
+        assertEquals(false, Transcripts.resumable(home, "/w/acme", sessionCwd = null, sessionId = session))
+        Files.writeString(file, "{\"type\":\"user\",\"cwd\":\"/w/acme\",\"sessionId\":\"$session\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n")
+        assertEquals(true, Transcripts.resumable(home, "/w/acme", sessionCwd = null, sessionId = session))
+    }
+
     @Test
     fun pathFollowsTheFolderSlug() {
         val home = ClaudeHome(Path.of("/h/.claude"))

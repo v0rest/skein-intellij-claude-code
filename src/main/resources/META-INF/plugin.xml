@@ -36,6 +36,9 @@
 
     <depends>com.intellij.modules.platform</depends>
     <depends>org.jetbrains.plugins.terminal</depends>
+    <!-- the plugin id, never the alias com.intellij.modules.vcs - the platform turns a depends on that alias, optional or
+         not, into hard dependencies on the VCS modules, and Version Control would become a need of all of Skein -->
+    <depends optional="true" config-file="io.github.v0rest.skein-branches.xml">com.intellij.platform.vcs</depends>
     <dependencies>
         <plugin id="com.intellij.modules.jna"/>
         <module name="intellij.libraries.jna"/>

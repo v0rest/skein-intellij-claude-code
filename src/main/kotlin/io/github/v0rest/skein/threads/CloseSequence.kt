@@ -37,7 +37,8 @@ data class Ending(val tab: ThreadTab, val shell: ProcessId?, val claude: Process
  * process Skein recorded (same pid, same start instant, still in the tab's tree): a pid freed by an exited process may
  * belong to anyone by now. IDE-free; runs off the EDT and off the coordinator's confined dispatcher.
  *
- * A project that closes uses [endOnly], with the short window its close leaves, since the close waits for it.
+ * A project that closes uses [endOnly], with the short window its close leaves, since the close waits for it, and so do
+ * tabs the IDE closes past Skein's close check ([endBeforeTheIdeCloses]).
  */
 class CloseSequence(
     private val hangUp: HangUp,
@@ -63,18 +64,28 @@ class CloseSequence(
         endAll(closing, Then.PROJECT_CLOSES, withinMillis)
     }
 
-    /** What comes after the ending, in words for the log. */
-    private enum class Then(val words: String) {
-        CLOSE_TABS("closes the tab anyway"),
-        PROJECT_CLOSES("lets the project close anyway"),
+    /**
+     * Ends the threads of [closing] as [endOnly] does, within [withinMillis], for tabs the IDE is closing past Skein's
+     * close check ([io.github.v0rest.skein.terminal.ThreadTerminalListener.tabClosingPastCheck]), which the IDE closes
+     * itself once this returns. Never throws but for cancellation.
+     */
+    suspend fun endBeforeTheIdeCloses(closing: List<Ending>, withinMillis: Long) {
+        if (closing.isEmpty()) return
+        endAll(closing, Then.IDE_CLOSES_TABS, withinMillis)
+    }
+
+    /** What comes after the ending, in words for the log, and after a doubt that hangs up nothing. */
+    private enum class Then(val words: String, val asBefore: String) {
+        CLOSE_TABS("closes the tab anyway", "its tab closes as before"),
+        PROJECT_CLOSES("lets the project close anyway", "the project closes as before"),
+        IDE_CLOSES_TABS("lets the IDE close the tab anyway", "the IDE closes its tab as before"),
     }
 
     private suspend fun endAll(closing: List<Ending>, then: Then, withinMillis: Long) {
         val deadline = System.nanoTime() + withinMillis * NANOS_PER_MILLI
         for (ending in closing) {
             if (ending.shell == null && ending.doubt != null) {
-                val after = if (then == Then.CLOSE_TABS) "its tab closes as before" else "the project closes as before"
-                log("Skein hangs up nothing in thread ${ending.tab.id}, ${ending.doubt}; $after")
+                log("Skein hangs up nothing in thread ${ending.tab.id}, ${ending.doubt}; ${then.asBefore}")
             }
         }
         val known = closing.filter { it.shell != null }

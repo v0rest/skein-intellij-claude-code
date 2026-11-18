@@ -2,6 +2,7 @@ package io.github.v0rest.skein
 
 import io.github.v0rest.skein.testutil.SourceRules
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.file.Path
@@ -258,6 +259,51 @@ class ArchitectureTest {
         assertEquals(1, flow.count { it.contains("deleteLeftover(") })
         assertEquals(1, flow.count { it.contains("LeftoverWorktreeFolder::delete") })
         assertEquals(emptyList<String>(), filesContaining("::deleteLeftover"))
+    }
+
+    /**
+     * The IDE's "closes to reopen" mark lives in `FileEditorManagerKeys`, in the platform's implementation module, where
+     * several keys are `@ApiStatus.Internal`, so Skein touches it in ReopenMark alone, by the field itself and never looked up
+     * by its name, so the dependency stays in sight and a platform change breaks the build, not a thread.
+     */
+    @Test
+    fun theIdesReopenMarkIsTouchedInReopenMarkAlone() {
+        val reopenMark = listOf("io/github/v0rest/skein/terminal/ReopenMark.kt")
+        assertEquals(reopenMark, filesContaining("FileEditorManagerKeys"))
+        assertEquals(reopenMark, filesContaining("CLOSING_TO_REOPEN"))
+        assertEquals(emptyList<String>(), filesContaining("findKeyByName"))
+    }
+
+    /**
+     * Version Control is a bundled plugin a user can turn off, so Skein asks for it in the optional part alone. Its classes
+     * are touched in BranchSwitchListener alone, which only the optional descriptor registers, and that descriptor hangs on
+     * the plugin id - a depends on the alias com.intellij.modules.vcs, optional or not, the platform turns into a hard need
+     * of the whole plugin (javap of 2026.3, ProductPluginInitContext). IntelliJ IDEA 2026.3 still keeps every plugin from
+     * outside JetBrains off while Version Control is off, through its collaboration tools module, Skein 1.5.1 too - nothing
+     * a descriptor can change.
+     */
+    @Test
+    fun versionControlStaysInTheOptionalPart() {
+        val listener = listOf("io/github/v0rest/skein/threads/BranchSwitchListener.kt")
+        assertEquals(listener, filesContaining("com.intellij.openapi.vcs", "git4idea", "com.intellij.dvcs", "com.intellij.vcs."))
+        // no code that always loads names the listener, the optional descriptor alone registers it
+        assertEquals(listener, filesContaining("BranchSwitchListener"))
+        val descriptor = Path.of("src/main/resources/META-INF/plugin.xml").toFile().readText()
+        assertTrue(descriptor.contains("<depends optional=\"true\" config-file=\"io.github.v0rest.skein-branches.xml\">com.intellij.platform.vcs</depends>"))
+        // no VCS class or alias, and no hard dependency on the plugin or its module, in what always loads
+        val alwaysLoaded = listOf(
+            "com.intellij.openapi.vcs", "BranchSwitchListener", ">com.intellij.modules.vcs<", "id=\"com.intellij.modules.vcs\"",
+            "<depends>com.intellij.platform.vcs", "<plugin id=\"com.intellij.platform.vcs\"", "<module name=\"intellij.platform.vcs",
+        )
+        for (word in alwaysLoaded) {
+            assertFalse(word, descriptor.contains(word))
+        }
+        val optional = Path.of("src/main/resources/META-INF/io.github.v0rest.skein-branches.xml").toFile().readText()
+        assertTrue(optional.contains("<listener class=\"io.github.v0rest.skein.threads.BranchSwitchListener\" topic=\"com.intellij.openapi.vcs.BranchChangeListener\"/>"))
+        // the dependency in plugin.xml already names the plugin, the optional part declares no other
+        for (word in listOf("<depends", "<dependencies", "com.intellij.modules.vcs")) {
+            assertFalse(word, optional.contains(word))
+        }
     }
 
     @Test

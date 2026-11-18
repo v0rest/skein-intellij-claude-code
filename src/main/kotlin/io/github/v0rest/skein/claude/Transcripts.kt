@@ -32,6 +32,22 @@ object Transcripts {
         return if (size > TAIL_BYTES) lines.drop(1) else lines
     }
 
+    /**
+     * Whether session [sessionId] has a conversation on disk that `claude --resume` can go on with - decided the way the
+     * History lists a session ([HistoryScanner]), its transcript there and recording the folder it ran in, which only its
+     * messages carry. A claude that never had a turn has none, and `claude --resume` would only answer that it found no
+     * conversation. Bounded reads, blocking.
+     */
+    fun resumable(home: ClaudeHome, folder: String, sessionCwd: String?, sessionId: String): Boolean {
+        val file = path(home, folder, sessionCwd, sessionId)
+        val stamp = home.stamp(file) ?: return false
+        val headBytes = home.readHead(file, HistoryScanner.CWD_HEAD_BYTES) ?: return false
+        val head = SessionTitles.linesOf(headBytes, dropLast = stamp.size > HistoryScanner.CWD_HEAD_BYTES)
+        if (TranscriptCwd.fromLines(head) != null || TranscriptCwd.fromChunk(String(headBytes, Charsets.UTF_8)) != null) return true
+        // a first entry longer than the head - the History takes the cwd from the tail then
+        return TranscriptCwd.fromTail(tailLines(home, folder, sessionCwd, sessionId), file.parent.fileName.toString()) != null
+    }
+
     /** The folder with symlinks resolved, as `getcwd()` reports it; the folder itself when it does not exist or is odd. */
     private fun resolved(folder: String): String = PhysicalPath.of(folder)
 }

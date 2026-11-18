@@ -436,6 +436,12 @@ class ThreadCoordinatorTest {
                 override fun tabSelected(tabId: String) = coordinator.onTabSelected(tabId, snap(), now = 4_000)
 
                 override fun closeRequested(tabIds: List<String>): Boolean = false
+
+                override fun tabsClosingPastCheck(tabIds: List<String>, withinMillis: Long) = Unit
+
+                override fun tabsLostPastCheck(tabIds: List<String>): Boolean = false
+
+                override fun tabLost(tabId: String, select: Boolean) = Unit
             },
         )
         val typed = terminal.typed.toList()

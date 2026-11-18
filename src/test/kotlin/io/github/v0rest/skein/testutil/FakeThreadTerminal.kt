@@ -18,8 +18,11 @@ import io.github.v0rest.skein.terminal.ThreadTerminalListener
  * ([OwnSelections], as the real terminal keeps them) say it was not the user.
  */
 class FakeThreadTerminal : ThreadTerminal {
-    /** A tab; [shellsAtCommand] is what [FakeThreadTerminal.shellsNow] gave when a command was typed into it. */
-    class Tab(override val id: String, override val folder: String, val name: String = "") : ThreadTab {
+    /**
+     * A tab, and [shellsAtCommand] is what [FakeThreadTerminal.shellsNow] gave when a command was typed into it. [focus] and
+     * [start] are what the coordinator asked for when it opened the tab.
+     */
+    class Tab(override val id: String, override val folder: String, val name: String = "", val focus: Boolean = true, val start: Boolean = true) : ThreadTab {
         override var shellsAtCommand: ShellsAtCommand = ShellsAtCommand.NoCommandYet
     }
 
@@ -65,11 +68,11 @@ class FakeThreadTerminal : ThreadTerminal {
     /** Skein's own selections, with a clock that stands still, so only the guard itself decides. */
     val own = OwnSelections(quietMillis = 1_000) { 0L }
 
-    override fun open(threadId: String, folder: String, tabName: String, focus: Boolean): ThreadTab =
-        Tab(threadId, folder, tabName).also {
+    override fun open(threadId: String, folder: String, tabName: String, focus: Boolean, start: Boolean): ThreadTab =
+        Tab(threadId, folder, tabName, focus, start).also {
             opened += it
             tabRow += threadId
-            if (lazyShells && !focus) notStarted += threadId else onOpen(it)
+            if (lazyShells && !start) notStarted += threadId else onOpen(it)
         }
 
     /** The tab comes into view; a tab whose session has not started starts its shell now. */
