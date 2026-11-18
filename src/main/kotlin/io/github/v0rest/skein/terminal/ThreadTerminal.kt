@@ -144,15 +144,17 @@ interface ThreadTerminalListener {
     fun closeRequested(tabIds: List<String>): Boolean
 
     /**
-     * The IDE is clearing the editor area past Skein's close check and the thread tabs [tabIds] go without Skein's reopen
-     * mark - a restore of a branch's workspace that came without the mark, its Rollback, the Tasks plugin's Load Context,
-     * another plugin closing every editor ([TabRestore.Close.END_THEN_RESUME], [TabRestore.endTogether]). Their terminals
-     * go right after this returns, so the listener ends what runs in them now, all together under one deadline of
-     * [withinMillis], while the tabs are open and read, and decides how each thread comes back ([tabLost]). [withinMillis]
-     * is 0 when no terminal among them runs, and then nothing is waited for. Called on the EDT inside the IDE's close,
-     * blocks no longer than that, and never throws.
+     * The IDE closes the thread tabs [tabIds] past Skein's close check without Skein's reopen mark, and their terminals go
+     * right after this returns, so the listener ends what runs in them now, all together under one deadline of
+     * [withinMillis], while the tabs are open and read. When [comesBack], the IDE is clearing the editor area - a restore
+     * of a branch's workspace that came without the mark, its Rollback, the Tasks plugin's Load Context, another plugin
+     * closing every editor ([TabRestore.Close.END_THEN_RESUME], [TabRestore.endTogether]) - and the listener decides how
+     * each thread comes back ([tabLost]). Otherwise it is one running tab the user closed on its own past the check, a
+     * middle click or a Shift+click ([TabRestore.Close.END_THEN_CLOSE]), and the thread goes once its tab is gone, as
+     * after Close ([tabClosed]). [withinMillis] is 0 when no terminal among them runs, and then nothing is waited for.
+     * Called on the EDT inside the IDE's close, blocks no longer than that, and never throws.
      */
-    fun tabsClosingPastCheck(tabIds: List<String>, withinMillis: Long)
+    fun tabsClosingPastCheck(tabIds: List<String>, withinMillis: Long, comesBack: Boolean)
 
     /**
      * The IDE's restore closed the thread tabs [tabIds] one by one past Skein's close check while they carried its reopen

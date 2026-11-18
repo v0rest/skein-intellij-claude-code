@@ -150,9 +150,12 @@ import javax.swing.SwingUtilities
  *   `FileEditorManagerListener.Before.beforeFileClosed` (no ApiStatus) inside a write-intent read action, removes the tab,
  *   disposes the file's editors (the terminal's editor disposes the tab's content there unless the file carries the
  *   reopen mark) and then publishes `fileClosed`. So [beforeClose] is the last moment the terminal is open and read, and
- *   decides there. `BranchChangeListener` (no ApiStatus) tells [branchWillChange] and [branchHasChanged], and
- *   `FileEditorOpenRequest.withSelectAsCurrent` (Experimental, like the rest of that class) reopens a tab without
- *   selecting it.
+ *   decides there. A middle click or a Shift+click on an editor tab, and a Shift+Alt+click that closes the window's
+ *   other tabs (`TabMouseListener.mouseReleased` -> `FileEditorManagerImpl.closeFile(file, window)`), the Switcher's close and a floating editor window's own close ask
+ *   no check either and go through the same `EditorWindow.closeFile`, one file with its window still there, so
+ *   [beforeClose] meets them too (javap 2026-11-18). `BranchChangeListener` (no ApiStatus) tells [branchWillChange]
+ *   and [branchHasChanged], and `FileEditorOpenRequest.withSelectAsCurrent` (Experimental, like the rest of that class)
+ *   reopens a tab without selecting it.
  */
 class TerminalAdapter(
     private val project: Project,
@@ -646,9 +649,10 @@ class TerminalAdapter(
 
     /**
      * Reports the thread closed once [content] is disposed, wherever the tab is then: that is when the IDE closes a
-     * terminal tab for good. Not while the project closes, as before. A tab the IDE closed past Skein's close check
-     * ([Handle.pastCheck]) is no closed thread - it is reported lost, and the thread comes back in a new tab
-     * ([TabRestore.gone]). EDT (the callback runs where the content is disposed).
+     * terminal tab for good. Not while the project closes, as before. A tab a clear took past Skein's close check
+     * ([Handle.pastCheck]) is no closed thread - it is reported lost, and the thread comes back in a new tab, while one
+     * the user closed on its own past the check is a closed thread like any other ([TabRestore.gone]). EDT (the callback
+     * runs where the content is disposed).
      */
     private fun watchDisposal(handle: Handle, content: Content) {
         val gone = {
@@ -1208,15 +1212,15 @@ class TerminalAdapter(
 
     /**
      * The turn of [over] is done. A tab Skein ended with the clear but that the clear did not take after all (another
-     * plugin closing only the active editor window) stays where it is and keeps no past-check close, so a later close of
-     * it is an ordinary one. EDT.
+     * plugin closing only the active editor window), or a single close that did not happen, stays where it is and keeps
+     * no past-check close, so a later close of it is an ordinary one. EDT.
      */
     private fun burstOver(over: Burst) {
         if (burst === over) burst = null
         for (id in over.ended) {
             val handle = handles[id] ?: continue
             val file = handle.file
-            if (!handle.disposed && handle.pastCheck == TabRestore.Close.END_THEN_RESUME && file != null && FileEditorManager.getInstance(project).isFileOpen(file)) {
+            if (!handle.disposed && TabRestore.forgottenIfStillOpen(handle.pastCheck) && file != null && FileEditorManager.getInstance(project).isFileOpen(file)) {
                 handle.pastCheck = null
                 handle.wasInFront = false
             }
@@ -1228,11 +1232,13 @@ class TerminalAdapter(
      * A clear of the editor area with Skein's reopen mark is let through, and its tab opens again after ([afterClose]). A
      * marked tab closed on its own keeps its terminal until a few seconds tell a drag from a real close ([afterClose]). A
      * clear without the mark gets the claude of every thread tab it takes ended now, together and while the tabs are open
-     * and read, and each thread back as a Resume once its tab is gone ([endWithTheClear], [watchDisposal]). Anything else
-     * goes as it always did. Any answer that does not keep the mark takes it off first, so the terminal goes the way the
-     * answer says. EDT, inside the IDE's close, a write-intent read action. Whether the editor area is being cleared is
-     * told by the editor windows, which `closeAllFiles` takes down before it closes their files, while a single close
-     * leaves the file in its window until after this.
+     * and read, and each thread back as a Resume once its tab is gone ([endWithTheClear], [watchDisposal]). A running tab
+     * closed on its own without the mark - a middle click or a Shift+click on it - gets its claude ended now the same way,
+     * and the thread goes as after Close ([endBeforeASingleClose]). What is ended now is [TabRestore.endNow]'s to say.
+     * Anything else goes as it always did. Any answer that does not keep the mark takes it off first, so the terminal goes
+     * the way the answer says. EDT, inside the IDE's close, a write-intent read action. Whether the editor area is being
+     * cleared is told by the editor windows, which `closeAllFiles` takes down before it closes their files, while a single
+     * close leaves the file in its window until after this.
      */
     private fun beforeClose(file: VirtualFile) {
         if (handles.isEmpty()) return
@@ -1247,13 +1253,19 @@ class TerminalAdapter(
             ending = handle.endingSince != null,
             closing = projectClosing || appClosing || project.isDisposed,
             wholeArea = burst.wholeArea,
+            running = handle.session?.value == TerminalViewSessionState.Running,
+            closeCanHang = CloseGate.closeCanHang,
         )
         if (!TabRestore.keepsMark(close)) liftMark(handle)
         // a past-check close of an earlier turn that never came is not this one's
         handle.pastCheck = close.takeIf { it != TabRestore.Close.LET_GO }
         if (close == TabRestore.Close.LET_GO) return
         handle.wasInFront = burst.front == handle.id
-        if (close == TabRestore.Close.END_THEN_RESUME && handle.id !in burst.ended) endWithTheClear(burst, handle)
+        when (TabRestore.endNow(close, endedThisTurn = handle.id in burst.ended)) {
+            TabRestore.EndNow.WITH_THE_CLEAR -> endWithTheClear(burst, handle)
+            TabRestore.EndNow.THIS_TAB -> endBeforeASingleClose(burst, handle)
+            TabRestore.EndNow.NOTHING -> Unit
+        }
     }
 
     /** Whether an editor window lists [file] now - `closeAllFiles` has taken the windows down before its files close. EDT. */
@@ -1299,7 +1311,27 @@ class TerminalAdapter(
         // a clear of restored threads nobody opened has nothing to end, so nothing to wait for either
         val anyRunning = ending.any { it.session?.value == TerminalViewSessionState.Running }
         LOG.info("The IDE clears the editor area past Skein's close check; Skein ends the claude of thread(s) ${ids.joinToString(", ")} first and opens them again as a Resume")
-        listener?.tabsClosingPastCheck(ids, withinMillis = if (anyRunning) PAST_CHECK_END_MILLIS else 0)
+        tellPastCheck(TabRestore.PastCheckEnding.ofTheClear(ids, anyRunning))
+    }
+
+    /**
+     * One running thread tab the IDE closes on its own past Skein's close check, unmarked ([TabRestore.Close.END_THEN_CLOSE])
+     * - a middle click or a Shift+click on it, a Shift+Alt+click on another tab of its window, the Switcher, a floating
+     * editor window's close, a plugin. Its claude is ended now, then its shell, under the same short deadline a clear has,
+     * while the tab is still open and read. The close then goes on, and the disposed tab reports the thread closed
+     * ([watchDisposal]), worktree question and all. Each such close has a deadline of its own, so several closed in one go
+     * (a Shift+Alt+click, a floating editor window's close, a plugin's loop) wait for them one after another. EDT, inside
+     * the close.
+     */
+    private fun endBeforeASingleClose(burst: Burst, closing: Handle) {
+        burst.ended += closing.id
+        LOG.info("The IDE closes the tab of thread ${closing.id} on its own past Skein's close check; Skein ends its claude first, as Close does")
+        tellPastCheck(TabRestore.PastCheckEnding.ofASingleClose(closing.id))
+    }
+
+    /** Hands [ending] to the listener, which ends what runs in those tabs while the IDE's close waits. EDT, inside the close. */
+    private fun tellPastCheck(ending: TabRestore.PastCheckEnding) {
+        listener?.tabsClosingPastCheck(ending.ids, ending.withinMillis, ending.comesBack)
     }
 
     /** The tabs the IDE closed with Skein's reopen mark, their terminals alive, waiting to open again ([reopenAll]). EDT only. */
@@ -1328,8 +1360,8 @@ class TerminalAdapter(
                     handle.id,
                     changedBefore = TabRestore.changedBefore(handle.markedAt, lastBranchChangeAt),
                     turn = turn,
-                    // a middle click or an Alt+click on the tab, or a shortcut - the user's own close, whatever the branch
-                    // change says
+                    // a middle click, a Shift+click or a Shift+Alt+click on the tabs, or a shortcut - the user's own close,
+                    // whatever the branch change says
                     byUserInput = TabRestore.closedByUsersInput(mouse = turn is MouseEvent, key = turn is KeyEvent, id = turn?.id ?: 0),
                 )
                 scope.launch(Dispatchers.EDT + ModalityState.any().asContextElement()) {
@@ -1372,9 +1404,9 @@ class TerminalAdapter(
      * A marked tab closed on its own, [TabRestore.SINGLE_CLOSE_WAIT_MILLIS] later and not seen again meanwhile
      * ([TabRestore.afterSingleClose]). A drag's drop would have shown it again by now, cancelling this look. One still in
      * no place was closed for good, and its terminal lives only thanks to the mark. Closed by the user's own mouse or keys,
-     * or before the branch change it was marked for, it was the user's middle click or Alt+click, a plugin's close or the
-     * tab limit, so its claude is ended the way Close ends it, then the shell, and the thread goes. Closed with that change already there or in its very
-     * turn of the EDT, the restore closed it (a floating editor window's tab), so it is ended cleanly and the thread comes
+     * or before the branch change it was marked for, it was the user's middle click, Shift+click or Shift+Alt+click, or a
+     * plugin's close, so its claude is ended the way Close ends it, then the shell, and the thread goes. Closed with that
+     * change already there or in its very turn of the EDT, the restore closed it (a floating editor window's tab), so it is ended cleanly and the thread comes
      * back as a Resume - settled at the close, never by a change during the wait ([TabRestore.SingleCloses]). Skein never
      * opens it again itself. EDT.
      */
@@ -1521,6 +1553,7 @@ class TerminalAdapter(
                 released = handle.released,
                 ending = handle.endingSince != null,
                 started = handle.session?.value.let { it != null && it != TerminalViewSessionState.NotStarted },
+                closingPastCheck = handle.pastCheck != null,
             )
         }
         val ids = TabRestore.toMark(tabs).toSet()
@@ -1763,11 +1796,5 @@ class TerminalAdapter(
 
         /** How long after a branch switch Skein lifts the reopen marks the restore did not use ([branchHasChanged]). */
         private const val SETTLE_MILLIS = 1_000L
-
-        /**
-         * How long the IDE's close of a whole editor area waits for Skein to end the threads it closes past the close check,
-         * all of them together, as a project's close does ([beforeClose]).
-         */
-        private const val PAST_CHECK_END_MILLIS = 2_000L
     }
 }

@@ -86,7 +86,11 @@ so. Close, the editor tab's × and the close of a thread tab in the Terminal too
 tab's shell the hangup a closing terminal sends, wait up to five seconds for them to finish while the tab still shows
 them, and only then close the tab, since the IDE would otherwise leave both hanging with a dead terminal
 (IJPL-259859). Closing the project does the same for all its threads before the project goes, waiting about two
-seconds at most for all of them together. The editor tab's × asks nothing, in the Terminal tool window the IDE may
+seconds at most for all of them together. A middle click or a Shift+click on the tab, and a Shift+Alt+click that
+closes the other tabs of its window, skip the IDE's close check, so Skein ends claude right as each tab closes, waiting
+about two seconds at most for it, one tab after another when several close in one go, and the thread goes as after
+Close. The
+editor tab's × asks nothing, in the Terminal tool window the IDE may
 ask its own question first, and moving a tab there or out of it ends nothing. A Close All or Close Others with a running
 thread in it closes the other files at once and the thread tabs once their claude has ended. With the editor split
 into several windows it closes only the thread tabs at first, so run it again for the rest. With several threads the
@@ -374,7 +378,9 @@ claude for the end-to-end tests is a POSIX script, so those tests skip on Window
   child process and sees it end. For the IDE's restore of a branch's workspace, which thread tabs get the reopen mark
   before a checkout (not one Skein closes or ends, one the IDE marked for a move, nor a restored one nobody opened),
   what a close of a marked, an unmarked, a moved, a user-closed and a project-closing tab leads to, inside a clear of
-  the editor area or on its own, a marked tab closed on its own that turns up elsewhere within the wait (a drag, which
+  the editor area or on its own, an unmarked running tab closed on its own past the check (claude ended first and the
+  thread closed as after Close, a plain close on Windows or with nothing running), a marked tab closed on its own that
+  turns up elsewhere within the wait (a drag, which
   cancels it) or nowhere (a real close, ended and never reopened even when the checkout ends during the wait, or a tab
   the restore closed, its change come before the close or in the same turn, brought back as a Resume), a terminal that
   ended although marked, which thread tabs a clear ends together, the
@@ -489,9 +495,18 @@ claude for the end-to-end tests is a POSIX script, so those tests skip on Window
   to another split or window, which must not end claude, and closing the project with threads running.
   A plain IDE terminal opened in a thread's folder, with a claude of its own, must keep running when the thread
   closes.
-  The workspace restore waits for its UI tests on both test machines, and by hand for a busy claude through a
-  checkout, a thread tab in front before it, a restored thread nobody opened, Rollback from the balloon with several
-  busy threads, a real middle click during a checkout, Skein with Version Control turned off, and Windows.
+  The workspace restore passed its UI tests on the macOS test machine and its branch UI tests on the Windows one, and by
+  hand on macOS a workspace cleared as Rollback does with three busy threads and a real middle click during a slow
+  checkout. With Version Control turned off IntelliJ 2026.3 did not load Skein 1.5.1 at all - its product compatibility
+  rules give every plugin from outside JetBrains a dependency on the IDE's collaboration tools, which need Version
+  Control, and by that rule as read in the IDE's code it holds for later versions of Skein too, not run - so the
+  optional dependency only keeps Skein from adding a need of its own. It still waits, by hand, for a busy claude through
+  a checkout, a restored thread nobody opened and a run on
+  Windows.
+  The close of a busy thread's tab past the close check passed its UI test on the macOS test machine, and by hand there
+  a real middle click on a busy thread (five of five ended) and three busy thread tabs closed past the check one after
+  another. It waits for its UI test on Windows, and by hand for Shift+click, Shift+Alt+click, the Switcher's close and a
+  floating editor window closed with busy threads in it.
   The fake claude waits for its run in a sandbox IDE, started as `tools/fake-claude/README.md` says, with `type claude`
   in a sandbox tab naming the fake, a thread going through the default scenario as you press Enter in its tab and turn
   to another tab while it works (working, the permission prompt with its balloon, the finished turn in blue with the
@@ -523,11 +538,14 @@ started over SSH has no windows. The tests run elsewhere with `./gradlew uiTest`
 to that port, and they need nothing else - whatever they check on that machine, its processes, Claude Code's status
 files and git, they ask from inside the IDE. Each test opens a fresh git repository as a project and closes it again,
 and a failing one leaves a screenshot of that machine under `build/reports/ui-screenshots`. They start the user's real
-`claude` and answer its trust question for the fresh folder, and only the Rename tests and two workspace restore tests
-send it prompts, one or two short ones each, so the rest cost no tokens. Neither `test` nor CI runs them.
+`claude` and answer its trust question for the fresh folder, and only the Rename tests, two workspace restore tests and
+the middle click test send it prompts - one or two short ones each, and one long one the middle click test cuts short -
+so the rest cost no tokens. Neither `test` nor CI runs them.
 
 The tests check that the Skein tool window is on, that a thread started from the empty list starts claude with its
-status file and that the tab's × ends both, and that New Thread in Worktree…, from its own button, starts claude
+status file and that the tab's × ends both, that a busy thread's tab closed past the close check, the way a middle
+click closes it, ends claude, its status file and its row, and that New Thread in Worktree…, from its own button, starts
+claude
 with the worktree as its `cwd` while the repository's `git status` stays clean. Two more check the trust question of a
 fresh folder - the thread's row says claude asks about trust until the answer, and New Thread in Worktree… warns about
 a repository nobody trusted yet. Three check Rename with Also rename in Claude Code - on an idle thread the transcript

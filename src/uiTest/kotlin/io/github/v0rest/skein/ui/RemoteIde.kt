@@ -557,7 +557,7 @@ object RemoteIde {
     ) == "true"
 
     /**
-     * Closes the thread's terminal tab in project [name]'s editor the way a middle click or an Alt+click on a tab does,
+     * Closes the thread's terminal tab in project [name]'s editor the way a middle click or a Shift+click on a tab does,
      * `closeFile(file, window)` without the close checks, through invokeLater for the write-intent lock.
      */
     fun closeTheThreadsTabWithoutChecks(name: String) {
@@ -579,6 +579,28 @@ object RemoteIde {
             'ok'
             """,
         )
+    }
+
+    /**
+     * Sends [text] into the thread's terminal in project [name]'s editor through the terminal view's own send API
+     * (`TerminalView.createSendTextBuilder`, reached through the public `TerminalViewVirtualFile.getTab().getView()`),
+     * and a moment later the Enter on its own - a CR that comes in the same piece as the text would land in claude's input
+     * as part of it. Off the EDT, the way the hand-run robot script that made threads busy on the test machines sent it.
+     */
+    fun sendToTheThreadsTerminal(name: String, text: String) {
+        fun send(piece: String) = js(
+            """
+            $PROJECT
+            var project = projectNamed('$name'); var view = null;
+            var fs = project == null ? [] : com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).getOpenFiles();
+            for (var i = 0; i < fs.length; i++) if (fs[i].getClass().getSimpleName() == 'TerminalViewVirtualFile') view = fs[i].getTab().getView();
+            if (view != null) view.createSendTextBuilder().send('$piece');
+            '' + (view != null)
+            """,
+        )
+        check(send(text.replace("\\", "\\\\").replace("'", "\\'")) == "true") { "no thread terminal in the editor of $name" }
+        Thread.sleep(1_500)
+        check(send("\\r") == "true") { "no thread terminal in the editor of $name" }
     }
 
     /** Whether project [name] has a thread's terminal open in the editor area. */

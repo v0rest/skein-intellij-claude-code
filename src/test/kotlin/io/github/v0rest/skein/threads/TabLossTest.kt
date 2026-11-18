@@ -253,6 +253,70 @@ class TabLossTest {
         assertTrue(terminal.opened.isEmpty())
     }
 
+    /**
+     * No loss - the user closed a busy thread's tab on its own past the close check, a middle click. Skein ends what Close
+     * would end, every thread of it confirmed as for the tab's ×, since the close is the user's own, so the busy one is not
+     * left open, and once the tab is gone the thread goes as after Close - its row and the worktree question - and nothing
+     * opens it again.
+     */
+    @Test
+    fun aBusyThreadTheUserClosedPastTheCheckIsEndedAndGoes() {
+        val s100 = busyThread()
+
+        val ending = coordinator.endingsBeforeTheIdeCloses(listOf("t1"), snap(s100), comesBack = false).single()
+        assertEquals(ProcessId(10, t0), ending.shell)
+        assertEquals(100L, ending.claude?.pid)
+        ended(100, 10)
+        coordinator.onTabClosed("t1")
+
+        assertEquals(listOf("t1"), closed)
+        assertTrue(coordinator.threads.isEmpty())
+        assertEquals(listOf("t1"), terminal.opened.map { it.id })
+    }
+
+    /**
+     * The user's own close leaves no note on how the thread comes back - the hang-up turns it exited, and should its tab be
+     * taken for a lost one after all, it would come back as an exited thread does, not resumed. A clear's ending notes it,
+     * decided before the hang-up, and the thread is resumed.
+     */
+    @Test
+    fun theUsersSingleCloseNotesNothingAboutComingBack() {
+        val s100 = busyThread()
+        coordinator.endingsBeforeTheIdeCloses(listOf("t1"), snap(s100), comesBack = false)
+        ended(100)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 2_500)
+        assertEquals(ThreadState.Exited, thread().state)
+        ended(10)
+        val typed = terminal.typed.toList()
+
+        coordinator.onTabLost("t1", select = false, snap(), now = 3_000)
+
+        assertEquals(typed, terminal.typed)
+        assertEquals(ThreadState.NotStarted, thread().state)
+    }
+
+    @Test
+    fun aClearsEndingNotesTheResumeBeforeTheHangUp() {
+        val s100 = busyThread()
+        coordinator.endingsBeforeTheIdeCloses(listOf("t1"), snap(s100), comesBack = true)
+        ended(100)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 2_500)
+        ended(10)
+
+        coordinator.onTabLost("t1", select = false, snap(), now = 3_000)
+
+        assertEquals("t1" to "claude --resume $A", terminal.typed.last())
+    }
+
+    /** t1 in shell 10 with claude 100 at work in session [A] - busy, so Close would ask, which the user's own close does not. */
+    private fun busyThread(): SessionFile {
+        coordinator.newThread("/p", now = 1_000)
+        val s100 = claude(100, under = 10, activity = ClaudeActivity.BUSY)
+        coordinator.onSnapshot(snap(s100), viewed = { false }, now = 2_000)
+        assertTrue(thread().state.toString(), CloseRule.isBusy(thread().state))
+        return s100
+    }
+
     @Test
     fun theRule() {
         for (state in listOf(ThreadState.NotStarted, ThreadState.RunningElsewhere(7), ThreadState.Exited)) assertFalse(state.toString(), TabLoss.resumesNow(state))

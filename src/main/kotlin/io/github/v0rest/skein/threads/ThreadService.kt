@@ -244,7 +244,8 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
 
                 override fun closeRequested(tabIds: List<String>): Boolean = closeFromTabs(tabIds)
 
-                override fun tabsClosingPastCheck(tabIds: List<String>, withinMillis: Long) = endBeforeTheIdeClosesTheTabs(tabIds, withinMillis)
+                override fun tabsClosingPastCheck(tabIds: List<String>, withinMillis: Long, comesBack: Boolean) =
+                    endBeforeTheIdeClosesTheTabs(tabIds, withinMillis, comesBack)
 
                 override fun tabsLostPastCheck(tabIds: List<String>): Boolean = endLostTabs(tabIds)
 
@@ -471,24 +472,28 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
     }
 
     /**
-     * The IDE clears the editor area past Skein's close check and the tabs of [threadIds] go without a reopen mark
-     * ([ThreadTerminalListener.tabsClosingPastCheck]) - a Rollback, Load Context, another plugin closing every editor -
-     * their terminals right after. Skein first notes how each thread comes back ([ThreadCoordinator.endingsBeforeLoss]),
-     * then ends every claude and shell among them together, each on its own and all under one deadline of [withinMillis],
-     * as a project's close does, while the tabs are still open and read. It waits under the platform's modal progress, so
-     * the IDE stays painted and the tick holding the coordinator can finish its trip to the EDT, and where that progress
-     * may not run (a read or write action around the close) it waits plainly, still within the deadline. On Windows the
-     * IDE ends claude with the tab and Skein sends nothing, so only the note is made. Never asks and never throws - a
-     * failure, or Cancel in the progress, lets the tabs close as they would have.
+     * The IDE closes the tabs of [threadIds] past Skein's close check without a reopen mark
+     * ([ThreadTerminalListener.tabsClosingPastCheck]), their terminals right after - in a clear of the editor area when
+     * [comesBack] (a Rollback, Load Context, another plugin closing every editor), else one running tab the user closed
+     * on its own (a middle click or a Shift+click on it). The coordinator picks what to end in each
+     * ([ThreadCoordinator.endingsBeforeTheIdeCloses]) - for a clear it notes how each thread comes back, and for the
+     * user's close it takes what Close would end, asking nothing, as for the tab's ×, and that thread goes once its tab is
+     * gone. Then it ends every claude
+     * and shell among them together, each on its own and all under one deadline of [withinMillis], as a project's close
+     * does, while the tabs are still open and read. It waits under the platform's modal progress, so the IDE stays
+     * painted and the tick holding the coordinator can finish its trip to the EDT, and where that progress may not run (a
+     * read or write action around the close) it waits plainly, still within the deadline. On Windows the IDE ends claude
+     * with the tab and Skein sends nothing, so only the note is made. Never asks and never throws - a failure, or Cancel
+     * in the progress, lets the tabs close as they would have.
      */
-    private fun endBeforeTheIdeClosesTheTabs(threadIds: List<String>, withinMillis: Long) {
+    private fun endBeforeTheIdeClosesTheTabs(threadIds: List<String>, withinMillis: Long, comesBack: Boolean) {
         val names = threadIds.joinToString(", ")
         try {
             if (unsupported != null || closing() || threadIds.isEmpty()) return
             val deadline = System.nanoTime() + withinMillis * NANOS_PER_MILLI
             val look = scope.async(confined) {
                 try {
-                    coordinator.endingsBeforeLoss(threadIds, snapshot())
+                    coordinator.endingsBeforeTheIdeCloses(threadIds, snapshot(), comesBack)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
