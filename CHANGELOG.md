@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.2](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.5.1...v1.5.2) (2026-11-18)
+
+
+### Bug Fixes
+
+* keep thread tabs through the IDE's branch workspace restore ([#38](https://github.com/v0rest/skein-intellij-claude-code/issues/38)) ([ef19f38](https://github.com/v0rest/skein-intellij-claude-code/commit/ef19f38fc339fa3b432918a796c4c37ed451c4a4))
+
 ## [1.5.1](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.5.0...v1.5.1) (2026-11-17)
 
 
