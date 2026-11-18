@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.3](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.5.2...v1.5.3) (2026-11-18)
+
+
+### Bug Fixes
+
+* end claude when a thread tab closes past Skein's close check, by a middle click or Shift+click ([#40](https://github.com/v0rest/skein-intellij-claude-code/issues/40)) ([c46cf01](https://github.com/v0rest/skein-intellij-claude-code/commit/c46cf01de6b7346c1fcbd317ca745aa54997176b))
+
 ## [1.5.2](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.5.1...v1.5.2) (2026-11-18)
 
 
