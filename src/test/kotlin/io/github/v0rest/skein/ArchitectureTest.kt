@@ -275,9 +275,12 @@ class ArchitectureTest {
     }
 
     /**
-     * Version Control is a bundled plugin a user can turn off, and Skein runs without it. Its classes are touched in
-     * BranchSwitchListener alone, which only the optional descriptor registers, loaded while Version Control is there, so
-     * nothing that always loads needs them.
+     * Version Control is a bundled plugin a user can turn off, so Skein asks for it in the optional part alone. Its classes
+     * are touched in BranchSwitchListener alone, which only the optional descriptor registers, and that descriptor hangs on
+     * the plugin id - a depends on the alias com.intellij.modules.vcs, optional or not, the platform turns into a hard need
+     * of the whole plugin (javap of 2026.3, ProductPluginInitContext). IntelliJ IDEA 2026.3 still keeps every plugin from
+     * outside JetBrains off while Version Control is off, through its collaboration tools module, Skein 1.5.1 too - nothing
+     * a descriptor can change.
      */
     @Test
     fun versionControlStaysInTheOptionalPart() {
@@ -286,12 +289,21 @@ class ArchitectureTest {
         // no code that always loads names the listener, the optional descriptor alone registers it
         assertEquals(listener, filesContaining("BranchSwitchListener"))
         val descriptor = Path.of("src/main/resources/META-INF/plugin.xml").toFile().readText()
-        assertTrue(descriptor.contains("<depends optional=\"true\" config-file=\"io.github.v0rest.skein-branches.xml\">com.intellij.modules.vcs</depends>"))
-        for (word in listOf("com.intellij.openapi.vcs", "BranchSwitchListener", "intellij.platform.vcs", "<depends>com.intellij.platform.vcs")) {
+        assertTrue(descriptor.contains("<depends optional=\"true\" config-file=\"io.github.v0rest.skein-branches.xml\">com.intellij.platform.vcs</depends>"))
+        // no VCS class or alias, and no hard dependency on the plugin or its module, in what always loads
+        val alwaysLoaded = listOf(
+            "com.intellij.openapi.vcs", "BranchSwitchListener", ">com.intellij.modules.vcs<", "id=\"com.intellij.modules.vcs\"",
+            "<depends>com.intellij.platform.vcs", "<plugin id=\"com.intellij.platform.vcs\"", "<module name=\"intellij.platform.vcs",
+        )
+        for (word in alwaysLoaded) {
             assertFalse(word, descriptor.contains(word))
         }
         val optional = Path.of("src/main/resources/META-INF/io.github.v0rest.skein-branches.xml").toFile().readText()
         assertTrue(optional.contains("<listener class=\"io.github.v0rest.skein.threads.BranchSwitchListener\" topic=\"com.intellij.openapi.vcs.BranchChangeListener\"/>"))
+        // the dependency in plugin.xml already names the plugin, the optional part declares no other
+        for (word in listOf("<depends", "<dependencies", "com.intellij.modules.vcs")) {
+            assertFalse(word, optional.contains(word))
+        }
     }
 
     @Test

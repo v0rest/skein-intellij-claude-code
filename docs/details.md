@@ -109,7 +109,7 @@ A mark lasts until the checkout is over, so a slow one keeps its threads too, an
 never says it is. Your own close of a thread tab works as before and never brings it back - one you close during a
 checkout with a middle click, which skips the IDE's close check, ends claude the way Close does a few seconds later,
 once Skein has seen it was no drag to another window - and threads in the Terminal tool window are not touched by any
-of this. The checkout part needs the IDE's Version Control plugin, and without it Skein runs as before.
+of this. The checkout part works through the IDE's Version Control plugin and loads only while that plugin is on.
 
 Right-click a history row to open it, pin it, rename it or mark it done. Pinned
 threads and pinned sessions come first, in the threads and in the history. Pins, names, colours and done marks are
