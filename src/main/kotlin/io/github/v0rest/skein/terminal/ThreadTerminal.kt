@@ -40,9 +40,11 @@ interface ThreadTerminal {
     /**
      * Opens a terminal in [folder] running the user's shell, in the editor area or, as the setting says, in the Terminal
      * tool window; returns a handle at once, the tab appears on the EDT. The user may move the tab between the two
-     * afterwards: it is the same thread there, closed only when its tab closes.
+     * afterwards - it is the same thread there, closed only when its tab closes. [focus] leaves the new tab the selected
+     * one, and without it the tab opens beside what was selected. [start] starts its shell at once, and without it the
+     * shell starts only when the tab is first shown, as for the threads an IDE restart brings back.
      */
-    fun open(threadId: String, folder: String, tabName: String, focus: Boolean): ThreadTab
+    fun open(threadId: String, folder: String, tabName: String, focus: Boolean, start: Boolean = focus): ThreadTab
 
     /** Types [command] plus Enter into the tab once the shell prompt is ready; returns at once. */
     fun type(tab: ThreadTab, command: String)
@@ -140,4 +142,30 @@ interface ThreadTerminalListener {
      * open meanwhile; false lets them close at once. Called on the EDT; returns at once and never throws.
      */
     fun closeRequested(tabIds: List<String>): Boolean
+
+    /**
+     * The IDE is clearing the editor area past Skein's close check and the thread tabs [tabIds] go without Skein's reopen
+     * mark - a restore of a branch's workspace that came without the mark, its Rollback, the Tasks plugin's Load Context,
+     * another plugin closing every editor ([TabRestore.Close.END_THEN_RESUME], [TabRestore.endTogether]). Their terminals
+     * go right after this returns, so the listener ends what runs in them now, all together under one deadline of
+     * [withinMillis], while the tabs are open and read, and decides how each thread comes back ([tabLost]). [withinMillis]
+     * is 0 when no terminal among them runs, and then nothing is waited for. Called on the EDT inside the IDE's close,
+     * blocks no longer than that, and never throws.
+     */
+    fun tabsClosingPastCheck(tabIds: List<String>, withinMillis: Long)
+
+    /**
+     * The IDE's restore closed the thread tabs [tabIds] one by one past Skein's close check while they carried its reopen
+     * mark ([TabRestore.SingleClose.LOSE]), and their terminals live in no tab now. The listener ends what runs in them,
+     * then has them released ([ThreadTerminal.close]), and each thread comes back as a Resume ([tabLost]). True when it
+     * takes that over, false leaves the tabs to the caller. Called on the EDT, returns at once and never throws.
+     */
+    fun tabsLostPastCheck(tabIds: List<String>): Boolean
+
+    /**
+     * Thread [tabId]'s tab is gone past Skein's close check ([TabRestore.Gone.BACK_AS_RESUME],
+     * [TabRestore.Gone.TERMINAL_DIED]), and the thread stays - the listener opens it again in a new tab, never asking
+     * about its worktree. [select] - its tab was the selected editor when the close began. Returns at once, never throws.
+     */
+    fun tabLost(tabId: String, select: Boolean)
 }

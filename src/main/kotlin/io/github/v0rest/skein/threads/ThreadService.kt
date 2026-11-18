@@ -131,6 +131,8 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
         },
         // read on the confined dispatcher, once per launch that timed out with a reason to ask
         trust = { folder -> FolderTrustReader.read(ClaudeHome.default(), folder) },
+        // read on the confined dispatcher, once per thread that comes back after the IDE closed its tab past the check
+        conversation = { folder, sessionCwd, sessionId -> Transcripts.resumable(ClaudeHome.default(), folder, sessionCwd, sessionId) },
     )
     private val rows = MutableStateFlow<List<SkeinThread>>(emptyList())
 
@@ -241,6 +243,12 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
                 override fun tabSelected(tabId: String) = confined { coordinator.onTabSelected(tabId, snapshot(), now()) }
 
                 override fun closeRequested(tabIds: List<String>): Boolean = closeFromTabs(tabIds)
+
+                override fun tabsClosingPastCheck(tabIds: List<String>, withinMillis: Long) = endBeforeTheIdeClosesTheTabs(tabIds, withinMillis)
+
+                override fun tabsLostPastCheck(tabIds: List<String>): Boolean = endLostTabs(tabIds)
+
+                override fun tabLost(tabId: String, select: Boolean) = this@ThreadService.tabLost(tabId, select)
             },
         )
         ApplicationManager.getApplication().messageBus.connect(scope).subscribe(
@@ -432,6 +440,137 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
 
     fun select(threadId: String) {
         if (unsupported == null) confined { coordinator.select(threadId, snapshot(), now()) }
+    }
+
+    /**
+     * A branch switch made through the IDE is about to start ([BranchSwitchListener]), and the thread tabs open in the editor
+     * get Skein's reopen mark, so the IDE's restore of the branch's workspace leaves their claude running
+     * ([TerminalAdapter.branchWillChange]). Returns at once, never throws.
+     */
+    fun branchWillChange() {
+        if (unsupported != null) return
+        try {
+            adapter.branchWillChange()
+        } catch (_: ProcessCanceledException) {
+        } catch (_: CancellationException) {
+        } catch (e: Throwable) {
+            LOG.warn("Skein could not mark its thread tabs before a branch switch", e)
+        }
+    }
+
+    /** The branch switch is over, and the marks the restore did not use come off ([TerminalAdapter.branchHasChanged]). Never throws. */
+    fun branchHasChanged() {
+        if (unsupported != null) return
+        try {
+            adapter.branchHasChanged()
+        } catch (_: ProcessCanceledException) {
+        } catch (_: CancellationException) {
+        } catch (e: Throwable) {
+            LOG.warn("Skein could not take its reopen marks off after a branch switch", e)
+        }
+    }
+
+    /**
+     * The IDE clears the editor area past Skein's close check and the tabs of [threadIds] go without a reopen mark
+     * ([ThreadTerminalListener.tabsClosingPastCheck]) - a Rollback, Load Context, another plugin closing every editor -
+     * their terminals right after. Skein first notes how each thread comes back ([ThreadCoordinator.endingsBeforeLoss]),
+     * then ends every claude and shell among them together, each on its own and all under one deadline of [withinMillis],
+     * as a project's close does, while the tabs are still open and read. It waits under the platform's modal progress, so
+     * the IDE stays painted and the tick holding the coordinator can finish its trip to the EDT, and where that progress
+     * may not run (a read or write action around the close) it waits plainly, still within the deadline. On Windows the
+     * IDE ends claude with the tab and Skein sends nothing, so only the note is made. Never asks and never throws - a
+     * failure, or Cancel in the progress, lets the tabs close as they would have.
+     */
+    private fun endBeforeTheIdeClosesTheTabs(threadIds: List<String>, withinMillis: Long) {
+        val names = threadIds.joinToString(", ")
+        try {
+            if (unsupported != null || closing() || threadIds.isEmpty()) return
+            val deadline = System.nanoTime() + withinMillis * NANOS_PER_MILLI
+            val look = scope.async(confined) {
+                try {
+                    coordinator.endingsBeforeLoss(threadIds, snapshot())
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    LOG.warn("Skein could not tell what runs in threads $names before the IDE closed their tabs", e)
+                    emptyList()
+                }
+            }
+            // the note runs on the confined dispatcher before the thread comes back, which is queued there after it, and
+            // with no terminal running among them there is nothing to wait for
+            if (!CloseGate.closeCanHang || withinMillis <= 0) return
+            val end: suspend () -> Unit = {
+                val endings = withTimeoutOrNull(millisLeft(deadline)) { look.await() }
+                if (endings == null) {
+                    look.cancel()
+                    LOG.info("Skein could not tell what runs in threads $names in time, and hangs up nothing before the IDE closes their tabs")
+                } else {
+                    closeSequence.endBeforeTheIdeCloses(endings, withinMillis = millisLeft(deadline))
+                }
+            }
+            val bounded: suspend () -> Unit = { withTimeoutOrNull(millisLeft(deadline) + PROJECT_CLOSE_MARGIN_MILLIS) { end() } }
+            val application = ApplicationManager.getApplication()
+            if (application.isDispatchThread && !application.holdsReadLock() && !application.isWriteAccessAllowed) {
+                runWithModalProgressBlocking(project, "Ending Claude Code in Skein threads") { bounded() }
+            } else {
+                runBlocking { bounded() }
+            }
+        } catch (_: ProcessCanceledException) {
+        } catch (_: CancellationException) {
+        } catch (e: Throwable) {
+            LOG.warn("Skein could not end threads $names before the IDE closed their tabs", e)
+        }
+    }
+
+    /**
+     * The restore closed the tabs of [threadIds] one by one past Skein's close check, and their terminals live in no tab
+     * ([ThreadTerminalListener.tabsLostPastCheck]). Skein notes how each thread comes back and what runs in it
+     * ([ThreadCoordinator.endingsBeforeLoss]), then ends them as a Close does and has the tabs released
+     * ([CloseSequence.run]), on the service scope, never on the confined dispatcher it would hold up for the whole wait.
+     * The tabs are released whatever the ending did ([LostTabs]) - one that throws, finds nothing or does not get to the
+     * close still leaves no live claude without a tab. The release reports each tab lost, not closed, and the thread comes
+     * back as a Resume. False, and the caller releases the tabs, when Skein is off, the project closes or a thread is
+     * unknown. Called on the EDT, returns at once and never throws.
+     */
+    private fun endLostTabs(threadIds: List<String>): Boolean {
+        try {
+            if (unsupported != null || closing() || threadIds.isEmpty()) return false
+            if (!latest.mapTo(HashSet()) { it.id }.containsAll(threadIds)) return false
+            scope.launch {
+                LostTabs.endThenRelease(
+                    threadIds,
+                    endings = { withContext(confined) { coordinator.endingsBeforeLoss(threadIds, snapshot()) } },
+                    run = { closeSequence.run(it) },
+                    release = { adapter.releaseLost(it) },
+                    log = { LOG.warn(it) },
+                )
+            }
+            return true
+        } catch (_: ProcessCanceledException) {
+        } catch (_: CancellationException) {
+        } catch (e: Throwable) {
+            LOG.warn("Skein could not end the threads whose tabs the restore closed", e)
+        }
+        return false
+    }
+
+    /**
+     * Thread [threadId]'s tab is gone past Skein's close check ([ThreadTerminalListener.tabLost]), and the thread comes back in
+     * a new tab ([ThreadCoordinator.onTabLost]), whose title the next push sets again. Never while the project closes,
+     * which must start nothing.
+     */
+    private fun tabLost(threadId: String, select: Boolean) {
+        if (unsupported != null || closing()) return
+        scope.launch(confined) {
+            if (closing()) return@launch
+            guarded {
+                pushedTitles = pushedTitles - threadId
+                coordinator.onTabLost(threadId, select, snapshot(), now())
+            }
+            publish()
+            pushTitlesQuietly()
+            requestPreviews()
+        }
     }
 
     suspend fun resume(entry: HistoryEntry, force: Boolean = false): ResumeOutcome {

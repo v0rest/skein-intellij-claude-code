@@ -2,6 +2,7 @@ package io.github.v0rest.skein
 
 import io.github.v0rest.skein.testutil.SourceRules
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.file.Path
@@ -258,6 +259,39 @@ class ArchitectureTest {
         assertEquals(1, flow.count { it.contains("deleteLeftover(") })
         assertEquals(1, flow.count { it.contains("LeftoverWorktreeFolder::delete") })
         assertEquals(emptyList<String>(), filesContaining("::deleteLeftover"))
+    }
+
+    /**
+     * The IDE's "closes to reopen" mark lives in `FileEditorManagerKeys`, in the platform's implementation module, where
+     * several keys are `@ApiStatus.Internal`, so Skein touches it in ReopenMark alone, by the field itself and never looked up
+     * by its name, so the dependency stays in sight and a platform change breaks the build, not a thread.
+     */
+    @Test
+    fun theIdesReopenMarkIsTouchedInReopenMarkAlone() {
+        val reopenMark = listOf("io/github/v0rest/skein/terminal/ReopenMark.kt")
+        assertEquals(reopenMark, filesContaining("FileEditorManagerKeys"))
+        assertEquals(reopenMark, filesContaining("CLOSING_TO_REOPEN"))
+        assertEquals(emptyList<String>(), filesContaining("findKeyByName"))
+    }
+
+    /**
+     * Version Control is a bundled plugin a user can turn off, and Skein runs without it. Its classes are touched in
+     * BranchSwitchListener alone, which only the optional descriptor registers, loaded while Version Control is there, so
+     * nothing that always loads needs them.
+     */
+    @Test
+    fun versionControlStaysInTheOptionalPart() {
+        val listener = listOf("io/github/v0rest/skein/threads/BranchSwitchListener.kt")
+        assertEquals(listener, filesContaining("com.intellij.openapi.vcs", "git4idea", "com.intellij.dvcs", "com.intellij.vcs."))
+        // no code that always loads names the listener, the optional descriptor alone registers it
+        assertEquals(listener, filesContaining("BranchSwitchListener"))
+        val descriptor = Path.of("src/main/resources/META-INF/plugin.xml").toFile().readText()
+        assertTrue(descriptor.contains("<depends optional=\"true\" config-file=\"io.github.v0rest.skein-branches.xml\">com.intellij.modules.vcs</depends>"))
+        for (word in listOf("com.intellij.openapi.vcs", "BranchSwitchListener", "intellij.platform.vcs", "<depends>com.intellij.platform.vcs")) {
+            assertFalse(word, descriptor.contains(word))
+        }
+        val optional = Path.of("src/main/resources/META-INF/io.github.v0rest.skein-branches.xml").toFile().readText()
+        assertTrue(optional.contains("<listener class=\"io.github.v0rest.skein.threads.BranchSwitchListener\" topic=\"com.intellij.openapi.vcs.BranchChangeListener\"/>"))
     }
 
     @Test

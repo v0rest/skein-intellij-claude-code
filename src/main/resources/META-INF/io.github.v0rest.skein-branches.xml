@@ -1,0 +1,10 @@
+<!-- What Skein does around a branch switch made through the IDE, loaded only while the IDE's Version Control is there
+     (the optional dependency in plugin.xml), so Skein runs without it. The dependency below names the plugin those classes
+     ship in, so the plugin verifier finds them, and the module alias in plugin.xml is what puts them on Skein's class path -
+     a depends file's own module list is not read -->
+<idea-plugin>
+    <depends>com.intellij.platform.vcs</depends>
+    <projectListeners>
+        <listener class="io.github.v0rest.skein.threads.BranchSwitchListener" topic="com.intellij.openapi.vcs.BranchChangeListener"/>
+    </projectListeners>
+</idea-plugin>

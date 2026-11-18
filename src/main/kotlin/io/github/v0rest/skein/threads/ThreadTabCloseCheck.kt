@@ -21,8 +21,10 @@ import kotlinx.coroutines.CancellationException
  * of actions, the tab's own close shortcut, the Switcher) and by Skein's own close after the ending, which this check
  * lets through because Skein released the tab first. Moving a tab to another split or window, closing the project and
  * quitting the IDE close files without asking, so they never reach this check; it passes anyway once the project closes
- * or the IDE quits. `VirtualFilePreCloseCheck` is `@ApiStatus.Experimental`; its `filterFilesToClose` is
- * `@ApiStatus.Internal` and not implemented here.
+ * or the IDE quits. So does the IDE's restore of a branch's workspace with its Rollback and Load Context
+ * (`closeAllFiles`), which Skein meets in the terminal adapter instead ([io.github.v0rest.skein.terminal.TabRestore]),
+ * and a close this check let through is the user's own there, never brought back. `VirtualFilePreCloseCheck` is
+ * `@ApiStatus.Experimental`, and its `filterFilesToClose`, `@ApiStatus.Internal`, is not implemented here.
  *
  * Application-level, so it sees every file any project closes: anything that is not a thread tab passes at once, and
  * any failure lets the close through.

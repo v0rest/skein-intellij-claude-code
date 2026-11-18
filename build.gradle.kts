@@ -33,6 +33,7 @@ dependencies {
         intellijIdea("2026.3")
         bundledPlugin("org.jetbrains.plugins.terminal")
         bundledPlugin("com.intellij.modules.jna")
+        bundledPlugin("com.intellij.platform.vcs")
         testFramework(TestFrameworkType.Platform)
     }
 }
