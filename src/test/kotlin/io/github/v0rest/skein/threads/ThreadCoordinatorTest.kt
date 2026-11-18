@@ -437,7 +437,7 @@ class ThreadCoordinatorTest {
 
                 override fun closeRequested(tabIds: List<String>): Boolean = false
 
-                override fun tabsClosingPastCheck(tabIds: List<String>, withinMillis: Long) = Unit
+                override fun tabsClosingPastCheck(tabIds: List<String>, withinMillis: Long, comesBack: Boolean) = Unit
 
                 override fun tabsLostPastCheck(tabIds: List<String>): Boolean = false
 

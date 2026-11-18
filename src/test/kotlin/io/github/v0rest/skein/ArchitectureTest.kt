@@ -637,6 +637,50 @@ class ArchitectureTest {
     }
 
     /**
+     * A close past Skein's close check is met in TerminalAdapter.beforeClose and the service, and every decision there is
+     * TabRestore's or the coordinator's, unit-tested - the adapter hands them exactly these facts and does what they say,
+     * so gutting the glue (a running tab taken for idle, the single close not ended, the clear ended twice, a tab under a
+     * past-check close marked for a branch switch, the user's close taken for a loss) fails here.
+     */
+    @Test
+    fun thePastCheckGlueHandsEveryDecisionToTheTestedRules() {
+        val adapter = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/terminal/TerminalAdapter.kt"))
+        val decide = adapter.indexOf("val close = TabRestore.beforeClose(")
+        assertEquals(
+            listOf(
+                "reopenMark = ReopenMark.isSet(file),", "markedBySkein = handle.markedFile === file,", "released = handle.released,",
+                "askedByUser = handle.askedToClose,", "ending = handle.endingSince != null,",
+                "closing = projectClosing || appClosing || project.isDisposed,", "wholeArea = burst.wholeArea,",
+                "running = handle.session?.value == TerminalViewSessionState.Running,", "closeCanHang = CloseGate.closeCanHang,", ")",
+            ),
+            adapter.subList(decide + 1, decide + 11),
+        )
+        for (line in listOf(
+            "when (TabRestore.endNow(close, endedThisTurn = handle.id in burst.ended)) {",
+            "TabRestore.EndNow.WITH_THE_CLEAR -> endWithTheClear(burst, handle)",
+            "TabRestore.EndNow.THIS_TAB -> endBeforeASingleClose(burst, handle)",
+            "tellPastCheck(TabRestore.PastCheckEnding.ofTheClear(ids, anyRunning))",
+            "tellPastCheck(TabRestore.PastCheckEnding.ofASingleClose(closing.id))",
+            "listener?.tabsClosingPastCheck(ending.ids, ending.withinMillis, ending.comesBack)",
+            "if (!handle.disposed && TabRestore.forgottenIfStillOpen(handle.pastCheck) && file != null && FileEditorManager.getInstance(project).isFileOpen(file)) {",
+            "closingPastCheck = handle.pastCheck != null,",
+        )) {
+            assertEquals(line, 1, adapter.count { it == line })
+        }
+        // the listener hears of these closes from that one place, and the single close notes itself ended for the turn
+        assertEquals(1, SourceRules.offenders(adapter, listOf("tabsClosingPastCheck(")).size)
+        val single = adapter.indexOf("private fun endBeforeASingleClose(burst: Burst, closing: Handle) {")
+        assertEquals("burst.ended += closing.id", adapter[single + 1])
+        val service = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/threads/ThreadService.kt"))
+        for (line in listOf(
+            "endBeforeTheIdeClosesTheTabs(tabIds, withinMillis, comesBack)",
+            "coordinator.endingsBeforeTheIdeCloses(threadIds, snapshot(), comesBack)",
+        )) {
+            assertEquals(line, 1, service.count { it == line })
+        }
+    }
+
+    /**
      * A native library loaded through JNA stays in the IDE until it exits, so a plugin that loads one cannot be unloaded
      * and must ask for a restart to be installed, updated or removed - or the IDE says it "didn't unload fully".
      */

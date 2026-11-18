@@ -14,8 +14,8 @@ import java.awt.Point
 import java.time.Duration
 
 /**
- * A thread's life in a real IDE with the user's real `claude` - started from "+", seen, and closed by its tab's ×, and
- * what Skein shows while claude asks whether to trust a fresh folder.
+ * A thread's life in a real IDE with the user's real `claude` - started from "+", seen, and closed by its tab's × or past
+ * the close check the way a middle click closes it, and what Skein shows while claude asks whether to trust a fresh folder.
  */
 class ThreadUiTest {
     private companion object {
@@ -27,6 +27,9 @@ class ThreadUiTest {
 
         /** A word of the name dialog's trust warning, which wraps over several lines. */
         const val REFUSES = "refuses"
+
+        /** A prompt that keeps claude at its answer well past the close. */
+        const val LONG_PROMPT = "Write a detailed essay of about 1500 words on the history of tea, in plain text, no headings."
     }
 
     private val demo = DemoProject()
@@ -96,6 +99,50 @@ class ThreadUiTest {
             // by pid, since a claude whose shell is gone no longer counts among the IDE's claudes
             waitFor(Duration.ofSeconds(30), Duration.ofSeconds(1), "claude $pid gone") { !RemoteIde.alive(pid) }
             waitFor(Duration.ofSeconds(30), Duration.ofSeconds(1), "the status file of claude $pid gone") { pid !in RemoteIde.sessionPids() }
+            assertEquals("", RemoteIde.gitStatus(repo).trim())
+        } finally {
+            // a claude left hanging must not outlive the test, and the clean-up after it finds one only by its shell
+            RemoteIde.destroy(pid, start)
+        }
+    }
+
+    /**
+     * A busy thread's tab closed the way a middle click or a Shift+click on it closes it - `closeFile(file, window)`, which
+     * asks no close check (`TabMouseListener.mouseReleased`). The terminal goes with the tab, so Skein ends claude first,
+     * while the tab is still read, and the thread goes as after Close - claude gone by pid, its status file gone, the row
+     * gone, and no claude of the thread left behind or started again. The prompt goes in through the terminal view's own
+     * send API, its Enter on its own, and the tab closes while claude is at its answer (a few tokens).
+     */
+    @Test
+    fun aBusyThreadsTabClosedPastTheCloseCheckEndsClaudeAndTheThreadGoes() {
+        val before = RemoteIde.claudePids()
+        RemoteIde.startClaudeFromTheEmptyList(project)
+        var started = emptySet<Long>()
+        waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "a new claude.exe") {
+            started = RemoteIde.claudePids() - before
+            started.size == 1
+        }
+        val pid = started.single()
+        val start = RemoteIde.startOf(pid)
+        try {
+            // a fresh folder, so claude writes its status file only once the trust question is answered
+            RemoteIde.acceptTheTrustQuestion(project)
+            waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "the status file of claude $pid") { pid in RemoteIde.sessionPids() }
+            waitFor(Duration.ofSeconds(120), Duration.ofSeconds(1), "claude $pid idle") { RemoteIde.sessionField(pid, "status") == "idle" }
+            RemoteIde.sendToTheThreadsTerminal(project, LONG_PROMPT)
+            waitFor(Duration.ofSeconds(60), Duration.ofMillis(200), "claude $pid busy") { RemoteIde.sessionField(pid, "status") == "busy" }
+
+            RemoteIde.closeTheThreadsTabWithoutChecks(project)
+
+            // by pid, since a claude whose shell is gone no longer counts among the IDE's claudes
+            waitFor(Duration.ofSeconds(20), Duration.ofMillis(500), "claude $pid gone") { !RemoteIde.alive(pid) }
+            waitFor(Duration.ofSeconds(20), Duration.ofMillis(500), "the status file of claude $pid gone") { pid !in RemoteIde.sessionPids() }
+            waitFor(Duration.ofSeconds(20), Duration.ofMillis(500), "the thread's row gone") { RemoteIde.threadRows(project) == 0 }
+            // and it does not come back
+            Thread.sleep(3_000)
+            assertFalse("the thread's tab came back", RemoteIde.terminalInTheEditor(project))
+            assertEquals(0, RemoteIde.threadRows(project))
+            assertEquals("a claude of the thread is still there or started again", emptySet<Long>(), RemoteIde.claudePids() - before)
             assertEquals("", RemoteIde.gitStatus(repo).trim())
         } finally {
             // a claude left hanging must not outlive the test, and the clean-up after it finds one only by its shell

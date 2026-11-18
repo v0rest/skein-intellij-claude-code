@@ -16,11 +16,22 @@ class TabRestoreTest {
         released: Boolean = false,
         ending: Boolean = false,
         started: Boolean = true,
-    ) = TabRestore.Tab(id, inEditor, markedByTheIde, disposed, released, ending, started)
+        closingPastCheck: Boolean = false,
+    ) = TabRestore.Tab(id, inEditor, markedByTheIde, disposed, released, ending, started, closingPastCheck)
 
     @Test
     fun aBranchSwitchMarksTheThreadTabsOpenInTheEditor() {
         assertEquals(listOf("t1", "t3"), TabRestore.toMark(listOf(tab("t1"), tab("t2", inEditor = false), tab("t3"))))
+    }
+
+    /**
+     * A tab the IDE is closing past the check while Skein ends its claude - the wait pumps events, and a branch switch
+     * announced off the EDT reaches it then. A mark put there now would keep the hung-up terminal through the close, with
+     * no tab and the row left behind, so such a tab gets none, in a clear or on its own.
+     */
+    @Test
+    fun aTabWhosePastCheckCloseIsUnderWayIsNotMarked() {
+        assertEquals(listOf("t2"), TabRestore.toMark(listOf(tab("t1", closingPastCheck = true), tab("t2"))))
     }
 
     /** A tab Skein closes itself, or ends on the user's word, is on its way out, and a restore must not bring it back. */
@@ -41,7 +52,7 @@ class TabRestoreTest {
     /** ...and the restore's close of it brings it back the way a lost tab comes back, never ended, never started. */
     @Test
     fun aNeverStartedTabInAClearComesBackAsALostTab() {
-        assertEquals(Close.END_THEN_RESUME, close())
+        assertEquals(Close.END_THEN_RESUME, close(running = false))
         assertEquals(Gone.BACK_AS_RESUME, TabRestore.gone(projectClosing = false, pastCheck = Close.END_THEN_RESUME))
     }
 
@@ -51,7 +62,10 @@ class TabRestoreTest {
         assertEquals(listOf("t2"), TabRestore.toMark(listOf(tab("t1", markedByTheIde = true), tab("t2"))))
     }
 
-    /** By default a close of the whole editor area, as a restore, Rollback and Load Context make it. */
+    /**
+     * By default a close of the whole editor area, as a restore, Rollback and Load Context make it, of a tab whose
+     * terminal runs, on macOS or Linux.
+     */
     private fun close(
         reopenMark: Boolean = false,
         markedBySkein: Boolean = false,
@@ -60,7 +74,9 @@ class TabRestoreTest {
         ending: Boolean = false,
         closing: Boolean = false,
         wholeArea: Boolean = true,
-    ) = TabRestore.beforeClose(reopenMark, markedBySkein, released, askedByUser, ending, closing, wholeArea)
+        running: Boolean = true,
+        closeCanHang: Boolean = true,
+    ) = TabRestore.beforeClose(reopenMark, markedBySkein, released, askedByUser, ending, closing, wholeArea, running, closeCanHang)
 
     @Test
     fun aRestoreClosingAFileSkeinMarkedReopensTheSameTab() {
@@ -87,12 +103,104 @@ class TabRestoreTest {
     }
 
     /**
-     * A middle click or an Alt+click on an editor tab closes it without the close check, and so does a plugin closing one
-     * file - one tab, its window still there. That close stays what it always was, and the thread is not brought back.
+     * A middle click or a Shift+click on an editor tab closes it without the close check, and so do a Shift+Alt+click on
+     * another tab of its window, the Switcher, a floating
+     * editor window's own close and a plugin closing one file - one tab, its window still there. The terminal goes with
+     * the tab, so a claude busy in it would be left blocked on a pty nobody reads. Skein ends claude first, while the tab
+     * is still open and read, and the close goes on as the user's - the thread goes, never brought back.
      */
     @Test
-    fun aSingleTabClosedPastTheCheckIsAClose() {
-        assertEquals(Close.LET_GO, close(wholeArea = false))
+    fun aRunningTabClosedOnItsOwnPastTheCheckEndsClaudeThenCloses() {
+        assertEquals(Close.END_THEN_CLOSE, close(wholeArea = false))
+    }
+
+    /** Skein marked it for a branch switch, but a move since took the mark off - the terminal goes with this close. */
+    @Test
+    fun aMarkTheIdeTookOffSinceEndsASingleCloseToo() {
+        assertEquals(Close.END_THEN_CLOSE, close(reopenMark = false, markedBySkein = true, wholeArea = false))
+    }
+
+    /** A restored thread nobody opened, or a shell that has ended - nothing runs there to hang up, a plain close. */
+    @Test
+    fun aTabClosedOnItsOwnWhoseTerminalDoesNotRunIsAPlainClose() {
+        assertEquals(Close.LET_GO, close(wholeArea = false, running = false))
+    }
+
+    /** On Windows the IDE ends claude with the tab and Skein's hang-up sends nothing, so the close stays a plain one. */
+    @Test
+    fun onWindowsATabClosedOnItsOwnIsAPlainClose() {
+        assertEquals(Close.LET_GO, close(wholeArea = false, closeCanHang = false))
+    }
+
+    /**
+     * Around the single close - a move the IDE marks, Skein's own close, an ending under way, a close the check let
+     * through, a project close, and Skein's own mark all keep their way, a running terminal or not.
+     */
+    @Test
+    fun aSingleCloseOnlyEndsWhatNothingElseTakesCareOf() {
+        assertEquals(Close.LET_GO, close(reopenMark = true, markedBySkein = false, wholeArea = false))
+        assertEquals(Close.LET_GO, close(released = true, wholeArea = false))
+        assertEquals(Close.LET_GO, close(ending = true, wholeArea = false))
+        assertEquals(Close.LET_GO, close(askedByUser = true, wholeArea = false))
+        assertEquals(Close.LET_GO, close(closing = true, wholeArea = false))
+        assertEquals(Close.END_IF_CLOSED, close(reopenMark = true, markedBySkein = true, wholeArea = false))
+    }
+
+    /** A clear stays a clear - its threads come back as a Resume, whether their terminal runs, and on Windows too. */
+    @Test
+    fun aClearIsNeverTakenForASingleClose() {
+        assertEquals(Close.END_THEN_RESUME, close(running = true))
+        assertEquals(Close.END_THEN_RESUME, close(running = false))
+        assertEquals(Close.END_THEN_RESUME, close(closeCanHang = false))
+    }
+
+    /** Once ended before the close, the tab's terminal going is the thread's close, as after Close, with its worktree question. */
+    @Test
+    fun aSingleCloseSkeinEndedFirstIsAClosedThread() {
+        assertEquals(Gone.CLOSED, TabRestore.gone(projectClosing = false, pastCheck = Close.END_THEN_CLOSE))
+        assertFalse(TabRestore.keepsMark(Close.END_THEN_CLOSE))
+    }
+
+    /**
+     * The single close ends its own tab right away, and a clear's first close ends all of the clear's tabs - each only once
+     * in a turn of the EDT. Nothing else ends anything inside the IDE's close.
+     */
+    @Test
+    fun aSingleCloseEndsThisTabAndAClearItsTabsTogether() {
+        assertEquals(TabRestore.EndNow.THIS_TAB, TabRestore.endNow(Close.END_THEN_CLOSE, endedThisTurn = false))
+        assertEquals(TabRestore.EndNow.WITH_THE_CLEAR, TabRestore.endNow(Close.END_THEN_RESUME, endedThisTurn = false))
+        for (close in Close.entries) assertEquals(close.name, TabRestore.EndNow.NOTHING, TabRestore.endNow(close, endedThisTurn = true))
+        for (close in listOf(Close.LET_GO, Close.REOPEN_SAME, Close.END_IF_CLOSED)) {
+            assertEquals(close.name, TabRestore.EndNow.NOTHING, TabRestore.endNow(close, endedThisTurn = false))
+        }
+    }
+
+    /** The single close is ended under the clear's short deadline, and its thread goes as after Close, never back. */
+    @Test
+    fun aSingleCloseIsEndedUnderTheShortDeadlineAndGoes() {
+        assertEquals(TabRestore.PastCheckEnding(listOf("t1"), 2_000, comesBack = false), TabRestore.PastCheckEnding.ofASingleClose("t1"))
+        assertEquals(2_000L, TabRestore.PAST_CHECK_END_MILLIS)
+    }
+
+    /** A clear's threads come back, and with nothing running among them nothing is waited for. */
+    @Test
+    fun aClearsTabsAreEndedTogetherAndComeBack() {
+        assertEquals(TabRestore.PastCheckEnding(listOf("t1", "t2"), 2_000, comesBack = true), TabRestore.PastCheckEnding.ofTheClear(listOf("t1", "t2"), anyRunning = true))
+        assertEquals(TabRestore.PastCheckEnding(listOf("r1"), 0, comesBack = true), TabRestore.PastCheckEnding.ofTheClear(listOf("r1"), anyRunning = false))
+    }
+
+    /**
+     * A tab Skein ended claude for in a close's turn of the EDT but that close did not take after all - a clear of another
+     * editor window only, a single close that did not happen - keeps no past-check close once the turn is over.
+     */
+    @Test
+    fun anEndedCloseThatDidNotHappenIsForgottenAfterItsTurn() {
+        assertTrue(TabRestore.forgottenIfStillOpen(Close.END_THEN_RESUME))
+        assertTrue(TabRestore.forgottenIfStillOpen(Close.END_THEN_CLOSE))
+        // a marked tab waits for its reopen or its look, whatever the turn
+        for (pastCheck in listOf(null, Close.LET_GO, Close.REOPEN_SAME, Close.END_IF_CLOSED)) {
+            assertFalse(pastCheck.toString(), TabRestore.forgottenIfStillOpen(pastCheck))
+        }
     }
 
     /**
@@ -175,7 +283,7 @@ class TabRestoreTest {
 
     /**
      * Only the event a close of the user's really comes from counts - the mouse button's release, on which the editor tab's
-     * middle click and Alt+click close (`TabMouseListener.mouseReleased`), and a key press, on which a shortcut runs. The
+     * middle click, Shift+click and Shift+Alt+click close (`TabMouseListener.mouseReleased`), and a key press, on which a shortcut runs. The
      * dispatcher's current event is not restored after a nested event loop, so inside the restore it can be a stale mouse
      * move or click, which must not make the restore's close the user's.
      */
@@ -197,7 +305,7 @@ class TabRestoreTest {
     }
 
     /**
-     * A middle click or an Alt+click in the second after a checkout succeeded, before the marks the restore did not use
+     * A middle click or a Shift+click in the second after a checkout succeeded, before the marks the restore did not use
      * come off - the branch change came before the close, but the close came from the user's own mouse or keys, which no
      * restore does, so it stays the user's close and the thread goes.
      */
@@ -318,7 +426,7 @@ class TabRestoreTest {
 
     @Test
     fun nothingComesBackWhileTheProjectCloses() {
-        for (pastCheck in listOf(null, Close.REOPEN_SAME, Close.END_IF_CLOSED, Close.END_THEN_RESUME)) {
+        for (pastCheck in listOf(null, Close.REOPEN_SAME, Close.END_IF_CLOSED, Close.END_THEN_RESUME, Close.END_THEN_CLOSE)) {
             assertEquals(Gone.NOTHING, TabRestore.gone(projectClosing = true, pastCheck = pastCheck))
         }
     }

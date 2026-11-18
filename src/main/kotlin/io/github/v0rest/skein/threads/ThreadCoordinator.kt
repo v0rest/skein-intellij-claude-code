@@ -572,7 +572,17 @@ class ThreadCoordinator(
 
     /**
      * What to end in each of [threadIds] before the IDE closes their tabs past Skein's close check
-     * ([io.github.v0rest.skein.terminal.ThreadTerminalListener.tabClosingPastCheck]), asking nothing, as for a project
+     * ([io.github.v0rest.skein.terminal.ThreadTerminalListener.tabsClosingPastCheck]), asking nothing, by how the threads
+     * fare once the tabs are gone - back in new tabs when [comesBack] (a clear of the editor area, [endingsBeforeLoss]),
+     * else gone as after Close (one tab the user closed on its own), which is Close's own pick with every thread of it
+     * confirmed, since the close is the user's own, and leaves no note on how a thread comes back. Changes nothing else.
+     */
+    fun endingsBeforeTheIdeCloses(threadIds: Collection<String>, snapshot: SessionSnapshot, comesBack: Boolean): List<Ending> =
+        if (comesBack) endingsBeforeLoss(threadIds, snapshot) else close(threadIds, confirmed = threadIds.toSet(), snapshot).closing
+
+    /**
+     * What to end in each of [threadIds] before the IDE closes their tabs past Skein's close check
+     * ([io.github.v0rest.skein.terminal.ThreadTerminalListener.tabsClosingPastCheck]), asking nothing, as for a project
      * close, and how each comes back once its tab is gone ([onTabLost]) - decided now, while claude still runs, since the
      * hang-up turns the thread exited before the tab goes. Closes and changes nothing else.
      */

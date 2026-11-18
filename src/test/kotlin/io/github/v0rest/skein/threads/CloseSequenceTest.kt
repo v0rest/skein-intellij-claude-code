@@ -284,6 +284,33 @@ class CloseSequenceTest {
         assertTrue(logged.single(), logged.single().contains("session of thread t1") && logged.single().contains("1000 ms"))
     }
 
+    // tabs the IDE closes past the close check - a clear of the editor area, or the user's middle click on one tab - end
+    // the same way, and the IDE closes them itself
+
+    /** claude then the shell, while the tab is still open and read, and Skein neither marks nor closes the tab. */
+    @Test
+    fun endBeforeTheIdeClosesEndsTheThreadAndLeavesTheTabToTheIde() {
+        runBlocking { sequence().endBeforeTheIdeCloses(listOf(t1), withinMillis = 2_000) }
+        assertEquals(listOf("hup 100", "hup 10", "await t1"), terminal.calls)
+        assertTrue(terminal.closed.isEmpty())
+        assertTrue(logged.isEmpty())
+    }
+
+    /**
+     * The IDE's close waits inside it, so a claude that ignores the hang-up holds it up for the short deadline it was given,
+     * never the sequence's own long one - its shell still gets its signal, and the log says the IDE closes the tab anyway.
+     * The upper bound is far from both, so a loaded CI runner does not tip it over.
+     */
+    @Test
+    fun endBeforeTheIdeClosesKeepsToItsDeadline() {
+        val started = System.nanoTime()
+        runBlocking { sequence(hangUp = ignored, timeoutMillis = 60_000).endBeforeTheIdeCloses(listOf(t1), withinMillis = 500) }
+        val tookMillis = (System.nanoTime() - started) / 1_000_000
+        assertEquals(listOf("hup 100", "hup 10"), terminal.calls)
+        assertTrue("took $tookMillis ms", tookMillis in 500 until 20_000)
+        assertTrue(logged.toString(), logged.single().contains("thread t1") && logged.single().contains("lets the IDE close the tab anyway"))
+    }
+
     /** A thread Skein could not prove the shell of is left alone at the project's close too, and the log says why. */
     @Test
     fun endOnlyLogsADoubtedShellAndSignalsNothing() {

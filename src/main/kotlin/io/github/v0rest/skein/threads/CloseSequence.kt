@@ -66,8 +66,9 @@ class CloseSequence(
 
     /**
      * Ends the threads of [closing] as [endOnly] does, within [withinMillis], for tabs the IDE is closing past Skein's
-     * close check ([io.github.v0rest.skein.terminal.ThreadTerminalListener.tabClosingPastCheck]), which the IDE closes
-     * itself once this returns. Never throws but for cancellation.
+     * close check ([io.github.v0rest.skein.terminal.ThreadTerminalListener.tabsClosingPastCheck]) - a clear of the editor
+     * area, or the user's middle click on one tab - which the IDE closes itself once this returns. Never throws but for
+     * cancellation.
      */
     suspend fun endBeforeTheIdeCloses(closing: List<Ending>, withinMillis: Long) {
         if (closing.isEmpty()) return

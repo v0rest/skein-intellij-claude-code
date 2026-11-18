@@ -23,8 +23,8 @@ import java.awt.event.MouseEvent
  *   back the same way, not started.
  *
  * A marked tab closed on its own, outside a clear, is either a drag of the IDE's own or the user's close that skips the
- * check (a middle click or an Alt+click on an editor tab, which `TabMouseListener` closes without the checks, a plugin's
- * `closeFile`). The mark keeps its terminal alive through that close. A drag's drop opens the file again later, in a
+ * check (a middle click or a Shift+click on an editor tab, or a Shift+Alt+click on another tab of its window, which
+ * `TabMouseListener` closes without the checks, a plugin's `closeFile`). The mark keeps its terminal alive through that close. A drag's drop opens the file again later, in a
  * coroutine of its own (`EditorTabbedContainerDragOutDelegate.dragOutFinished` clears the mark first, and
  * `DockableEditorTabbedContainer.add` launches the open), so Skein waits [SINGLE_CLOSE_WAIT_MILLIS] and the tab turning
  * up again cancels the wait ([SingleCloses]). A tab still in no place then was a real close, and Skein ends its claude
@@ -32,16 +32,27 @@ import java.awt.event.MouseEvent
  * branch change it was marked for already there or in that very turn of the EDT), and then it comes back as a Resume
  * ([afterSingleClose], [Close.END_IF_CLOSED]). Skein never opens such a tab again itself.
  *
+ * An unmarked thread tab closed on its own past the check, outside a clear, is the user's close that skips it - a middle
+ * click or a Shift+click on the tab, a Shift+Alt+click on another tab of its window, which closes every other tab there
+ * (`TabMouseListener.mouseReleased`, `UIUtil.isCloseClick` is button 2 or Shift with button 1, and a plain Alt+click
+ * closes nothing), the Switcher's close (the Recent Files plugin's `closeEditorForFile`), a floating
+ * editor window closed with its own close button (`DockWindow` -> `DockableEditorTabbedContainer.closeAll`, file by file),
+ * a plugin's `closeFile` - and the terminal goes with it, since only a marked file keeps it. A claude busy there would be
+ * left blocked on a pty nobody reads, so Skein ends it first, the way a clear's tabs are ended but on its own, and the
+ * close goes on as the user's - the thread goes as after Close ([Close.END_THEN_CLOSE]). On Windows, and for a tab whose
+ * terminal does not run, it stays a plain close.
+ *
  * The user's own close through the check (×, Close, Close All, the thread menu's Close, the Terminal tool window's close),
- * a move the IDE marks itself, Skein's own close, a project close, and an unmarked tab closed on its own stay exactly as
- * they are ([Close.LET_GO]).
+ * a move the IDE marks itself, Skein's own close and a project close stay exactly as they are ([Close.LET_GO]).
  */
 object TabRestore {
     /**
      * A thread tab as Skein sees it when a branch is about to change. [inEditor] - an open editor file shows it.
      * [markedByTheIde] - that file carries the reopen mark and Skein did not put it there, a move under way.
      * [released] - Skein closes the tab itself now. [ending] - Skein ends the thread on the user's word and closes it then.
-     * [started] - its terminal session has started, so it is no restored thread nobody opened yet.
+     * [started] - its terminal session has started, so it is no restored thread nobody opened yet. [closingPastCheck] -
+     * the IDE is closing it past the check right now, its claude being ended while that close waits ([Close.END_THEN_RESUME],
+     * [Close.END_THEN_CLOSE]), or a past-check close of it is not settled yet.
      */
     data class Tab(
         val id: String,
@@ -51,18 +62,25 @@ object TabRestore {
         val released: Boolean,
         val ending: Boolean,
         val started: Boolean,
+        val closingPastCheck: Boolean,
     )
 
     /**
      * The thread tabs whose editor file gets Skein's reopen mark before a branch switch - those open in the editor, with a
      * terminal that runs, and not on their way out. A thread in the Terminal tool window has no editor file, and the
-     * restore leaves it alone.
+     * restore leaves it alone. Nor does a tab the IDE is closing past the check get one - the wait for its claude pumps
+     * events, a branch switch announced off the EDT can come in then, and a mark would keep its hung-up terminal through
+     * the close, with no tab and the row left behind.
      */
     fun toMark(tabs: List<Tab>): List<String> =
-        tabs.filter { it.inEditor && it.started && !it.markedByTheIde && !it.disposed && !it.released && !it.ending }.map { it.id }
+        tabs.filter { it.inEditor && it.started && !it.markedByTheIde && !it.disposed && !it.released && !it.ending && !it.closingPastCheck }
+            .map { it.id }
 
     enum class Close {
-        /** Not Skein's to change - the user's own close, a move the IDE marked, Skein's own close, a project close. */
+        /**
+         * Not Skein's to change - the user's own close through the check, a move the IDE marked, Skein's own close, a project
+         * close, and a single close where nothing runs or nothing can be hung up.
+         */
         LET_GO,
 
         /** Skein's own mark in a clear - the terminal lives through the close, and Skein opens the same tab again right after. */
@@ -73,6 +91,12 @@ object TabRestore {
 
         /** A clear past the close check without a mark - claude is ended now, and the thread comes back as a Resume. */
         END_THEN_RESUME,
+
+        /**
+         * One running thread tab closed past the close check without a mark - claude is ended now, while the tab is still
+         * open and read, and the close goes on as the user's, so the thread goes as after Close.
+         */
+        END_THEN_CLOSE,
     }
 
     /**
@@ -81,7 +105,9 @@ object TabRestore {
      * put it there. [markedBySkein] - Skein put it there for a branch switch. [released] - Skein closes the tab itself.
      * [askedByUser] - Skein's close check was asked about this close and let it through, which only the user's closes
      * and Skein's own do. [ending] - Skein ends the thread already on the user's word. [closing] - the project closes or
-     * the IDE quits. [wholeArea] - the close is part of a clear of the editor area ([wholeArea]).
+     * the IDE quits. [wholeArea] - the close is part of a clear of the editor area ([wholeArea]). [running] - the tab's
+     * terminal session runs, so it is no restored thread nobody opened and no shell that has ended. [closeCanHang] -
+     * Skein's hang-up sends anything here ([CloseGate.closeCanHang]).
      */
     fun beforeClose(
         reopenMark: Boolean,
@@ -91,13 +117,18 @@ object TabRestore {
         ending: Boolean,
         closing: Boolean,
         wholeArea: Boolean,
+        running: Boolean,
+        closeCanHang: Boolean,
     ): Close = when {
         closing || released || askedByUser || ending -> Close.LET_GO
         reopenMark && markedBySkein -> if (wholeArea) Close.REOPEN_SAME else Close.END_IF_CLOSED
         // the IDE's own mark, a move to another split or window, or into the Terminal tool window
         reopenMark -> Close.LET_GO
         wholeArea -> Close.END_THEN_RESUME
-        // one tab past the check, a middle click or a plugin's closeFile - a close as it always was
+        // one tab past the check - a middle click, a Shift+click, a Shift+Alt+click on another tab, the Switcher, a floating
+        // editor window's close, a plugin's closeFile. The terminal goes with the tab, so a running claude is ended first, and the close stays the user's.
+        // Where nothing runs there is nothing to hang up, and on Windows the IDE ends claude itself
+        running && closeCanHang -> Close.END_THEN_CLOSE
         else -> Close.LET_GO
     }
 
@@ -105,7 +136,10 @@ object TabRestore {
      * Whether a close is part of a clear of the editor area. `closeAllFiles` takes the editor windows down before it
      * closes their files, so [windowsGone] - no window lists the file any more - says so for its files, and the restore
      * then closes the floating editor windows' files one by one in the same turn of the EDT, their window still there,
-     * which [soFar] keeps in the clear. A single close leaves its file in its window until after the decision.
+     * which [soFar] keeps in the clear. A single close leaves its file in its window until after the decision. A clear
+     * whose main editor area has no file at all starts with a floating window's file, its window still there, so it is
+     * taken for single closes - a running thread there is ended and goes as after Close, not back as a Resume. Accepted -
+     * nothing tells it from a floating window closed with its own close button, and the thread is ended cleanly either way.
      */
     fun wholeArea(soFar: Boolean, windowsGone: Boolean): Boolean = soFar || windowsGone
 
@@ -129,6 +163,56 @@ object TabRestore {
 
     /** Whether Skein's mark stays on the file for this close. Any other answer takes it off first, so the terminal goes as decided. */
     fun keepsMark(close: Close): Boolean = close == Close.REOPEN_SAME || close == Close.END_IF_CLOSED
+
+    /** What Skein ends right away, inside the IDE's close, for the answer [beforeClose] gave ([endNow]). */
+    enum class EndNow {
+        NOTHING,
+
+        /** Every thread tab the clear takes, together ([endTogether], [PastCheckEnding.ofTheClear]). */
+        WITH_THE_CLEAR,
+
+        /** This one tab ([PastCheckEnding.ofASingleClose]). */
+        THIS_TAB,
+    }
+
+    /**
+     * What [close] has Skein end now. [endedThisTurn] - Skein ended this tab already in the same turn of the EDT, with the
+     * clear's first close or a close of it a moment before, so nothing is ended twice.
+     */
+    fun endNow(close: Close, endedThisTurn: Boolean): EndNow = when {
+        endedThisTurn -> EndNow.NOTHING
+        close == Close.END_THEN_RESUME -> EndNow.WITH_THE_CLEAR
+        close == Close.END_THEN_CLOSE -> EndNow.THIS_TAB
+        else -> EndNow.NOTHING
+    }
+
+    /**
+     * How long the IDE's close waits inside it for Skein to end the threads it closes past the close check - a clear's all
+     * together, as a project's close does, a single close's one - claude and then the shell.
+     */
+    const val PAST_CHECK_END_MILLIS = 2_000L
+
+    /**
+     * What Skein hands its listener for tabs the IDE closes past the check
+     * ([io.github.v0rest.skein.terminal.ThreadTerminalListener.tabsClosingPastCheck]) - which threads, how long the close
+     * waits for them, and whether they come back ([comesBack]) or go as after Close.
+     */
+    data class PastCheckEnding(val ids: List<String>, val withinMillis: Long, val comesBack: Boolean) {
+        companion object {
+            /** A clear's tabs, ended together - with nothing running among them nothing is waited for, and they come back. */
+            fun ofTheClear(ids: List<String>, anyRunning: Boolean) =
+                PastCheckEnding(ids, withinMillis = if (anyRunning) PAST_CHECK_END_MILLIS else 0, comesBack = true)
+
+            /** One running tab the user closed on its own, ended under the same short deadline. */
+            fun ofASingleClose(id: String) = PastCheckEnding(listOf(id), withinMillis = PAST_CHECK_END_MILLIS, comesBack = false)
+        }
+    }
+
+    /**
+     * Whether a past-check close that had Skein end claude in its turn of the EDT is dropped once that turn is over and the
+     * tab is still open - the close did not take it after all, so a later close of it is an ordinary one.
+     */
+    fun forgottenIfStillOpen(pastCheck: Close?): Boolean = pastCheck == Close.END_THEN_RESUME || pastCheck == Close.END_THEN_CLOSE
 
     /** What a marked tab closed on its own turns out to be once Skein has waited for it ([afterSingleClose]). */
     enum class SingleClose {
@@ -204,8 +288,8 @@ object TabRestore {
 
     /**
      * Whether the event the EDT dispatches as a tab closes is the user's own input that close comes from - a mouse event
-     * when [mouse], a key event when [key], with its [id]. The editor tab's middle click (or Shift+click) and Alt+click
-     * close in `TabMouseListener.mouseReleased`, on `MouseEvent.MOUSE_RELEASED` (`UIUtil.isCloseClick(e, 502)`, javap of
+     * when [mouse], a key event when [key], with its [id]. The editor tab's middle click or Shift+click, and the
+     * Shift+Alt+click that closes the window's other tabs, close in `TabMouseListener.mouseReleased`, on `MouseEvent.MOUSE_RELEASED` (`UIUtil.isCloseClick(e, 502)`, javap of
      * 2026.3, while `mousePressed` takes double clicks and `mouseClicked` the path popup), and a shortcut runs its action
      * on `KeyEvent.KEY_PRESSED`. No other input counts, since the dispatcher's current event is not restored after a nested
      * event loop - inside the restore it can be a stale mouse move or click over a progress dialog it showed.
@@ -240,7 +324,8 @@ object TabRestore {
         projectClosing -> Gone.NOTHING
         pastCheck == Close.END_THEN_RESUME -> Gone.BACK_AS_RESUME
         pastCheck == Close.REOPEN_SAME -> Gone.TERMINAL_DIED
-        // a tab closed on its own whose terminal went anyway was the user's close
+        // a single close Skein ended claude for, and a tab closed on its own whose terminal went anyway, were the user's
+        // close
         else -> Gone.CLOSED
     }
 

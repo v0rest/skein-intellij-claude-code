@@ -18,12 +18,15 @@ import kotlinx.coroutines.CancellationException
  *
  * The IDE (2026.3, javap on 2026-11-09) asks these checks only from `FileEditorManagerImpl.closeFileWithChecks` and
  * `closeFilesWithChecks`. Those are called by the user's closes (the tab's close button, the Close and Close All family
- * of actions, the tab's own close shortcut, the Switcher) and by Skein's own close after the ending, which this check
- * lets through because Skein released the tab first. Moving a tab to another split or window, closing the project and
- * quitting the IDE close files without asking, so they never reach this check; it passes anyway once the project closes
- * or the IDE quits. So does the IDE's restore of a branch's workspace with its Rollback and Load Context
- * (`closeAllFiles`), which Skein meets in the terminal adapter instead ([io.github.v0rest.skein.terminal.TabRestore]),
- * and a close this check let through is the user's own there, never brought back. `VirtualFilePreCloseCheck` is
+ * of actions, the tab's own close shortcut) and by Skein's own close after the ending, which this check lets through
+ * because Skein released the tab first. Moving a tab to another split or window, closing the project and quitting the
+ * IDE close files without asking, so they never reach this check; it passes anyway once the project closes or the IDE
+ * quits. So does the IDE's restore of a branch's workspace with its Rollback and Load Context (`closeAllFiles`), and so
+ * do some of the user's own closes - a middle click or a Shift+click on the tab and a Shift+Alt+click that closes the
+ * window's other tabs (`TabMouseListener`), the Switcher's
+ * close (the Recent Files plugin's `closeEditorForFile`, javap 2026-11-18) and a floating editor window's own close.
+ * Skein meets all of those in the terminal adapter instead ([io.github.v0rest.skein.terminal.TabRestore]), and a close
+ * this check let through is the user's own there, never brought back. `VirtualFilePreCloseCheck` is
  * `@ApiStatus.Experimental`, and its `filterFilesToClose`, `@ApiStatus.Internal`, is not implemented here.
  *
  * Application-level, so it sees every file any project closes: anything that is not a thread tab passes at once, and
