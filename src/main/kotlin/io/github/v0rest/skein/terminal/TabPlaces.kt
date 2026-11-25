@@ -32,4 +32,35 @@ object TabPlaces {
         editorFileOpen -> Where.EDITOR
         else -> Where.MOVING
     }
+
+    /**
+     * What a move into the editor that failed leaves, and the [words] the log line about it ends with. The action may
+     * have taken the tab out of the Terminal tool window before it failed, so only [STAYS] keeps it there as the setting
+     * off would.
+     */
+    enum class AfterFailedMove(val words: String) {
+        /** The Terminal tool window still lists the tab, so it stays there. */
+        STAYS("it stays in the Terminal tool window"),
+
+        /** An open editor file shows the tab all the same, and Skein marked it as the thread's. */
+        IN_EDITOR("it is in the editor all the same"),
+
+        /** In neither place yet - the next look of the thread service finds its editor tab. */
+        LOOKS_AGAIN("it has left the Terminal tool window, and Skein looks for its editor tab again on its next look"),
+
+        /** Its content was disposed meanwhile - the tab is closed, and so is the thread. */
+        GONE("its tab is closed"),
+
+        /** Where the tab is could not be told - the project closes, or the look failed - and nothing looks again for it. */
+        UNTOLD("Skein cannot tell where its tab is now"),
+    }
+
+    /** [AfterFailedMove] for a tab that is [where] once the move failed, null when that could not be told. */
+    fun afterFailedMove(where: Where?): AfterFailedMove = when (where) {
+        Where.TERMINAL_WINDOW -> AfterFailedMove.STAYS
+        Where.EDITOR -> AfterFailedMove.IN_EDITOR
+        Where.GONE -> AfterFailedMove.GONE
+        Where.MOVING -> AfterFailedMove.LOOKS_AGAIN
+        null -> AfterFailedMove.UNTOLD
+    }
 }

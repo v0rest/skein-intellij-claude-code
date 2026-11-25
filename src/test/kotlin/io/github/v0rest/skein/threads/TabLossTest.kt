@@ -169,6 +169,26 @@ class TabLossTest {
     }
 
     /**
+     * Back in its new tab, an exited thread waits as a restarted one does, and like one it goes on once that tab stays in
+     * view a moment - its session resumed there, as after an IDE restart.
+     */
+    @Test
+    fun anExitedThreadBackInANewTabGoesOnOnceItStaysInView() {
+        idleThread()
+        ended(100)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 2_500)
+        assertEquals(ThreadState.Exited, thread().state)
+        coordinator.onTabLost("t1", select = true, snap(), now = 3_000)
+        val typed = terminal.typed.toList()
+
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 4_000)
+        assertEquals(typed, terminal.typed)
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 5_500)
+        assertEquals(typed + ("t1" to "claude --resume $A"), terminal.typed)
+        assertEquals(ThreadState.Starting, thread().state)
+    }
+
+    /**
      * The tab's claude has not ended yet (on Windows the IDE ends it with the tab, a moment later) - resuming now would run
      * the session twice, so the thread waits until that claude is gone and resumes then.
      */

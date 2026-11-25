@@ -1,6 +1,8 @@
 package io.github.v0rest.skein.threads
 
 import com.intellij.ide.ActivityTracker
+import com.intellij.ide.trustedProjects.TrustedProjects
+import com.intellij.ide.trustedProjects.TrustedProjectsListener
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
@@ -145,9 +147,23 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
     @Volatile
     private var restoreRequested = false
 
-    /** Until the saved threads are back, a save must write the loaded list, not the empty live one. */
+    /**
+     * Until the saved threads are back a save writes them too, not only the live threads ([SavedThreads.toSave]) - in a
+     * project opened without trust they wait until the user trusts it ([waitForTrust]).
+     */
     @Volatile
     private var restored = false
+
+    /** When the saved threads come back: at once in a trusted project, else once the user trusts it, and once. */
+    private val trustedRestore = TrustedRestore()
+
+    /** Set once a look at the project's trust failed, so a broken one does not fill the log on every tick. */
+    @Volatile
+    private var trustLookFailed = false
+
+    /** Set once scheduling a restore failed, so a look that keeps failing every second does not fill the log. */
+    @Volatile
+    private var restoreScheduleFailed = false
 
     /**
      * Whether the project closes - a worktree thread's close no longer asks anything then. Set before the project saves
@@ -209,8 +225,21 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
     /** The rows last published, waiting for a preview refresh; only the newest list is kept. */
     private val previewRequests = Channel<List<SkeinThread>>(Channel.CONFLATED)
 
-    /** The sessions this project's threads hold, the saved ones not restored yet included. */
+    /** The sessions this project's threads hold, the saved ones not restored yet included, those waiting for the project's trust too. */
     fun heldSessionIds(): Set<String> = HeldSessions.of(restored, threads.value, saved.threads.map { it.sessionId })
+
+    /**
+     * The saved threads that wait, until they are back ([SavedThreads.waitingThreads]), for a worktree close, the
+     * Worktrees section and a new worktree thread, so none takes a waiting thread's worktree for a free one - by their
+     * text alone, as they come from a workspace file nobody trusted ([WaitingThreads]). Any thread.
+     */
+    fun waitingThreads(): WaitingThreads = SavedThreads.waitingThreads(restored, saved.threads, threads.value)
+
+    /**
+     * How many saved threads wait for the project's trust, for the empty thread list ([waitingThreads]); none in a
+     * trusted project, whose threads are only on their way back for a moment. Any thread.
+     */
+    fun waitingCount(): Int = if (projectTrusted()) 0 else waitingThreads().size
 
     /** Claude Code's vim mode setting, each file read again only when it changed ([ClaudeEditorModeWatch]); never on the EDT. */
     private val editorMode = ClaudeEditorModeWatch(ClaudeHome.default())
@@ -272,7 +301,12 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
             object : ApplicationActivationListener {
                 override fun applicationActivated(ideFrame: IdeFrame) {
                     confinedSuspend {
-                        for (id in terminal.tabsInView().inView) coordinator.onTabSelected(id, snapshot(), now())
+                        // coming back to the IDE starts a thread that has not started only in a project the user trusts,
+                        // and the trust is asked only for such a thread
+                        val trusted by lazy(LazyThreadSafetyMode.NONE) { projectTrusted() }
+                        for (id in terminal.tabsInView().inView) {
+                            if (!coordinator.notStarted(id) || trusted) coordinator.onTabSelected(id, snapshot(), now())
+                        }
                     }
                 }
             },
@@ -285,7 +319,18 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
                     // one trip to the EDT for both; the marker first, so a failing coordinator step never holds it up
                     val tabs = terminal.tabsInView()
                     front.value = tabs.inFront
-                    coordinator.onSnapshot(snapshot(), viewed = { it in tabs.inView }, now = now())
+                    // the trust is asked only when its answer counts, since in a project trusted through its location each
+                    // ask logs a usage event: while the saved threads wait for it - which also brings them back after a
+                    // trust no listener hears of, a trusted location added in Settings say ([waitForTrust]) - and while a
+                    // thread not started yet is in view, the only kind the in-view start starts ([InViewStart.starts])
+                    val trusted = (trustedRestore.waiting || tabs.inView.any(coordinator::notStarted)) && projectTrusted()
+                    if (!closing() && trustedRestore.look(trusted)) restoreSaved()
+                    // a closing project starts nothing, the tab in view included, since its terminal goes with the project -
+                    // on Windows, where Skein ends no thread before the save, that holds from projectClosing on, and the IDE
+                    // ends a claude started in between with its tab - and a tab behind a modal dialog is not looked at; in
+                    // a project opened without trust, whose saved threads came with its files, a thread starts only when
+                    // the user opens it
+                    coordinator.onSnapshot(snapshot(), viewed = { it in tabs.inView }, now = now(), startsInView = !closing() && !tabs.modal && trusted)
                 }
                 publish()
                 pushTitlesQuietly()
@@ -410,12 +455,22 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
         }
     }
 
+    /**
+     * A close of [threadIds] that does not happen after all - the IDE's close check lets go of their tabs, and the threads
+     * may start in view again ([ThreadCoordinator.closeDropped]). Never throws but for cancellation.
+     */
     private fun clearEndingQuietly(threadIds: List<String>) {
         try {
             terminal.clearEnding(threadIds)
         } catch (e: Throwable) {
             if (e is CancellationException || e is ProcessCanceledException) return
             LOG.warn("Skein could not let go of the tabs it meant to close", e)
+        }
+        try {
+            scope.launch(confined) { guarded { coordinator.closeDropped(threadIds) } }
+        } catch (e: Throwable) {
+            if (e is CancellationException || e is ProcessCanceledException) return
+            LOG.warn("Skein could not take back a close of its threads", e)
         }
     }
 
@@ -595,33 +650,109 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
     }
 
     /**
-     * Reopens the threads saved in the workspace once the tool windows exist (terminal tabs need them) and the
-     * session directory has been read once (so a session running elsewhere is not resumed on an empty snapshot).
+     * Brings the threads saved in the workspace back, once: at once in a project the user trusts, else once they trust
+     * it ([waitForTrust]).
      */
     fun restoreOnce() {
         if (restoreRequested || unsupported != null) return
         restoreRequested = true
+        if (trustedRestore.requested(projectTrusted())) restoreSaved() else waitForTrust()
+    }
+
+    /**
+     * A project opened without trust (Safe Mode) may have brought its saved threads in its own files, its
+     * .idea/workspace.xml among them, so none comes back - no tab, no shell, no git for a worktree thread - until the user
+     * trusts the project; the IDE's own terminal restores its tabs only in a trusted project too. Meanwhile a save keeps
+     * them ([SavedThreads.toSave]), the History counts their sessions as held ([heldSessionIds]) and the worktree checks
+     * count their worktrees as held, by the file's text alone ([waitingThreads]). While the project has not been trusted
+     * no thread of the file is in it, so the terminal's focus watch (TerminalAdapter.watchFocus), which takes the focus
+     * coming back to the IDE for the user opening a thread, has nothing of the file to start then and needs no trust
+     * check of its own. A trust taken back
+     * after the restore leaves the restored threads in place; the in-view start and the start on coming back to the IDE
+     * ask again then, the focus watch does not.
+     *
+     * The platform's one-shot listener hears the first project trusted anywhere and then lets go (javap of
+     * `TrustedProjectsListener.onceWhenProjectTrusted`, 2026.3), so a trust of another project arms it again - launched on
+     * the service scope, never inside the message that used the old one up, so arming cannot run in a loop within one
+     * delivery. Each arm looks once more, which catches a trust that came in between. The listener goes with the service.
+     * The platform tells no listener of every trust - a trusted location added in Settings publishes nothing - so the
+     * tick looks too, every second while the threads wait, and that look also covers an arm that failed.
+     */
+    private fun waitForTrust() {
+        if (project.isDisposed || !trustedRestore.waiting) return
+        try {
+            TrustedProjectsListener.onceWhenProjectTrusted(this) { trusted ->
+                scope.launch {
+                    if (trusted === project && trustedRestore.look(projectTrusted())) restoreSaved() else waitForTrust()
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            LOG.warn("Skein could not listen for this project's trust, so its saved threads come back at the tick's next look once it is trusted", e)
+            return
+        }
+        if (trustedRestore.look(projectTrusted())) restoreSaved()
+    }
+
+    /**
+     * Reopens the threads saved in the workspace once the tool windows exist (terminal tabs need them) and the
+     * session directory has been read once (so a session running elsewhere is not resumed on an empty snapshot). Since
+     * a trust can come at any time, a project that begins to close meanwhile restores nothing, as it starts nothing: the
+     * threads wait on in the file, and the gate lets a later look of the tick bring them back if the user refused the
+     * close. Both checks come before the flag, which stays unset, so a save still writes the waiting threads.
+     */
+    private fun restoreSaved() {
+        if (closing()) {
+            trustedRestore.didNotRun()
+            return
+        }
+        try {
+            scheduleRestore()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // the gate was used up by the look that brought us here; let a later look try again rather than wait for a reopen
+            trustedRestore.didNotRun()
+            if (!restoreScheduleFailed) LOG.warn("Skein could not schedule the restore of the project's threads; it tries again with the next look", e)
+            restoreScheduleFailed = true
+        }
+    }
+
+    /** The restore itself, once the tool windows exist ([restoreSaved]). */
+    private fun scheduleRestore() {
         ToolWindowManager.getInstance(project).invokeLater {
             confinedSuspend {
                 monitor.awaitFirstPoll()
+                if (closing()) {
+                    trustedRestore.didNotRun()
+                    return@confinedSuspend
+                }
                 val threads = saved.threads.mapNotNull(::restored)
                 try {
                     coordinator.restore(threads, snapshot(), now())
                 } finally {
-                    // whatever restore managed to open is what the next save must record, not the stale loaded list
-                    restored = true
-                    // a restored worktree thread may relaunch `claude --worktree` when first opened, and its worktree
-                    // may have been made outside Skein
-                    excludeWorktrees(coordinator.threads.filter { it.worktree != null }.mapTo(LinkedHashSet()) { it.folder })
+                    // whatever restore managed to open is what the next save must record, not the stale loaded list - the
+                    // rows go out first and the flag after, since a save in between would write the rows from before it
+                    try {
+                        publish()
+                    } finally {
+                        restored = true
+                        // a restored worktree thread may relaunch `claude --worktree` once it starts, and its worktree may
+                        // have been made outside Skein
+                        excludeWorktrees(coordinator.threads.filter { it.worktree != null }.mapTo(LinkedHashSet()) { it.folder })
+                        // the tab colour reads these rows, so a restored tab the editor drew before them is drawn once more,
+                        // each once it has its place, and so is a live one that took on a waiting thread's colour
+                        for (thread in coordinator.threads) terminal.refreshPresentation(thread.id)
+                    }
                 }
             }
         }
     }
 
     override fun getState(): Saved {
-        if (!restored) return saved
         val state = Saved()
-        for (t in latest) state.threads.add(saved(t))
+        for (t in SavedThreads.toSave(restored, saved.threads, latest)) state.threads.add(t)
         return state
     }
 
@@ -759,14 +890,16 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
 
     /**
      * Every [WorktreeWatch.PERIOD_MILLIS], one [WorktreeWatch.tick] over the project's worktree threads, if it has any:
-     * git removes or replaces the guard as an ignored file now and then, and this puts it back. Runs on Dispatchers.IO
-     * for as long as the service scope does.
+     * git removes or replaces the guard as an ignored file now and then, and this puts it back. Only in a project the user
+     * trusts, since that git runs under the repository's own configuration with nobody asking - in Safe Mode only the
+     * check right after the user's own resume or new worktree thread runs. Runs on Dispatchers.IO for as long as the
+     * service scope does.
      */
     private suspend fun watchWorktrees() {
         while (true) {
             delay(WorktreeWatch.PERIOD_MILLIS)
             if (closing()) continue
-            showWorktreeChecks { WorktreeWatch.tick(latest, worktreeChecks, worktreeWarnings) }
+            if (latest.any { it.worktree != null } && projectTrusted()) showWorktreeChecks { WorktreeWatch.tick(latest, worktreeChecks, worktreeWarnings) }
             // the same minute looks at the worktree rows and the Worktrees section again ([WorktreeHygiene])
             requestWorktreeSweepQuietly(now = false)
         }
@@ -830,6 +963,8 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
                     thread,
                     monitor.snapshots,
                     threads = { threads.value },
+                    // a waiting thread's worktree is not free either, by its folder as written
+                    waiting = ::waitingThreads,
                     inFlight = closingWorktrees,
                     active = { !closing() },
                 )
@@ -844,6 +979,21 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
     }
 
     private fun closing(): Boolean = projectClose.closing || project.isDisposed
+
+    /**
+     * Whether the user trusts this project (`TrustedProjects.isProjectTrusted`, javap 263.7307.200), so its saved threads
+     * may come back and Skein may start one on its own; false on any doubt, which leaves them waiting and the start to the
+     * user's own click. The first failure is logged, once.
+     */
+    private fun projectTrusted(): Boolean = try {
+        TrustedProjects.isProjectTrusted(project)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        if (!trustLookFailed) LOG.warn("Skein could not tell whether this project is trusted, so it treats it as not trusted", e)
+        trustLookFailed = true
+        false
+    }
 
     /**
      * The project closes - File | Close Project, its window's close, another project opened in that window, a forced

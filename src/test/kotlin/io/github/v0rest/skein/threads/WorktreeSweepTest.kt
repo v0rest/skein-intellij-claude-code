@@ -406,4 +406,32 @@ class WorktreeSweepTest {
             Files.walk(real).sorted(Comparator.reverseOrder()).forEach(Files::delete)
         }
     }
+
+    /**
+     * A thread waiting for its project's trust holds a worktree by its folder and worktree as written, and neither the
+     * resolver nor the look on the disk ever sees them: the workspace file nobody trusted may name a share on another
+     * machine there, where a look alone signs in to it. The live threads are looked up as before.
+     */
+    @Test
+    fun aThreadWaitingForTrustHoldsByItsTextAndIsNeverLookedUp() {
+        val seen = mutableListOf<String>()
+        val real: (String) -> String? = {
+            seen += it
+            null
+        }
+        val sameFolder: (String, String) -> Boolean = { _, cwd ->
+            seen += cwd
+            false
+        }
+        val dir = "\\\\srv\\share\\acme\\.claude\\worktrees\\task-1"
+        for (share in listOf("\\\\srv\\share\\acme", "//srv/share/acme", "\\\\?\\UNC\\srv\\share\\acme")) {
+            val waiting = WaitingThreads(listOf(thread("w1", worktree = "task-1", folder = share, sessionCwd = "$share\\src")))
+            assertTrue(share, KeptWorktrees.held(dir, emptyList(), real, PathStyle.WINDOWS, sameFolder, waiting))
+            assertFalse(share, KeptWorktrees.held("\\\\srv\\share\\acme\\.claude\\worktrees\\task-2", emptyList(), real, PathStyle.WINDOWS, sameFolder, waiting))
+        }
+        assertEquals(emptyList<String>(), seen)
+        val live = thread("t1", worktree = "task-1", folder = "C:\\link\\acme", sessionCwd = "C:\\w\\x")
+        assertFalse(KeptWorktrees.held("C:\\w\\acme\\.claude\\worktrees\\task-1", listOf(live), real, PathStyle.WINDOWS, sameFolder))
+        assertEquals(setOf("C:\\link\\acme", "C:\\w\\x"), seen.toSet())
+    }
 }

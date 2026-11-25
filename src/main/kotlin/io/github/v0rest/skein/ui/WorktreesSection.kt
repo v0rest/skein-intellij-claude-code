@@ -246,7 +246,16 @@ internal class WorktreesSection(private val project: Project, private val scope:
         suspend fun openKept(project: Project, row: KeptWorktree) {
             val newest = withContext(Dispatchers.IO) { newestSession(row) }
             if (newest != null) return resumeSession(project, newest)
-            val elsewhere = withContext(Dispatchers.IO) { KeptWorktrees.held(row.path, WorktreeCloseFlow.threadsOfOpenWindows(), GitToplevel::resolved, sameFolder = { dir, cwd -> SameFolder.holds(dir, cwd) }) }
+            val elsewhere = withContext(Dispatchers.IO) {
+                KeptWorktrees.held(
+                    row.path,
+                    WorktreeCloseFlow.threadsOfOpenWindows(),
+                    GitToplevel::resolved,
+                    sameFolder = { dir, cwd -> SameFolder.holds(dir, cwd) },
+                    // a thread waiting for its project's trust in any window holds it too, by its text alone
+                    waiting = WorktreeCloseFlow.waitingOfOpenWindows(),
+                )
+            }
             if (elsewhere) return balloon(project, "Skein did not start claude in the worktree ${row.name}: ${WorktreeClose.OTHER_THREAD}")
             withContext(Dispatchers.IO) { NewWorktreeThreadAction.reopen(project, Path.of(row.repository), row.name) }
         }
