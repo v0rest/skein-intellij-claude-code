@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.4](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.5.3...v1.5.4) (2026-11-25)
+
+
+### Bug Fixes
+
+* keep a thread's colour with its session and make thread colours stronger ([#44](https://github.com/v0rest/skein-intellij-claude-code/issues/44)) ([db1f9d9](https://github.com/v0rest/skein-intellij-claude-code/commit/db1f9d946261fc5190752f54be590b9a17a263e5))
+* resume a restored thread whose tab is in front, without a click ([#43](https://github.com/v0rest/skein-intellij-claude-code/issues/43)) ([5484c3d](https://github.com/v0rest/skein-intellij-claude-code/commit/5484c3d64aa438d4a931be155fc5f2b216a236c1))
+
 ## [1.5.3](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.5.2...v1.5.3) (2026-11-18)
 
 
