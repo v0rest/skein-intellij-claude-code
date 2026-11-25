@@ -30,7 +30,8 @@ import javax.swing.ListCellRenderer
  * worktree's counts ([worktreeCounts], by thread id, [WorktreeBadge]) on line 1 right before the age, `✎N` in amber,
  * and their lines at the end of the tooltip. A long name is cut, never the counts or the age, and then leads the
  * tooltip; line 2 is cut at the row's end. One [TwoLineRow] serves every cell, and nothing here does I/O: the
- * previews and the counts are read elsewhere.
+ * previews and the counts are read elsewhere. An unselected coloured row draws line 2, the age and the context in the
+ * list's text colour, since the grey reads poorly on its tint.
  */
 class ThreadRowRenderer(
     private val names: () -> Map<String, String> = { emptyMap() },
@@ -65,6 +66,8 @@ class ThreadRowRenderer(
         val foreground = if (selected) UIUtil.getListSelectionForeground(focused) else list.foreground
         val grey = if (selected && focused) foreground else NamedColorUtil.getInactiveTextColor()
         val color = thread.color
+        // the grey of line 2 reads poorly on a tint, so an unselected coloured row draws it in the list's own text colour
+        val secondLine = if (!selected && color != null) foreground else grey
         row.background = when {
             selected -> UIUtil.getListSelectionBackground(focused)
             color != null -> tints.getValue(color)
@@ -92,10 +95,11 @@ class ThreadRowRenderer(
         row.context.text = use?.label.orEmpty()
         for (label in row.greyLabels) {
             label.font = smallFont
-            label.foreground = grey
+            label.foreground = secondLine
         }
         val counts = if (thread.worktree != null) worktreeCounts()[thread.id] else null
-        showBadge(row, WorktreeBadge.of(counts), smallFont, grey, if (selected && focused) foreground else null)
+        // the ahead count sits next to the age, so on a coloured row it takes the same colour; the changes keep their amber
+        showBadge(row, WorktreeBadge.of(counts), smallFont, secondLine, if (selected && focused) foreground else null)
         // the row gets the list's full width; a name cut there is still readable in the tooltip
         val cellWidth = list.width - list.insets.left - list.insets.right
         val nameCut = cellWidth > 0 && row.title.preferredSize.width > row.nameRoom(cellWidth)

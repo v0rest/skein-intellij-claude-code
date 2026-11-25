@@ -281,7 +281,12 @@ class ThreadCoordinator(
         }
     }
 
-    fun resume(entry: HistoryEntry, snapshot: SessionSnapshot, now: Long, force: Boolean = false): ResumeOutcome {
+    /**
+     * Resumes the History session [entry] in a new thread, or selects the thread that already holds it. [color] is the
+     * session's colour ([SessionMarks.colors]), given to a new thread so its row and tab show it from the start, while
+     * a thread that already holds the session keeps its own.
+     */
+    fun resume(entry: HistoryEntry, snapshot: SessionSnapshot, now: Long, force: Boolean = false, color: ThreadColor? = null): ResumeOutcome {
         if (!ClaudeCommand.isSessionId(entry.sessionId)) return ResumeOutcome.Refused
         records.values.firstOrNull { it.sessionId == entry.sessionId }?.let { own ->
             terminal.select(own.tab)
@@ -307,6 +312,7 @@ class ThreadCoordinator(
         record.worktree = ref?.name
         record.sessionId = entry.sessionId
         record.name = entry.title
+        record.color = color
         records[id] = record
         // the user's yes to a second claude on a session running elsewhere holds while the launch waits for the slot
         requestLaunch(record, ClaudeCommand.resume(entry.sessionId), resumeId = entry.sessionId, now = now, recheck = if (force) Recheck.NONE else Recheck.ELSEWHERE)

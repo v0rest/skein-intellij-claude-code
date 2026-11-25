@@ -144,4 +144,45 @@ class SessionMarksTest {
         assertEquals(mapOf(a to "task-1"), own.claudeRenames)
         assertEquals(marks, marks.carry(mapOf("t1" to a), mapOf("t1" to a)))
     }
+
+    // a thread's colour is remembered for its session too, so a resume from History after the thread closed brings it back
+
+    @Test fun colorSetsAndNoneClears() {
+        val coloured = SessionMarks().color(listOf(a, b), ThreadColor.RED)
+        assertEquals(mapOf(a to ThreadColor.RED, b to ThreadColor.RED), coloured.colors)
+        assertEquals(mapOf(a to ThreadColor.BLUE, b to ThreadColor.RED), coloured.color(listOf(a), ThreadColor.BLUE).colors)
+        assertEquals(mapOf(b to ThreadColor.RED), coloured.color(listOf(a), null).colors)
+        assertEquals(coloured, coloured.color(emptyList(), null))
+    }
+
+    @Test fun followMovesAColourToTheSessionThatNowStandsForTheConversation() {
+        val followed = SessionMarks(colors = mapOf(a to ThreadColor.GREEN)).follow(b, listOf(a))
+        assertEquals(mapOf(b to ThreadColor.GREEN), followed.colors)
+        // the session that stands for the conversation now has a colour of its own - that one counts
+        val own = SessionMarks(colors = mapOf(a to ThreadColor.GREEN, b to ThreadColor.PURPLE)).follow(b, listOf(a))
+        assertEquals(mapOf(b to ThreadColor.PURPLE), own.colors)
+        // the other marks moving along keep the colours where they are
+        val withName = SessionMarks(names = mapOf(a to "task-1"), colors = mapOf(c to ThreadColor.BLUE)).follow(b, listOf(a))
+        assertEquals(mapOf(c to ThreadColor.BLUE), withName.colors)
+    }
+
+    /** A thread whose session changed (`/clear`, a resume under a new id) takes its colour along, as it does its name. */
+    @Test fun carryMovesAColourAlongWithTheThread() {
+        val marks = SessionMarks(colors = mapOf(a to ThreadColor.ORANGE))
+        assertEquals(mapOf(a to ThreadColor.ORANGE, b to ThreadColor.ORANGE), marks.carry(mapOf("t1" to a), mapOf("t1" to b)).colors)
+        // the new session already had a colour of its own - it keeps it
+        val own = SessionMarks(colors = mapOf(a to ThreadColor.ORANGE, b to ThreadColor.YELLOW)).carry(mapOf("t1" to a), mapOf("t1" to b))
+        assertEquals(mapOf(a to ThreadColor.ORANGE, b to ThreadColor.YELLOW), own.colors)
+        // a name moving along keeps the colours too
+        val named = SessionMarks(names = mapOf(a to "task-1"), colors = mapOf(c to ThreadColor.BLUE)).carry(mapOf("t1" to a), mapOf("t1" to b))
+        assertEquals(mapOf(c to ThreadColor.BLUE), named.colors)
+    }
+
+    @Test fun pruneDropsTheColoursOfSessionsGoneAndKeepsTheHeldOnes() {
+        val marks = SessionMarks(pinned = setOf(a), colors = mapOf(a to ThreadColor.RED, b to ThreadColor.GREEN, c to ThreadColor.BLUE))
+        assertEquals(setOf(a, b, c), marks.ids())
+        val pruned = marks.prune(known = setOf(a), held = setOf(b), examined = marks.ids())
+        assertEquals(mapOf(a to ThreadColor.RED, b to ThreadColor.GREEN), pruned.colors)
+        assertEquals("one not examined stays", mapOf(c to ThreadColor.BLUE), marks.prune(emptySet(), emptySet(), examined = setOf(a, b)).colors)
+    }
 }

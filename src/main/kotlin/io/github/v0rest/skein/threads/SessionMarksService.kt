@@ -24,6 +24,9 @@ class SessionMarksService : PersistentStateComponent<SessionMarksService.Saved> 
 
         /** [SessionMarks.claudeRenames], kept so a rename still waiting reaches Claude Code after an IDE restart too. */
         var claudeRenames by map<String, String>()
+
+        /** [SessionMarks.colors], by the colour's name. */
+        var colors by map<String, String>()
     }
 
     private val current = MutableStateFlow(SessionMarks())
@@ -54,6 +57,7 @@ class SessionMarksService : PersistentStateComponent<SessionMarksService.Saved> 
             names.putAll(marks.names)
             done.putAll(marks.done)
             claudeRenames.putAll(marks.claudeRenames)
+            colors.putAll(marks.colors.mapValues { it.value.name })
         }
     }
 
@@ -61,7 +65,9 @@ class SessionMarksService : PersistentStateComponent<SessionMarksService.Saved> 
         val names = state.names.toMap()
         // a waiting rename is always the session's Skein name too; one that is not (a hand-edited file) is not sent
         val claudeRenames = state.claudeRenames.filter { (id, name) -> names[id] == name }
-        current.value = SessionMarks(state.pinned.toSet(), names, state.done.toMap(), claudeRenames)
+        // a colour this version does not know (a hand-edited file, a later version's colour) is left out
+        val colors = state.colors.mapNotNull { (id, name) -> ThreadColor.entries.firstOrNull { it.name == name }?.let { id to it } }.toMap()
+        current.value = SessionMarks(pinned = state.pinned.toSet(), names = names, done = state.done.toMap(), claudeRenames = claudeRenames, colors = colors)
     }
 
     companion object {

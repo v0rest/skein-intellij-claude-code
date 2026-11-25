@@ -3,6 +3,7 @@ package io.github.v0rest.skein.threads
 import com.intellij.ide.ActivityTracker
 import com.intellij.ide.trustedProjects.TrustedProjects
 import com.intellij.ide.trustedProjects.TrustedProjectsListener
+import com.intellij.ide.ui.LafManagerListener
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
@@ -311,6 +312,13 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
                 }
             },
         )
+        if (unsupported == null) ApplicationManager.getApplication().messageBus.connect(scope).subscribe(
+            LafManagerListener.TOPIC,
+            // the IDE asks the tab colour provider again before it settles whether the new theme draws its tabs as
+            // Islands, so a coloured tab would keep the old theme's colour; refreshPresentation runs on a later turn
+            // of the EDT, after that is settled
+            LafManagerListener { for (thread in latest) if (thread.color != null) terminal.refreshPresentation(thread.id) },
+        )
         if (unsupported == null) scope.launch(confined) {
             // every new snapshot at once, and a tick every second so timeouts and queued launches move on even
             // when the session directory is quiet and the snapshot does not change
@@ -366,11 +374,18 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
         if (unsupported == null) confined { coordinator.pin(threadIds, pinned) }
     }
 
+    /**
+     * Colours the threads [threadIds], or takes their colour away with null, and their sessions with them
+     * ([SessionColors.set]), so a session resumed from History after its thread closed comes back in that colour.
+     */
     fun setColor(threadIds: Collection<String>, color: ThreadColor?) {
         if (unsupported != null) return
         val ids = threadIds.toList()
         scope.launch(confined) {
-            guarded { coordinator.color(ids, color) }
+            guarded {
+                coordinator.color(ids, color)
+                SessionMarksService.getInstance(project).update { SessionColors.set(it, coordinator.threads, ids, color) }
+            }
             publish() // the tab colour provider reads the published rows, so they must be current before the refresh
             pushTitlesQuietly()
             for (id in ids) terminal.refreshPresentation(id)
@@ -636,9 +651,14 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
     suspend fun resume(entry: HistoryEntry, force: Boolean = false): ResumeOutcome {
         if (unsupported != null) return ResumeOutcome.Refused
         val outcome = withContext(confined) {
-            coordinator.resume(entry, snapshot(), now(), force).also {
+            // a new thread starts in its session's colour
+            val color = SessionMarksService.getInstance(project).marks.value.colors[entry.sessionId]
+            coordinator.resume(entry, snapshot(), now(), force, color).also {
                 publish()
                 pushTitlesQuietly()
+                // the tab is set up on the EDT meanwhile and may reach the editor before the publish, while the tab colour
+                // provider reads the published rows - a tab not placed yet gets its colour when it is, after the publish
+                if (it is ResumeOutcome.Opened && color != null) terminal.refreshPresentation(it.threadId)
             }
         }
         if (outcome is ResumeOutcome.Opened) {
@@ -1107,7 +1127,7 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
         latest = coordinator.threads
         rows.value = latest
         val sessions = latest.associate { it.id to it.sessionId }
-        val names = carryNamesQuietly(sessions)
+        val names = carryMarksQuietly(sessions)
         sessionByThread = sessions
         KeepAwakeService.refreshQuietly()
         nudgeToolbarQuietly(latest, names)
@@ -1128,24 +1148,29 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
         }
     }
 
-    /** Set once the name carry failed, so a service in shutdown does not fill the log on every tick. */
+    /** Set once the carry of names and colours failed, so a service in shutdown does not fill the log on every tick. */
     private var nameCarryFailed = false
 
     /**
-     * Moves Skein names along `/clear` (see [DisplayNames.carry]), and a rename waiting for Claude Code with its name
-     * ([SessionMarks.carry]), and returns the names now; never throws.
+     * Moves Skein names and colours along `/clear` (see [DisplayNames.carry]), and a rename waiting for Claude Code with
+     * its name ([SessionMarks.carry]), gives a coloured thread's session its colour when the thread just got that session,
+     * moved to it or was just restored and the session has none ([SessionColors.fill]), and returns the names now; never
+     * throws.
      */
-    private fun carryNamesQuietly(sessions: Map<String, String?>): Map<String, String> {
+    private fun carryMarksQuietly(sessions: Map<String, String?>): Map<String, String> {
         try {
             val marks = SessionMarksService.getInstance(project)
+            val previous = sessionByThread
+            val threads = latest
+            val step = { m: SessionMarks -> SessionColors.fill(m.carry(previous, sessions), previous, threads) }
             val current = marks.marks.value
-            if (current.carry(sessionByThread, sessions) != current) marks.update { it.carry(sessionByThread, sessions) }
+            if (step(current) != current) marks.update(step)
             return marks.marks.value.names
         } catch (_: ProcessCanceledException) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
-            if (!nameCarryFailed) LOG.warn("Skein could not carry a thread's name to its new session", e)
+            if (!nameCarryFailed) LOG.warn("Skein could not carry a thread's name or colour to its new session", e)
             nameCarryFailed = true
         }
         return emptyMap()

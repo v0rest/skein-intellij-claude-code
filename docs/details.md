@@ -152,8 +152,13 @@ shown, and the thread keeps the History title it was resumed under or goes by it
 done leaves the history unless you turn on the eye in its header. Switched on, the eye takes the theme's accent colour
 and its tooltip reads Showing done sessions, switched off it is crossed out and reads Done sessions hidden. The mark
 drops by itself when the session is used again. A colour label puts a 4 px stripe at the row's left edge and tints the
-row and its editor tab. Claude Code's own `cleanupPeriodDays` (30 days by default) removes idle transcripts, and
-Skein's marks for them go with them; to keep sessions longer, change it in your Claude Code settings.
+row and its editor tab, and on a coloured row that is not selected the second line and the age take the list's text
+colour instead of grey. The colour stays with the thread's session the way a name does, so closing the thread and
+resuming its session from the History brings it back, and `/clear` takes it along. A session that has a colour of its
+own keeps it when a thread's claude moves into it with `/resume`, so the History brings back that one, whatever the
+thread's row showed. Claude Code's own `cleanupPeriodDays` (30 days by
+default) removes idle transcripts, and Skein's marks for them go with them; to keep sessions longer, change it in your
+Claude Code settings.
 
 The History header reads "History (N)" with the number of sessions it lists, and its rows have the same two lines as
 the threads. In the new UI's main toolbar a counter shows how many threads need you, only those, and its switch is
@@ -360,14 +365,17 @@ claude for the end-to-end tests is a POSIX script, so those tests skip on Window
 
 ## Checked
 
-- 1688 unit tests (six of them need Windows and skip on macOS), among them a lifecycle test that drives a thread from
+- 1709 unit tests (six of them need Windows and skip on macOS), among them a lifecycle test that drives a thread from
   start to restore against a copy of a Claude home and proves, byte for byte, that nothing under it changed (and fails
   as soon as anything does).
 - Unit tests for which glyph and tooltip words a waiting thread gets for each reason (and that the three glyphs differ
   and stay orange in both themes), the thread order with pins, the History arrangement (pinned first, done hidden, a
   done mark dropping on newer activity), the sections and the waiting-only filter, the toolbar counter, the keep-awake
   policy and its hold
-  and release logic, the colour palette, the session name a notification shows, the line a thread row takes from the
+  and release logic, the colour palette and the colours kept with a session (set and cleared with the thread's, carried
+  along `/clear`, given to a thread a History resume opens, and taken over at each start from a thread restored with
+  one when the session has none), the
+  session name a notification shows, the line a thread row takes from the
   transcript, the one-balloon-per-thread bookkeeping, the click rules of the thread list and the History, the History
   eye's state to look and tooltip mapping, and for Close which threads count as busy, the question's words, the
   coordinator handing back the right tabs with the claude and the shell to hang up in each, never a claude in another
@@ -526,6 +534,9 @@ claude for the end-to-end tests is a POSIX script, so those tests skip on Window
   a real middle click on a busy thread (five of five ended) and three busy thread tabs closed past the check one after
   another. It waits for its UI test on Windows, and by hand for Shift+click, Shift+Alt+click, the Switcher's close and a
   floating editor window closed with busy threads in it.
+  A colour that comes back with its session after a close and a History resume waits for its UI test, and by hand for
+  a thread restored with a colour an older version saved and closed before its claude started. The colours of rows and
+  editor tabs wait for a look in a light theme and in dark ones with and without Islands, Darcula among them.
   The fake claude waits for its run in a sandbox IDE, started as `tools/fake-claude/README.md` says, with `type claude`
   in a sandbox tab naming the fake, a thread going through the default scenario as you press Enter in its tab and turn
   to another tab while it works (working, the permission prompt with its balloon, the finished turn in blue with the
@@ -558,9 +569,9 @@ to that port, and they need nothing else - whatever they check on that machine, 
 files and git, they ask from inside the IDE. Each test opens a fresh git repository as a project and closes it again,
 and a failing one leaves a screenshot of that machine under `build/reports/ui-screenshots`. They start the user's real
 `claude` and answer its trust question for the fresh folder, and only the Rename tests, two workspace restore tests, the
-project restore test and the middle click test send it prompts - one or two short ones each, three for the project
-restore test, and one long one the middle click test cuts short - so the rest cost no tokens. Neither `test` nor CI runs
-them.
+project restore test, the colour test and the middle click test send it prompts - one or two short ones each, three
+for the project restore test, and one long one the middle click test cuts short - so the rest cost no tokens. Neither
+`test` nor CI runs them.
 
 The tests check that the Skein tool window is on, that a thread started from the empty list starts claude with its
 status file and that the tab's × ends both, that a busy thread's tab closed past the close check, the way a middle
@@ -581,12 +592,14 @@ opened again - three threads with a turn each, the project closed and opened aga
 moved by the test the first saved thread, the one left in front, goes on by itself, with a new claude on its session and
 none on the other two, whatever claude another open project starts meanwhile, the IDE never turns active again, the
 other two stay not started, and the IDE's log shows no failed move. It logs the Skein build the IDE runs, so a run
-against 1.5.3 shows it was one. After each test they end the claude processes the IDE under test still has, by pid, and
-delete the test's repository under `skein-ci/ui-work` in the home folder of that machine. A thread starts from the
-empty list's link, after indexing ended, and on a cold IDE, where the first click can go unheard, the link is clicked
-again every 15 seconds while no claude started and no row came, for up to a minute. The title bar's buttons are reached
-through a click into the list first, since the new UI shows a tool window's title bar buttons only while it has the
-focus.
+against 1.5.3 shows it was one. One checks that a colour stays with its session - a thread coloured from its menu, its
+tab closed, and its session resumed from the History with a double click opens a new thread in that colour. It sends
+one short prompt first, since a session without a turn has no transcript the History could list. After each test they
+end the claude processes the IDE under test still has, by pid, and delete the test's repository under
+`skein-ci/ui-work` in the home folder of that machine. A thread starts from the empty list's link, after indexing
+ended, and on a cold IDE, where the first click can go unheard, the link is clicked again every 15 seconds while no
+claude started and no row came, for up to a minute. The title bar's buttons are reached through a click into the list
+first, since the new UI shows a tool window's title bar buttons only while it has the focus.
 
 ## Releasing
 
