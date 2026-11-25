@@ -204,4 +204,17 @@ class DraftGuardTest {
             assertFalse(id, DraftGuard.touchesInput(id))
         }
     }
+
+    /**
+     * What counts as typing into the shell for the start in view - everything that reaches the terminal's input, an Enter
+     * and a `\` too, but not a modifier or lock key alone, a release or the typed half of an Enter, so Cmd-Tab away from a
+     * restored tab leaves it free to start.
+     */
+    @Test
+    fun everyKeyButNothingTypesIntoTheTab() {
+        for (key in listOf(Key.ENTER, Key.BACKSLASH, Key.OTHER)) assertTrue(key.name, DraftGuard.reachesInput(key))
+        assertFalse(DraftGuard.reachesInput(Key.NONE))
+        assertFalse(DraftGuard.reachesInput(pressed(KeyEvent.VK_META)))
+        assertTrue(DraftGuard.reachesInput(typed('a')))
+    }
 }

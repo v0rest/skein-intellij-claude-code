@@ -119,6 +119,13 @@ object DraftGuard {
         }
     }
 
+    /**
+     * Whether [key] typed into the tab, for the start in view ([io.github.v0rest.skein.threads.InViewStart]) - anything
+     * that reaches the terminal, an Enter too, but not [Key.NONE], so a modifier pressed on the way to another window
+     * leaves a tab free to start.
+     */
+    fun reachesInput(key: Key): Boolean = key != Key.NONE
+
     /** Whether a turn seen starting at [turnStartedAt] shows the Enter at [sentAt] sent the draft (wall clock both). */
     fun turnProves(sentAt: Long, turnStartedAt: Long): Boolean =
         turnStartedAt > sentAt && turnStartedAt - sentAt <= TURN_WINDOW_MILLIS

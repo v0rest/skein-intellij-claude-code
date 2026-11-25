@@ -29,7 +29,10 @@ sealed interface ThreadState {
     /** `claude` was typed into the tab and its first idle has not been seen yet. */
     data object Starting : ThreadState
 
-    /** Restored after an IDE restart; `claude --resume` runs when the tab is first opened. */
+    /**
+     * Waits to be opened (a restart, a project opened again, a lost tab, its session no longer running elsewhere) -
+     * `claude --resume` runs when the tab is opened or stays in view a moment ([InViewStart]).
+     */
     data object NotStarted : ThreadState
 
     /** The thread's session is already running in another terminal, under [pid]. */

@@ -681,6 +681,80 @@ class ArchitectureTest {
     }
 
     /**
+     * The restore's glue in the service and the adapter, which no unit test reaches. The rows go out before a save may
+     * write them, since a save in between wrote the rows from before the restore, and the restored tabs are drawn again
+     * after them and after the flag for their colour. The tick tells the coordinator when the project closes or a modal
+     * dialog is open, so nothing starts then. The adapter sets the tabs bound for the editor up one at a time, creates
+     * each as its own selection, and finds the moved one by what its editor shows, never by the files new since the move
+     * began, which nested moves counted for each other, and a failed move goes by where the tab is.
+     */
+    @Test
+    fun theRestoreGlueKeepsItsOrder() {
+        val service = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/threads/ThreadService.kt"))
+        val restore = service.subList(service.indexOf("fun restoreOnce() {"), service.indexOf("override fun getState(): Saved {"))
+        val publish = restore.indexOf("publish()")
+        val flag = restore.indexOf("restored = true")
+        val refresh = restore.indexOf("for (thread in threads) terminal.refreshPresentation(thread.id)")
+        assertTrue("restoreOnce must publish before it sets restored", publish in 0 until flag)
+        assertTrue("restoreOnce must draw the restored tabs again after the rows", refresh > publish)
+        assertTrue("restoreOnce must draw the restored tabs again after it set restored", refresh > flag)
+        assertEquals(
+            1,
+            service.count { it == "coordinator.onSnapshot(snapshot(), viewed = { it in tabs.inView }, now = now(), startsInView = !closing() && !tabs.modal)" },
+        )
+        val adapter = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/terminal/TerminalAdapter.kt"))
+        assertEquals(listOf("moves.withLock { setUp(handle, tabName, focus, start, toEditor = true) }"), SourceRules.offenders(adapter, listOf("moves.")))
+        val create = adapter.indexOf("val tab = try {")
+        assertEquals("the new tab's selection must be Skein's own", "own.begin()", adapter[create - 1])
+        assertEquals(
+            listOf("val file = editors.openFiles.firstOrNull { shows(editors, it, handle) }"),
+            SourceRules.offenders(adapter, listOf("openFiles.toSet()", "val file = editors.openFiles")),
+        )
+        for (line in listOf(
+            "val after = TabPlaces.afterFailedMove(whereQuietly(handle))",
+            "if (after == TabPlaces.AfterFailedMove.STAYS) stayInTerminalWindow(handle, tab.content, focus, null) else handle.placed.complete(Unit)",
+        )) {
+            assertEquals(line, 1, adapter.count { it == line })
+        }
+    }
+
+    /**
+     * Whether the user typed into a tab, which keeps a restored thread there from starting in view, is gathered where the
+     * draft guard hears its keys - every key and input-changing action goes through onKey, which marks the tab before the
+     * guard's early return for an unwatched tab, a key the guard could not read marks it too, an unwatched tab counts as
+     * typed into, and nothing clears the mark. The coordinator asks it in the start in view, through the tested rule.
+     */
+    @Test
+    fun theStartInViewHearsEveryKeyTheDraftGuardHears() {
+        val adapter = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/terminal/TerminalAdapter.kt"))
+        val onKey = adapter.indexOf("private fun onKey(handle: Handle, key: DraftGuard.Key) {")
+        assertEquals(
+            listOf("if (DraftGuard.reachesInput(key)) handle.keysSeen = true", "val draft = DraftGuard.settled(handle.draft ?: return, handle.provenSentAt)"),
+            adapter.subList(onKey + 1, onKey + 3),
+        )
+        assertEquals(
+            listOf(
+                "var keysSeen = false",
+                "handle.keysSeen = true",
+                "if (DraftGuard.reachesInput(key)) handle.keysSeen = true",
+                "override fun typedInto(tab: ThreadTab): Boolean = (tab as Handle).let { it.keysSeen || it.draft == null }",
+            ),
+            SourceRules.offenders(adapter, listOf("keysSeen")),
+        )
+        val unread = adapter.indexOf("handle.keysSeen = true")
+        assertTrue("a key the guard could not read marks the tab", adapter[unread + 1].startsWith("handle.draft = handle.draft?.let { DraftGuard.next(it, DraftGuard.Key.OTHER"))
+        val coordinator = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/threads/ThreadCoordinator.kt"))
+        assertEquals(
+            listOf(
+                "if (!record.closing && InViewStart.starts(record.state, record.inViewSince, now, { typedIntoQuietly(record) }, { shellRunningQuietly(record) })) {",
+                "private fun typedIntoQuietly(record: Record): Boolean =",
+                "terminal.typedInto(record.tab)",
+            ),
+            SourceRules.offenders(coordinator, listOf("typedInto")),
+        )
+    }
+
+    /**
      * A native library loaded through JNA stays in the IDE until it exits, so a plugin that loads one cannot be unloaded
      * and must ask for a restart to be installed, updated or removed - or the IDE says it "didn't unload fully".
      */

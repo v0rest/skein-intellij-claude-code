@@ -66,14 +66,18 @@ project takes its balloons down wherever they show. With the IDE in the backgrou
 session's name on its own line to the system notification centre, unless you turned system notifications off under
 Settings | Appearance & Behavior | Notifications.
 
-When the IDE restarts, Skein reopens the same thread tabs and runs `claude --resume <id>` in each one only when you
-first open it. The history under the threads lists the project's past sessions, including those started elsewhere and
-those started in a folder inside the project, which show that folder after their title,
-but leaves out the runs a program made through the Agent SDK on its own, so they do not bury yours; a run you went on
-with in a terminal stays, and a session that moved to another folder shows up where it moved to. An open history reads
-the transcripts again when a thread comes or goes, and also when you come back to the IDE from another app or move into
-the Skein panel from anywhere else in the IDE, at most every few seconds, so a session you went on with in a plain
-terminal shows its new state then. A click selects a session,
+When the IDE restarts, or you open the project again, Skein reopens the same thread tabs, and a thread goes on with
+`claude --resume <id>` when you open its tab or when its tab stays in front a moment. So the thread tab in front after a
+restart goes on by itself and the others wait for you, unless the IDE put a file of yours in front - then none goes on
+until you open one. A tab whose shell you typed into first waits for you to open it too, so it does not go on by itself
+into a line of yours. With Open threads in the editor area off, the one that goes on is the thread selected in the
+Terminal tool window while that window is open, one for each pane of a split. The history under the threads lists the
+project's past sessions, including those started elsewhere and those started in a folder inside the project, which
+show that folder after their title, but leaves out the runs a program made through the Agent SDK on its own, so they do
+not bury yours; a run you went on with in a terminal stays, and a session that moved to another folder shows up where
+it moved to. An open history reads the transcripts again when a thread comes or goes, and also when you come back to
+the IDE from another app or move into the Skein panel from anywhere else in the IDE, at most every few seconds, so a
+session you went on with in a plain terminal shows its new state then. A click selects a session,
 and a double click on it, Enter or Open in its right-click menu resumes it in a new tab; a session still running in
 another terminal asks first. Drag the line above the history to give it more room; Skein remembers the
 size and whether you left it open, the same for all projects.
@@ -102,7 +106,8 @@ workspace on branch switching is on, as it is by default. That restore closes ev
 thread tabs included, so right before a checkout Skein marks its thread tabs the way the IDE marks a tab it moves to
 another window, and their terminals live through it - claude goes on undisturbed, even in the middle of an answer, and
 its tab comes back right after the branch's editors, the one that was in front selected again. A restored thread nobody
-had opened yet gets no mark, since opening its tab again would start it, and comes back as it was, not started. When the
+had opened yet gets no mark, since opening its tab again would start it, and comes back not started, unless its tab ends
+up in front, where it goes on like any restored tab. When the
 IDE closes thread tabs that way without a mark - Rollback in the balloon about the restored workspace, the Tasks
 plugin's Load Context, another plugin closing all editors - Skein ends the claude of all of them together first, as it
 does when the project closes, and opens each thread again right after as a Resume of its session, so the row stays and
@@ -352,7 +357,7 @@ claude for the end-to-end tests is a POSIX script, so those tests skip on Window
 
 ## Checked
 
-- 1355 unit tests (six of them need Windows and skip on macOS), among them a lifecycle test that drives a thread from
+- 1657 unit tests (six of them need Windows and skip on macOS), among them a lifecycle test that drives a thread from
   start to restore against a copy of a Claude home and proves, byte for byte, that nothing under it changed (and fails
   as soon as anything does).
 - Unit tests for which glyph and tooltip words a waiting thread gets for each reason (and that the three glyphs differ
@@ -369,7 +374,13 @@ claude for the end-to-end tests is a POSIX script, so those tests skip on Window
   before a thread's shell started or after it, restored threads included, never hung up while a shell with an unknown
   or drifted start time still gives the thread its status, what the close check answers for a × or a Close All (a Skein
   tab or not, its session running or not, handed back, a second ×, an ending that never closed, two views of the tab,
-  the project or the IDE closing), the IDE's selections during Skein's own close not counted as the user's, which other
+  the project or the IDE closing), the IDE's selections during Skein's own close not counted as the user's, a thread
+  waiting to be opened started as a click starts it once its tab stays in view a moment (never out of view, before its
+  shell started or after it exited, after the user typed into it, running elsewhere, exited, while Skein closes it or
+  while the project closes, and a moment again once its session stops running elsewhere), which keys count as typing
+  into a tab, a launch that waited for another window's asked again whether its session runs elsewhere by then, so two
+  windows that restored one session start one claude (a resume you asked for anyway and one after a lost tab whose old
+  claude is gone still go), a tab on its way into the editor not in view yet, which other
   files of a held Close All Skein closes itself (with one editor window only, just the files the IDE asked about and
   still open), the balloon's words, and the order that puts the tab in front last, tested as a list function. For the
   Terminal tool window, where a thread's tab is after a move (a closed editor file or a content that left the tool
@@ -450,14 +461,13 @@ claude for the end-to-end tests is a POSIX script, so those tests skip on Window
   CRLF.
 - The IntelliJ Plugin Verifier against IntelliJ IDEA 2026.3 (263.7307.200): compatible, no internal API usage (the
   build fails on any), no deprecated API usage.
-- In a sandbox IDE: the terminal tab opens in the editor area, the typed command reaches the shell (0.4 to 0.9 s),
-  a closed tab is reported once, and restoring several tabs starts none of them on its own. With Open threads in the
-  editor area off, "+" opens the thread in the Terminal tool window, a click on its row brings that tab up, its own
-  close on a working thread ends claude first and leaves no session running, a thread in a second pane of a split
-  tool window closes the same way, a thread selected in the visible tool window gets no balloon, and a restart brings
-  the threads back into the tool window. With it on, an editor thread tab dragged into the tool window stays in the
-  list and closes the same way there, Move to Editor or a drag back leaves one row with its colour on the editor tab,
-  and the editor ×, Close All and Close work as before.
+- In a sandbox IDE: the terminal tab opens in the editor area, the typed command reaches the shell (0.4 to 0.9 s), and
+  a closed tab is reported once. With Open threads in the editor area off, "+" opens the thread in the Terminal tool
+  window, a click on its row brings that tab up, its own close on a working thread ends claude first and leaves no
+  session running, a thread in a second pane of a split tool window closes the same way, a thread selected in the
+  visible tool window gets no balloon, and a restart brings the threads back into the tool window. With it on, an editor
+  thread tab dragged into the tool window stays in the list and closes the same way there, Move to Editor or a drag
+  back leaves one row with its colour on the editor tab, and the editor ×, Close All and Close work as before.
   With a demo repository whose main is a commit behind its origin, New Thread Here starts a thread in a folder, in a
   file's folder and from an editor tab, is missing on external libraries, scratches and a worktree folder, and a
   subfolder thread comes back after a restart and resumes in its folder, with its session in the History. A waiting
@@ -495,6 +505,12 @@ claude for the end-to-end tests is a POSIX script, so those tests skip on Window
   to another split or window, which must not end claude, and closing the project with threads running.
   A plain IDE terminal opened in a thread's folder, with a claude of its own, must keep running when the thread
   closes.
+  The restore of several threads, moved into the editor one at a time with only the tab left in front going on, waits
+  for its UI test on the macOS test machine, and for a run of that test against Skein 1.5.3, which must fail at the
+  start with no click. By hand it waits for the same with Open threads in the editor area off, two threads and no plain
+  terminal tab, a project opened with a modal dialog in front, a Close right after a restore of many threads, a thread
+  whose claude you end in a plain terminal while its tab is in front, a restored tab you type into before it goes on,
+  and two projects that restore a thread on one session.
   The workspace restore passed its UI tests on the macOS test machine and its branch UI tests on the Windows one, and by
   hand on macOS a workspace cleared as Rollback does with three busy threads and a real middle click during a slow
   checkout. With Version Control turned off IntelliJ 2026.3 did not load Skein 1.5.1 at all - its product compatibility
@@ -538,9 +554,10 @@ started over SSH has no windows. The tests run elsewhere with `./gradlew uiTest`
 to that port, and they need nothing else - whatever they check on that machine, its processes, Claude Code's status
 files and git, they ask from inside the IDE. Each test opens a fresh git repository as a project and closes it again,
 and a failing one leaves a screenshot of that machine under `build/reports/ui-screenshots`. They start the user's real
-`claude` and answer its trust question for the fresh folder, and only the Rename tests, two workspace restore tests and
-the middle click test send it prompts - one or two short ones each, and one long one the middle click test cuts short -
-so the rest cost no tokens. Neither `test` nor CI runs them.
+`claude` and answer its trust question for the fresh folder, and only the Rename tests, two workspace restore tests, the
+project restore test and the middle click test send it prompts - one or two short ones each, three for the project
+restore test, and one long one the middle click test cuts short - so the rest cost no tokens. Neither `test` nor CI runs
+them.
 
 The tests check that the Skein tool window is on, that a thread started from the empty list starts claude with its
 status file and that the tab's × ends both, that a busy thread's tab closed past the close check, the way a middle
@@ -556,12 +573,17 @@ checkout through the IDE to another branch and back keeps an idle thread's claud
 editor and in front, and its row, and claude answers a prompt after. After a first turn, the IDE's own clear of the
 workspace, what Rollback runs, ends claude, leaves none behind and brings the thread back as a Resume, whose second
 prompt and answer land in the same session's transcript. And a thread tab marked for an announced branch switch that is
-closed past the close check, the way a middle click does, ends its claude and stays closed. After each test they end the claude
-processes the IDE under test still has, by pid, and delete the test's repository under `skein-ci/ui-work` in the home
-folder of that machine. A thread starts from the empty list's link, after indexing ended, and on a cold IDE, where the
-first click can go unheard, the link is clicked again every 15 seconds while no claude started and no row came, for up
-to a minute. The title bar's buttons are reached through a click into the list first, since the new UI shows a tool
-window's title bar buttons only while it has the focus.
+closed past the close check, the way a middle click does, ends its claude and stays closed. One more checks a project
+opened again - three threads with a turn each, the project closed and opened again, and then with no click and no focus
+moved by the test the first saved thread, the one left in front, goes on by itself, with a new claude on its session and
+none on the other two, whatever claude another open project starts meanwhile, the IDE never turns active again, the
+other two stay not started, and the IDE's log shows no failed move. It logs the Skein build the IDE runs, so a run
+against 1.5.3 shows it was one. After each test they end the claude processes the IDE under test still has, by pid, and
+delete the test's repository under `skein-ci/ui-work` in the home folder of that machine. A thread starts from the
+empty list's link, after indexing ended, and on a cold IDE, where the first click can go unheard, the link is clicked
+again every 15 seconds while no claude started and no row came, for up to a minute. The title bar's buttons are reached
+through a click into the list first, since the new UI shows a tool window's title bar buttons only while it has the
+focus.
 
 ## Releasing
 

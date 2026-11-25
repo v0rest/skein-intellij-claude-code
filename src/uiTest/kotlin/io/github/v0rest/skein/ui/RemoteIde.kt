@@ -268,6 +268,45 @@ object RemoteIde {
         )
     }
 
+    /**
+     * Starts counting the times the IDE under test turns active (`ApplicationActivationListener.applicationActivated`),
+     * kept in a system property there until [stopCountingActivations]. Skein starts the thread in view when the IDE turns
+     * active, so a test of the start with no click must see none. A count left from before is dropped first.
+     */
+    fun countActivations() {
+        stopCountingActivations()
+        js(
+            """
+            var props = java.lang.System.getProperties();
+            var n = new java.util.concurrent.atomic.AtomicInteger();
+            var d = com.intellij.openapi.util.Disposer.newDisposable('skein ui test activations');
+            com.intellij.openapi.application.ApplicationManager.getApplication().getMessageBus().connect(d).subscribe(
+                com.intellij.openapi.application.ApplicationActivationListener.TOPIC,
+                new com.intellij.openapi.application.ApplicationActivationListener({ applicationActivated: function(frame) { n.incrementAndGet(); } })
+            );
+            props.put('$ACTIVATIONS', n);
+            props.put('$ACTIVATIONS_WATCH', d);
+            'ok'
+            """,
+        )
+    }
+
+    /** How often the IDE turned active since [countActivations], or -1 when nothing counts. */
+    fun activations(): Int = js("var n = java.lang.System.getProperties().get('$ACTIVATIONS'); '' + (n == null ? -1 : n.get())").trim().toInt()
+
+    /** Stops the count [countActivations] started, if any. */
+    fun stopCountingActivations() {
+        js(
+            """
+            var props = java.lang.System.getProperties();
+            var d = props.remove('$ACTIVATIONS_WATCH');
+            props.remove('$ACTIVATIONS');
+            if (d != null) com.intellij.openapi.util.Disposer.dispose(d);
+            'ok'
+            """,
+        )
+    }
+
     /** Puts the window (or window tab) of project [name] in front with the focus, the way a person switches to it. */
     fun focusProject(name: String) {
         js(
@@ -586,13 +625,21 @@ object RemoteIde {
      * (`TerminalView.createSendTextBuilder`, reached through the public `TerminalViewVirtualFile.getTab().getView()`),
      * and a moment later the Enter on its own - a CR that comes in the same piece as the text would land in claude's input
      * as part of it. Off the EDT, the way the hand-run robot script that made threads busy on the test machines sent it.
+     * With [selected] it goes to the thread tab that is the selected editor, read on the EDT, for a project with several.
      */
-    fun sendToTheThreadsTerminal(name: String, text: String) {
+    fun sendToTheThreadsTerminal(name: String, text: String, selected: Boolean = false) {
         fun send(piece: String) = js(
             """
             $PROJECT
             var project = projectNamed('$name'); var view = null;
-            var fs = project == null ? [] : com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).getOpenFiles();
+            var editors = project == null ? null : com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project);
+            var picked = new java.util.concurrent.atomic.AtomicReference();
+            if (editors != null && $selected) {
+                com.intellij.openapi.application.ApplicationManager.getApplication().invokeAndWait(new java.lang.Runnable({
+                    run: function() { picked.set(editors.getSelectedFiles()); }
+                }), com.intellij.openapi.application.ModalityState.any());
+            }
+            var fs = editors == null ? [] : ($selected ? picked.get() : editors.getOpenFiles());
             for (var i = 0; i < fs.length; i++) if (fs[i].getClass().getSimpleName() == 'TerminalViewVirtualFile') view = fs[i].getTab().getView();
             if (view != null) view.createSendTextBuilder().send('$piece');
             '' + (view != null)
@@ -605,6 +652,115 @@ object RemoteIde {
 
     /** Whether project [name] has a thread's terminal open in the editor area. */
     fun terminalInTheEditor(name: String): Boolean = openEditorFiles(name).any { it.contains("{TerminalViewVirtualFile}") }
+
+    /**
+     * Starts a new thread in project [name]'s folder, what "+" does for a project with one folder - for a list that is
+     * not empty any more, whose link [startClaudeFromTheEmptyList] uses. Returns at once, and the tab comes in front.
+     */
+    fun newThread(name: String) {
+        js(
+            """
+            $PROJECT
+            $SKEIN
+            var project = projectNamed('$name');
+            skeinService(project).newThread(project.getBasePath());
+            'ok'
+            """,
+        )
+    }
+
+    /** The threads of project [name] as its Skein list holds them, one "id|sessionId|state" line each, in the list's order. */
+    fun threadsOf(name: String): List<String> = js(
+        """
+        $PROJECT
+        $SKEIN
+        var project = projectNamed('$name'); var out = new java.util.ArrayList();
+        if (project != null) {
+            var ts = flowValue(skeinService(project).getThreads());
+            for (var i = 0; i < ts.size(); i++) { var t = ts.get(i); out.add(t.getId() + '|' + t.getSessionId() + '|' + t.getState()); }
+        }
+        '' + java.lang.String.join('\n', out)
+        """,
+    ).lines().filter { it.isNotBlank() }
+
+    /**
+     * Selects thread [id] of project [name] the way a click on its row does (`ThreadService.select`), which brings its tab
+     * up and counts a finished turn there as seen.
+     */
+    fun selectThread(name: String, id: String) {
+        js(
+            """
+            $PROJECT
+            $SKEIN
+            var project = projectNamed('$name');
+            skeinService(project).select('$id');
+            'ok'
+            """,
+        )
+    }
+
+    /**
+     * The Skein build the IDE under test runs, for a test's log - its version, read from its plugin class loader, and
+     * whether `io.github.v0rest.skein.threads.InViewStart`, the start in view that 1.5.3 lacks, loads there.
+     */
+    fun skeinBuild(): String = js(
+        """
+        var loader = com.intellij.openapi.actionSystem.ActionManager.getInstance().getAction('Skein.NewThread').getClass().getClassLoader();
+        var version;
+        try { version = '' + loader.getPluginDescriptor().getVersion(); } catch (e) { version = 'of unknown version'; }
+        var inView;
+        try { java.lang.Class.forName('io.github.v0rest.skein.threads.InViewStart', false, loader); inView = 'loads'; } catch (e) { inView = 'does not load'; }
+        'Skein ' + version + ', InViewStart ' + inView
+        """,
+    )
+
+    /** The id of the thread whose tab is project [name]'s selected editor, as Skein saw it at its last look, or "". */
+    fun threadInFront(name: String): String = js(
+        """
+        $PROJECT
+        $SKEIN
+        var project = projectNamed('$name');
+        var id = project == null ? null : flowValue(skeinService(project).getInFront());
+        id == null ? '' : '' + id
+        """,
+    )
+
+    /**
+     * Closes every editor of project [name] that is not a thread's terminal (README.md, which a new project shows), so
+     * the project opened again has no editor of the user's to put in front of the thread tabs.
+     */
+    fun closeEditorsButThreads(name: String) {
+        js(
+            """
+            $PROJECT
+            var project = projectNamed('$name');
+            var editors = com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project);
+            com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater(new java.lang.Runnable({
+                run: function() {
+                    var fs = editors.getOpenFiles();
+                    for (var i = 0; i < fs.length; i++) if (fs[i].getClass().getSimpleName() != 'TerminalViewVirtualFile') editors.closeFile(fs[i]);
+                }
+            }));
+            'ok'
+            """,
+        )
+        waitFor(Duration.ofSeconds(10), Duration.ofMillis(250), "only thread tabs in the editor of $name") {
+            openEditorFiles(name).all { it.contains("{TerminalViewVirtualFile}") }
+        }
+    }
+
+    /** How long the IDE's own idea.log is now, in bytes, so [logSince] reads only what a test caused after it. */
+    fun logLength(): Long = js("'' + new java.io.File(com.intellij.openapi.application.PathManager.getLogPath(), 'idea.log').length()").trim().toLong()
+
+    /** The lines idea.log got since it was [length] bytes long, all of it when it was rotated meanwhile. */
+    fun logSince(length: Long): List<String> = js(
+        """
+        var f = new java.io.File(com.intellij.openapi.application.PathManager.getLogPath(), 'idea.log');
+        var bytes = java.nio.file.Files.readAllBytes(f.toPath());
+        var from = bytes.length >= $length ? $length : 0;
+        '' + new java.lang.String(bytes, from, bytes.length - from, java.nio.charset.StandardCharsets.UTF_8)
+        """,
+    ).lines()
 
     /**
      * Clears project [name]'s workspace the way the restore balloon's Rollback and the Tasks plugin's Load Context do,
@@ -687,6 +843,10 @@ object RemoteIde {
     /** [path] as a JavaScript string literal's content: forward slashes, and a quote or backslash escaped. */
     private fun slashed(path: String) = path.replace('\\', '/').replace("'", "\\'")
 
+    /** The system properties of the IDE under test that hold [countActivations]' count and its listener's disposable. */
+    private const val ACTIVATIONS = "skein.uiTest.activations"
+    private const val ACTIVATIONS_WATCH = "skein.uiTest.activationsWatch"
+
     /** The open project named by its argument, or null. */
     private const val PROJECT = """
         function projectNamed(name) {
@@ -708,6 +868,20 @@ object RemoteIde {
             }
             return null;
         }
+    """
+
+    /**
+     * Skein's own classes, which the robot's scripts do not see, loaded through the class loader of one of Skein's
+     * actions, its project service, and the value of a Kotlin StateFlow, read through the public interface, since the
+     * flow's own class is not public.
+     */
+    private const val SKEIN = """
+        function skeinClass(name) {
+            var loader = com.intellij.openapi.actionSystem.ActionManager.getInstance().getAction('Skein.NewThread').getClass().getClassLoader();
+            return java.lang.Class.forName(name, true, loader);
+        }
+        function skeinService(project) { return project.getService(skeinClass('io.github.v0rest.skein.threads.ThreadService')); }
+        function flowValue(flow) { return skeinClass('kotlinx.coroutines.flow.StateFlow').getMethod('getValue').invoke(flow); }
     """
 
     /** git on the IDE's machine, with a throwaway identity for the commits a test makes. */

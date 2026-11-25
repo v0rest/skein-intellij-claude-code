@@ -285,7 +285,10 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
                     // one trip to the EDT for both; the marker first, so a failing coordinator step never holds it up
                     val tabs = terminal.tabsInView()
                     front.value = tabs.inFront
-                    coordinator.onSnapshot(snapshot(), viewed = { it in tabs.inView }, now = now())
+                    // a closing project starts nothing, the tab in view included, since its terminal goes with the project -
+                    // on Windows, where Skein ends no thread before the save, that holds from projectClosing on, and the IDE
+                    // ends a claude started in between with its tab - and a tab behind a modal dialog is not looked at
+                    coordinator.onSnapshot(snapshot(), viewed = { it in tabs.inView }, now = now(), startsInView = !closing() && !tabs.modal)
                 }
                 publish()
                 pushTitlesQuietly()
@@ -410,12 +413,22 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
         }
     }
 
+    /**
+     * A close of [threadIds] that does not happen after all - the IDE's close check lets go of their tabs, and the threads
+     * may start in view again ([ThreadCoordinator.closeDropped]). Never throws but for cancellation.
+     */
     private fun clearEndingQuietly(threadIds: List<String>) {
         try {
             terminal.clearEnding(threadIds)
         } catch (e: Throwable) {
             if (e is CancellationException || e is ProcessCanceledException) return
             LOG.warn("Skein could not let go of the tabs it meant to close", e)
+        }
+        try {
+            scope.launch(confined) { guarded { coordinator.closeDropped(threadIds) } }
+        } catch (e: Throwable) {
+            if (e is CancellationException || e is ProcessCanceledException) return
+            LOG.warn("Skein could not take back a close of its threads", e)
         }
     }
 
@@ -608,11 +621,19 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
                 try {
                     coordinator.restore(threads, snapshot(), now())
                 } finally {
-                    // whatever restore managed to open is what the next save must record, not the stale loaded list
-                    restored = true
-                    // a restored worktree thread may relaunch `claude --worktree` when first opened, and its worktree
-                    // may have been made outside Skein
-                    excludeWorktrees(coordinator.threads.filter { it.worktree != null }.mapTo(LinkedHashSet()) { it.folder })
+                    // whatever restore managed to open is what the next save must record, not the stale loaded list - the
+                    // rows go out first and the flag after, since a save in between would write the rows from before it
+                    try {
+                        publish()
+                    } finally {
+                        restored = true
+                        // a restored worktree thread may relaunch `claude --worktree` once it starts, and its worktree may
+                        // have been made outside Skein
+                        excludeWorktrees(coordinator.threads.filter { it.worktree != null }.mapTo(LinkedHashSet()) { it.folder })
+                        // the tab colour reads these rows, so a restored tab the editor drew before them is drawn once more,
+                        // each once it has its place
+                        for (thread in threads) terminal.refreshPresentation(thread.id)
+                    }
                 }
             }
         }
