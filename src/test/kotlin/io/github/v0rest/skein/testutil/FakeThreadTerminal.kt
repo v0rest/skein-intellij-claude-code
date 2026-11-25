@@ -75,9 +75,9 @@ class FakeThreadTerminal : ThreadTerminal {
             if (lazyShells && !start) notStarted += threadId else onOpen(it)
         }
 
-    /** The tab comes into view; a tab whose session has not started starts its shell now. */
+    /** The tab comes into view; a tab whose session has not started starts its shell now - the newest of that thread's. */
     fun show(threadId: String) {
-        if (notStarted.remove(threadId)) onOpen(opened.single { it.id == threadId })
+        if (notStarted.remove(threadId)) onOpen(opened.last { it.id == threadId })
     }
 
     override fun type(tab: ThreadTab, command: String) {
@@ -118,6 +118,11 @@ class FakeThreadTerminal : ThreadTerminal {
     override fun sessionRunning(tab: ThreadTab): Boolean = tab.id !in notRunning && tab.id !in notStarted
 
     override fun sessionStarted(tab: ThreadTab): Boolean = tab.id !in notStarted
+
+    /** The tabs the user typed into, as a test says - nobody typed into any other. */
+    val userTyped = mutableSetOf<String>()
+
+    override fun typedInto(tab: ThreadTab): Boolean = tab.id in userTyped
 
     override suspend fun awaitEnded(tab: ThreadTab) {
         calls += "await ${tab.id}"

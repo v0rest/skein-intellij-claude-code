@@ -51,6 +51,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.jetbrains.plugins.terminal.view.TerminalContentChangeEvent
@@ -89,8 +91,11 @@ import javax.swing.SwingUtilities
  *   (MoveTerminalSessionToEditorAction), invoked through ActionManager with a data context that carries the Terminal
  *   tool window and its content manager, which is what ToolWindowContextMenuActionBase reads. Doing it by hand would
  *   need TerminalViewVirtualFile (Kotlin-internal) and the IDE's reopen mark on it, which Skein touches only in
- *   [ReopenMark]. The editor file the action opened is found as the one new entry in FileEditorManager.openFiles. With
- *   the setting off ([inEditor]), or if the move fails, the tab stays in the Terminal tool window.
+ *   [ReopenMark]. The editor file the action opened is found as the open file whose editor shows the tab ([shows]).
+ *   The action's openFile runs the EDT's queue while it waits for the editor, so the tabs bound for the editor are set
+ *   up and moved one at a time ([moves]) - else a restore's moves nest, and the next tab's setup runs inside the move
+ *   before it. With the setting off ([inEditor]), or if the move fails before the tab left it, the tab stays in the
+ *   Terminal tool window.
  * - A tab is one `TerminalToolWindowTab` with one `Content` wherever it goes (intellij-community, tag
  *   idea/263.7307.200, read 2026-11-12): Move to Editor detaches it (`detachTab` removes the content with
  *   `Content.TEMPORARY_REMOVED_KEY` set and publishes `TerminalTabsManagerListener.tabDetached`), a drag of the editor
@@ -117,11 +122,13 @@ import javax.swing.SwingUtilities
  *   thread tab open until then, and all the thread tabs of one close are ended and closed together; the tab Skein
  *   closes itself is released, so that check lets it through. The IDE's own checks do not cover this terminal file.
  *   Skein's own closes count as its own selections ([OwnSelections]), so the neighbour the IDE selects is not taken for
- *   the user opening it. In the Terminal tool window the same holds through a `ContentManagerListener` on every content
- *   manager a thread tab sits in: its `contentRemoveQuery` keeps a running thread's tab ([CloseGate.decideTerminalWindowClose])
- *   until Skein has ended the thread and removes the content itself, and lets a removal marked with
- *   `Content.TEMPORARY_REMOVED_KEY` (a move, never a close) through. The terminal plugin's own close question
- *   (`TerminalTabCloseListenerImpl`) is another listener on that content and may come first.
+ *   the user opening it - only once it stays in front a moment does a restored one start
+ *   ([io.github.v0rest.skein.threads.InViewStart]). In the Terminal tool window the same holds through a
+ *   `ContentManagerListener` on every content manager a thread tab sits in: its `contentRemoveQuery` keeps a running
+ *   thread's tab ([CloseGate.decideTerminalWindowClose]) until Skein has ended the thread and removes the content
+ *   itself, and lets a removal marked with `Content.TEMPORARY_REMOVED_KEY` (a move, never a close) through. The
+ *   terminal plugin's own close question (`TerminalTabCloseListenerImpl`) is another listener on that content and may
+ *   come first.
  * - Right before Skein sends a command into a tab it lists the IDE's child processes with their start instants
  *   ([ThreadTab.shellsAtCommand]): a close hangs up a thread's shell only if it is among them (and, the coordinator
  *   checks, was not open before the tab's shell started), so a terminal the user opened afterwards is never signalled.
@@ -142,6 +149,8 @@ import javax.swing.SwingUtilities
  *   method's text comes as `InputMethodEvent`s on whichever editor the terminal shows, the alternate screen's included,
  *   so one app-wide `Toolkit.addAWTEventListener` for them ([composedText]) marks the tab whose view component holds the
  *   event's source. A file dropped on the tab reaches none of these, and neither does text another tool puts into claude.
+ *   The same watch tells whether the user typed into a tab at all ([typedInto]) - a restored thread there starts only
+ *   when opened. Skein's own move into the editor is no such action - its data context carries no `TerminalView`.
  * - `/rename` goes through `TerminalView.createSendTextBuilder` (Experimental) with `shouldExecute`, in
  *   [ClaudeRename.send] alone ([sendRename]).
  * - The IDE's restore of a branch's workspace, its Rollback and the Tasks plugin's Load Context close every editor with
@@ -170,6 +179,12 @@ class TerminalAdapter(
 
         /** Completed once the tab has its first place, the editor or the Terminal tool window; exceptionally when its setup failed. */
         val placed = CompletableDeferred<Unit>()
+
+        /**
+         * Completed once the tab's setup has its turn - it holds [moves], or needs no move - so a Close gives a tab queued
+         * behind a restore's moves its few seconds only from then, and exceptionally when its setup failed before that.
+         */
+        val turn = CompletableDeferred<Unit>()
 
         @Volatile
         override var shellsAtCommand: ShellsAtCommand = ShellsAtCommand.NoCommandYet
@@ -215,6 +230,13 @@ class TerminalAdapter(
          */
         @Volatile
         var draft: DraftGuard.Draft? = null
+
+        /**
+         * A key, a paste, the terminal's Escape or an input method's text came into the tab since its setup ([typedInto]),
+         * set on the EDT and never cleared - the tab and its shell are the same until the thread gets a new tab.
+         */
+        @Volatile
+        var keysSeen = false
 
         /**
          * The Enter, by its [DraftGuard.Draft.sentAt], that a turn seen right after it showed sent the draft
@@ -287,6 +309,15 @@ class TerminalAdapter(
     private val own = OwnSelections(QUIET_AFTER_PROGRAMMATIC_MILLIS, ::monotonicMillis)
 
     private fun userCaused(): Boolean = own.userCaused()
+
+    /**
+     * Held while a tab bound for the editor is set up and moved there ([open]), so the tabs of a restore go one at a time -
+     * Terminal.MoveToEditor's openFile runs the EDT's queue while it waits for the editor, and the next tab's setup would
+     * run inside it. A New Thread or a History resume opened meanwhile waits its turn too, a tab for the Terminal tool
+     * window does not. Taken nowhere else - it is not reentrant, and a move's own events (fileOpened, a tick's locate)
+     * adopt the tab while it is held.
+     */
+    private val moves = Mutex()
 
     init {
         project.messageBus.connect(scope).subscribe(
@@ -449,65 +480,17 @@ class TerminalAdapter(
         }
         scope.launch(Dispatchers.EDT) {
             try {
-                // a tab created without focus still becomes the Terminal tool window's selected one: kept to give it back
-                val selectedBefore = if (toEditor || focus) null else terminalWindowSelection()
-                val tab = try {
-                    TerminalToolWindowTabsManager.getInstance(project).createTabBuilder()
-                        .workingDirectory(folder)
-                        .tabName(tabName)
-                        .requestFocus(false)
-                        .deferSessionStartUntilUiShown(!start)
-                        .closeOnProcessTermination(false)
-                        .restoreOnProjectReopen(false)
-                        .createTab()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    LOG.warn("Skein could not open a terminal tab in $folder", e)
-                    handle.tab.completeExceptionally(e)
-                    handle.placed.completeExceptionally(e)
-                    closed(handle) // a thread without a tab must not linger in the list or come back on every restart
-                    return@launch
+                // in the editor one tab at a time - the move's openFile runs the EDT's queue while it waits for the editor,
+                // and the next thread's setup would run inside it - a restore of several threads nested its moves that way
+                if (toEditor) {
+                    moves.withLock { setUp(handle, tabName, focus, start, toEditor = true) }
+                } else {
+                    setUp(handle, tabName, focus, start, toEditor = false)
                 }
-                handle.content = tab.content
-                watchDisposal(handle, tab.content)
-                try {
-                    handle.session = tab.view.sessionState
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    // without it the close check lets the tab close at once and a close does not wait, as before
-                    LOG.warn("Skein cannot follow the terminal session of thread $threadId", e)
-                }
-                handle.tab.complete(tab)
-                try {
-                    handle.tabTitle = tab.view.title
-                    applyTitle(handle) // a rename that came before the tab
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    LOG.warn("Skein could not name the tab of thread $threadId", e)
-                }
-                watchFocus(threadId, tab)
-                watchKeys(handle, tab)
-                if (!toEditor) {
-                    stayInTerminalWindow(handle, tab.content, focus, selectedBefore)
-                    return@launch
-                }
-                val file = try {
-                    moveToEditor(tab, focus)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    LOG.warn("Skein could not move the terminal tab into the editor; it stays in the Terminal tool window", e)
-                    stayInTerminalWindow(handle, tab.content, focus, null)
-                    return@launch
-                }
-                adoptFile(handle, file)
-                handle.placed.complete(Unit)
             } catch (e: Throwable) {
                 // whatever stopped the setup, nothing may wait for this tab forever (a Close waits for its place)
                 val failure = IllegalStateException("the terminal tab of thread $threadId was not set up", e)
+                handle.turn.completeExceptionally(failure)
                 handle.tab.completeExceptionally(failure)
                 handle.placed.completeExceptionally(failure)
                 if (e is CancellationException || e is ControlFlowException) throw e
@@ -518,10 +501,86 @@ class TerminalAdapter(
     }
 
     /**
-     * Runs the bundled Terminal.MoveToEditor action on [tab] and returns the editor file it opened. A move that fails
-     * leaves the tab in the Terminal tool window, where the caller keeps it.
+     * Sets up [handle]'s tab on the EDT - creates it in the Terminal tool window, follows it, and with [toEditor] moves it
+     * into the editor, where the caller holds [moves]. Completes the handle's turn first, its tab once it exists and its
+     * place once it has one. Whatever it throws, the caller's catch turns into a failed setup.
      */
-    private suspend fun moveToEditor(tab: TerminalToolWindowTab, focus: Boolean): VirtualFile {
+    private suspend fun setUp(handle: Handle, tabName: String, focus: Boolean, start: Boolean, toEditor: Boolean) {
+        handle.turn.complete(Unit)
+        // a tab created without focus still becomes the Terminal tool window's selected one: kept to give it back
+        val selectedBefore = if (toEditor || focus) null else terminalWindowSelection()
+        // the selection a new tab makes in the Terminal tool window is Skein's own - a tool window pane Skein listens to
+        // already would take it for the user opening the thread, and a restored one would start at once
+        own.begin()
+        val tab = try {
+            TerminalToolWindowTabsManager.getInstance(project).createTabBuilder()
+                .workingDirectory(handle.folder)
+                .tabName(tabName)
+                .requestFocus(false)
+                .deferSessionStartUntilUiShown(!start)
+                .closeOnProcessTermination(false)
+                .restoreOnProjectReopen(false)
+                .createTab()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            LOG.warn("Skein could not open a terminal tab in ${handle.folder}", e)
+            handle.tab.completeExceptionally(e)
+            handle.placed.completeExceptionally(e)
+            closed(handle) // a thread without a tab must not linger in the list or come back on every restart
+            return
+        } finally {
+            own.end()
+        }
+        handle.content = tab.content
+        watchDisposal(handle, tab.content)
+        try {
+            handle.session = tab.view.sessionState
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // without it the close check lets the tab close at once and a close does not wait, as before
+            LOG.warn("Skein cannot follow the terminal session of thread ${handle.id}", e)
+        }
+        handle.tab.complete(tab)
+        try {
+            handle.tabTitle = tab.view.title
+            applyTitle(handle) // a rename that came before the tab
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            LOG.warn("Skein could not name the tab of thread ${handle.id}", e)
+        }
+        watchFocus(handle.id, tab)
+        watchKeys(handle, tab)
+        if (!toEditor) {
+            stayInTerminalWindow(handle, tab.content, focus, selectedBefore)
+            return
+        }
+        val file = try {
+            moveToEditor(handle, tab, focus)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // the action may have taken the tab out of the Terminal tool window before it failed, so where the tab
+            // is now decides, and an editor file that shows it is marked on the way
+            val after = TabPlaces.afterFailedMove(whereQuietly(handle))
+            LOG.warn("Skein could not move the terminal tab of thread ${handle.id} into the editor; ${after.words}", e)
+            if (after == TabPlaces.AfterFailedMove.STAYS) stayInTerminalWindow(handle, tab.content, focus, null) else handle.placed.complete(Unit)
+            return
+        }
+        adoptFile(handle, file)
+        handle.placed.complete(Unit)
+    }
+
+    /**
+     * Runs the bundled Terminal.MoveToEditor action on [handle]'s [tab] and returns the editor file it opened, the open
+     * file whose editor shows this very tab ([shows]), so a file the IDE or another plugin opened meanwhile is never
+     * taken for it. Without [focus] the editor selected before comes back in front, found file or not - with the moves
+     * one at a time that keeps a restore's first tab in front, or the editor the user had there. A move that throws or
+     * shows the tab in no editor leaves the caller to look where the tab is.
+     */
+    private suspend fun moveToEditor(handle: Handle, tab: TerminalToolWindowTab, focus: Boolean): VirtualFile {
         val content = tab.content
         val action = ActionManager.getInstance().getAction(MOVE_TO_EDITOR_ACTION_ID)
             ?: throw IllegalStateException("action $MOVE_TO_EDITOR_ACTION_ID is not registered")
@@ -529,7 +588,6 @@ class TerminalAdapter(
             ?: throw IllegalStateException("no $TERMINAL_TOOL_WINDOW_ID tool window")
         val editors = FileEditorManager.getInstance(project)
         val previouslySelected = editors.selectedEditor?.file
-        val before = editors.openFiles.toSet()
         own.begin()
         try {
             toolWindow.contentManager.setSelectedContent(content)
@@ -539,8 +597,7 @@ class TerminalAdapter(
                 .add(PlatformDataKeys.TOOL_WINDOW_CONTENT_MANAGER, toolWindow.contentManager)
                 .build()
             ActionUtil.performAction(action, AnActionEvent.createEvent(action, context, null, ActionPlaces.UNKNOWN, ActionUiKind.NONE, null))
-            val file = (editors.openFiles.toSet() - before).singleOrNull()
-                ?: throw IllegalStateException("$MOVE_TO_EDITOR_ACTION_ID opened no editor for the terminal tab")
+            val file = editors.openFiles.firstOrNull { shows(editors, it, handle) }
             if (!focus && previouslySelected != null) {
                 try {
                     // without focus: a focus change would be reported later as the user opening that thread
@@ -551,11 +608,21 @@ class TerminalAdapter(
                     LOG.warn("Skein could not bring back the editor that was selected before", e)
                 }
             }
-            return file
+            return file ?: throw IllegalStateException("$MOVE_TO_EDITOR_ACTION_ID opened no editor that shows the terminal tab")
         } finally {
             own.end()
         }
     }
+
+    /** Where [handle]'s tab is now ([locate]), null when that cannot be told. EDT only. */
+    private fun whereQuietly(handle: Handle): TabPlaces.Where? =
+        try {
+            locate(handle).where
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
 
     private suspend fun show(file: VirtualFile, focus: Boolean) {
         FileEditorManager.getInstance(project).openFile(file, FileEditorOpenRequest.withFocus(focus).withReuseOpen(true))
@@ -575,7 +642,8 @@ class TerminalAdapter(
     /**
      * Follows the keys typed into the tab for the draft guard ([DraftGuard]), for as long as the tab's content lives,
      * wherever it goes (an input method's text comes through [composedText]). The tab starts dirty until the first turn the person starts
-     * ([DraftGuard.LAUNCHED]). A tab whose watch cannot be added stays unwatched and never counts as clean. EDT only.
+     * ([DraftGuard.LAUNCHED]). A tab whose watch cannot be added stays unwatched, never counts as clean and counts as
+     * typed into ([typedInto]). EDT only.
      */
     private fun watchKeys(handle: Handle, tab: TerminalToolWindowTab) {
         try {
@@ -589,7 +657,8 @@ class TerminalAdapter(
                             val key = event.awtEvent
                             onKey(handle, DraftGuard.classify(key.id, key.keyCode, key.keyChar, key.modifiersEx))
                         } catch (e: Exception) {
-                            // a key the guard could not read may have left a draft
+                            // a key the guard could not read may have left a draft, and may have typed into the shell
+                            handle.keysSeen = true
                             handle.draft = handle.draft?.let { DraftGuard.next(it, DraftGuard.Key.OTHER, enterMaySend = false, at = monotonicMillis(), wallAt = System.currentTimeMillis()) }
                             if (e is CancellationException) throw e
                             LOG.warn("Skein could not read a key typed into thread ${handle.id}", e)
@@ -603,12 +672,16 @@ class TerminalAdapter(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            LOG.warn("Skein cannot follow the keys typed into thread ${handle.id}, so it types no rename there", e)
+            LOG.warn("Skein cannot follow the keys typed into thread ${handle.id}, so it types no rename there and starts it only when opened", e)
         }
     }
 
-    /** One key or input-changing action in [handle]'s tab, for the draft guard, after what claude did meanwhile. EDT only. */
+    /**
+     * One key or input-changing action in [handle]'s tab, for the draft guard, after what claude did meanwhile, and for the
+     * start in view ([typedInto]) first, which a paste into a tab whose key watch failed counts for too. EDT only.
+     */
     private fun onKey(handle: Handle, key: DraftGuard.Key) {
+        if (DraftGuard.reachesInput(key)) handle.keysSeen = true
         val draft = DraftGuard.settled(handle.draft ?: return, handle.provenSentAt)
         handle.draft = DraftGuard.next(draft, key, enterMaySend = handle.id in enterMaySend, at = monotonicMillis(), wallAt = System.currentTimeMillis())
     }
@@ -896,8 +969,8 @@ class TerminalAdapter(
     override fun close(tabs: List<ThreadTab>) {
         val closing = tabs.map { it as Handle }
         scope.launch(Dispatchers.EDT) {
-            // read when the closing starts: the tab in front goes last, so the neighbour the IDE then selects is not
-            // the next one to close (Skein takes that selection as the user opening the thread)
+            // read when the closing starts - the tab in front goes last, so the neighbour the IDE then shows is not the
+            // next one to close (its shell would start, and a restored one left in front a moment starts claude)
             val front = try {
                 FileEditorManager.getInstance(project).selectedEditor?.file?.getUserData(THREAD_ID)
             } catch (e: CancellationException) {
@@ -910,14 +983,17 @@ class TerminalAdapter(
     }
 
     /**
-     * Closes one tab where it is now. A tab still being set up is closed once it has its place; one that has none after
-     * [TAB_READY_WAIT_MILLIS] is skipped with a warning, so it cannot hold up the rest of a batch. A tab on its way
-     * between the editor and the Terminal tool window is looked for once more a moment later, and one still in neither
-     * place then is closed through the terminal plugin, which releases its content. EDT only.
+     * Closes one tab where it is now. A tab still being set up is closed once it has its place - one queued behind a
+     * restore's moves is waited for until its setup has its turn, for at most [MOVE_TURN_WAIT_MILLIS], and from then a
+     * tab that has no place after [TAB_READY_WAIT_MILLIS] is skipped with a warning, so it cannot hold up the rest of a
+     * batch. A tab on its way between the editor and the Terminal tool window is looked for once more a moment later, and
+     * one still in neither place then is closed through the terminal plugin, which releases its content. EDT only.
      */
     private suspend fun closeTab(handle: Handle) {
         try {
-            withTimeoutOrNull(TAB_READY_WAIT_MILLIS) { handle.placed.await() } ?: run {
+            val placed = withTimeoutOrNull(MOVE_TURN_WAIT_MILLIS) { handle.turn.await() } != null &&
+                withTimeoutOrNull(TAB_READY_WAIT_MILLIS) { handle.placed.await() } != null
+            if (!placed) {
                 LOG.warn("Skein did not close the tab of thread ${handle.id}: it has not reached the editor or the Terminal tool window")
                 handle.endingSince = null
                 return
@@ -1045,6 +1121,9 @@ class TerminalAdapter(
     // after it spawned the shell: NotStarted is the last sign that the tab's shell may not exist yet
     override fun sessionStarted(tab: ThreadTab): Boolean =
         (tab as Handle).session?.value.let { it != null && it != TerminalViewSessionState.NotStarted }
+
+    // a tab whose key watch is not there (not set up yet, or it could not be added) may have been typed into unheard
+    override fun typedInto(tab: ThreadTab): Boolean = (tab as Handle).let { it.keysSeen || it.draft == null }
 
     override suspend fun awaitEnded(tab: ThreadTab) {
         val handle = tab as Handle
@@ -1537,8 +1616,8 @@ class TerminalAdapter(
      * open in the editor, its terminal started and not on its way out, gets Skein's reopen mark ([TabRestore.toMark],
      * [ReopenMark]), so the IDE's restore of the branch's workspace closes it only to open it again. A restored thread
      * nobody opened gets none, since opening its tab again would start it - the restore closes it, and it comes back
-     * unstarted ([lost]). A file the IDE itself marked for a move under way is left alone. On the EDT, where the IDE's Git
-     * tells it, and from another thread it goes there first.
+     * not started unless its new tab ends up in front ([lost]). A file the IDE itself marked for a move under way is left
+     * alone. On the EDT, where the IDE's Git tells it, and from another thread it goes there first.
      */
     fun branchWillChange() = onEdt("mark its thread tabs before a branch switch") {
         val editors = FileEditorManager.getInstance(project)
@@ -1684,8 +1763,15 @@ class TerminalAdapter(
         val handle = handles[threadId] ?: return
         scope.launch(Dispatchers.EDT + ModalityState.any().asContextElement()) {
             try {
-                // only an editor tab has a colour to redraw; a tab still being set up gets it once it reaches the editor
-                if (!handle.placed.isCompleted) return@launch
+                // a tab still being set up is waited for - the rows its colour reads may have come after it was drawn, as
+                // a restore's do - and only an editor tab has a colour to redraw
+                try {
+                    handle.placed.await()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    if (handle.content == null) return@launch
+                }
                 val place = locate(handle)
                 if (place.where != TabPlaces.Where.EDITOR) return@launch
                 FileEditorManager.getInstance(project).updateFilePresentation(place.file!!)
@@ -1767,9 +1853,13 @@ class TerminalAdapter(
                 focusInThisProject = focusInThisProject,
                 selectedThreadOfFocusedWindow = selected,
                 threadsSelectedInTerminalWindow = inTerminalWindow,
+                // a tab in the middle of Skein's own move is selected for a moment on its way, and that is no look at it
+                settled = handles.values.filter { it.placed.isCompleted && !it.disposed }.mapTo(HashSet()) { it.id },
             ),
             // no focus check: the list marks the tab in front also while the IDE is in the background
             inFront = ViewRule.inFront(selected, inTerminalWindow),
+            // the modal stack's top, whatever modality this trip runs with
+            modal = ModalityState.current() != ModalityState.nonModal(),
         )
     }
 
@@ -1791,8 +1881,17 @@ class TerminalAdapter(
         private const val REOPEN_GRACE_MILLIS = 1_000L
         private const val QUIET_AFTER_PROGRAMMATIC_MILLIS = 1_000L
 
-        /** How long a Close waits for a tab that is still being set up; it normally takes well under a second. */
+        /**
+         * How long a Close waits for a tab that is still being set up, from when its setup has its turn ([Handle.turn]) -
+         * the setup and the move normally take well under a second.
+         */
         private const val TAB_READY_WAIT_MILLIS = 5_000L
+
+        /**
+         * How long a Close waits for a tab queued behind the moves of a restore to get its turn ([moves]) - one move after
+         * another, each normally well under a second. Skein's own close counts every selection as its own meanwhile.
+         */
+        private const val MOVE_TURN_WAIT_MILLIS = 30_000L
 
         /** How long after a branch switch Skein lifts the reopen marks the restore did not use ([branchHasChanged]). */
         private const val SETTLE_MILLIS = 1_000L

@@ -20,6 +20,7 @@ import io.github.v0rest.skein.testutil.Fixture
 import io.github.v0rest.skein.testutil.sessionFile
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -414,7 +415,8 @@ class ThreadCoordinatorTest {
      * A Close All over two running threads and a restored one never opened: both running threads are ended, all three
      * tabs close in one batch, the one in front last, and nothing is launched. When the tab in front goes, the IDE
      * selects its neighbour, another restored thread outside the batch; that is Skein's own doing, not the user opening
-     * it, so it does not start `claude --resume` either.
+     * it, so it does not start `claude --resume` then either (only once it stays in front a moment, see
+     * theNeighbourLeftInFrontAfterSkeinsCloseStartsOnceItStaysThere).
      */
     @Test
     fun aBatchEndsItsRunningThreadsAndClosesAllItsTabsAtOnceLaunchingNothing() {
@@ -614,9 +616,9 @@ class ThreadCoordinatorTest {
     }
 
     /**
-     * A restored thread shown at startup starts its shell at once but is launched only when the user clicks into it; a
-     * plain terminal opened in between, with a claude that shows up first, is not the thread's either: it was not there
-     * when the thread's session was first seen started.
+     * A restored thread shown at startup starts its shell at once but is launched only later (here a click, nobody
+     * looking at it meanwhile). A plain terminal opened in between, with a claude that shows up first, is not the
+     * thread's either - it was not there when the thread's session was first seen started.
      */
     @Test
     fun aRestoredThreadNeverHangsUpATerminalOpenedAfterItsShell() {
@@ -693,6 +695,489 @@ class ThreadCoordinatorTest {
         assertEquals(10L, thread("r1").anchor)
     }
 
+    /** Only a thread opening its tab would start counts as not started - what the trust gate on coming back asks. */
+    @Test
+    fun notStartedNamesOnlyAThreadThatOpeningWouldStart() {
+        coordinator.restore(listOf(saved("r1", A)), snap(), now = 1_000)
+        assertTrue(coordinator.notStarted("r1"))
+        assertFalse(coordinator.notStarted("nobody"))
+        coordinator.onTabSelected("r1", snap(), now = 2_000)
+        assertFalse(coordinator.notStarted("r1"))
+    }
+
+    /**
+     * The tab a restore leaves in front, its shell started, stays in view for a moment while nobody clicks - that counts
+     * as opening it, and its session is resumed there.
+     */
+    @Test
+    fun aRestoredThreadInViewForAMomentResumes() {
+        restoreLazily(saved("r1", A))
+        terminal.show("r1")
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 2_000)
+        assertTrue(terminal.typed.isEmpty())
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 3_500)
+        assertEquals(listOf("r1" to "claude --resume $A"), terminal.typed)
+        assertEquals(ThreadState.Starting, thread("r1").state)
+    }
+
+    @Test
+    fun aRestoredThreadInViewForLessThanAMomentWaits() {
+        restoreLazily(saved("r1", A))
+        terminal.show("r1")
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 2_000)
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 3_499)
+        assertTrue(terminal.typed.isEmpty())
+        assertEquals(ThreadState.NotStarted, thread("r1").state)
+    }
+
+    /** A burst of snapshots (a busy session directory) makes the moment no shorter than the clock says. */
+    @Test
+    fun aBurstOfSnapshotsDoesNotShortenTheMoment() {
+        restoreLazily(saved("r1", A))
+        terminal.show("r1")
+        for (now in 2_000L..2_020L) coordinator.onSnapshot(snap(), viewed = { true }, now = now)
+        assertTrue(terminal.typed.isEmpty())
+        assertEquals(ThreadState.NotStarted, thread("r1").state)
+    }
+
+    /** A tab in view whose shell has not started yet waits for it - claude typed there now would hold the launch slot for nothing. */
+    @Test
+    fun aRestoredThreadInViewWaitsForItsShell() {
+        restoreLazily(saved("r1", A))
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 2_000)
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 4_000)
+        assertTrue(terminal.typed.isEmpty())
+        assertEquals(ThreadState.NotStarted, thread("r1").state)
+        terminal.show("r1")
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 5_000)
+        assertEquals(listOf("r1" to "claude --resume $A"), terminal.typed)
+    }
+
+    /** Its session turns up in another terminal while the tab is in view - running elsewhere, as a click would leave it, and nothing typed. */
+    @Test
+    fun aRestoredThreadInViewWhoseSessionRunsElsewhereDoesNotStart() {
+        restoreLazily(saved("r1", A))
+        terminal.show("r1")
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 2_000)
+        val foreign = claude(200, under = 2, sessionId = A)
+        coordinator.onSnapshot(snap(foreign), viewed = { true }, now = 3_500)
+        coordinator.onSnapshot(snap(foreign), viewed = { true }, now = 6_000)
+        assertTrue(terminal.typed.isEmpty())
+        assertEquals(ThreadState.RunningElsewhere(200), thread("r1").state)
+    }
+
+    @Test
+    fun aThreadRestoredWhileItsSessionRunsElsewhereStaysSoInView() {
+        val foreign = claude(200, under = 2, sessionId = A)
+        terminal.lazyShells = true
+        coordinator.restore(listOf(saved("r1", A)), snap(foreign), now = 1_000)
+        terminal.show("r1")
+        coordinator.onSnapshot(snap(foreign), viewed = { true }, now = 2_000)
+        coordinator.onSnapshot(snap(foreign), viewed = { true }, now = 4_000)
+        assertTrue(terminal.typed.isEmpty())
+        assertEquals(ThreadState.RunningElsewhere(200), thread("r1").state)
+    }
+
+    /** Another window's launch holds the app-wide slot, so the thread in view is queued, starting, and typed once the slot is free. */
+    @Test
+    fun aRestoredThreadInViewQueuesBehindAnotherWindowsLaunch() {
+        val otherTerminal = FakeThreadTerminal().apply { onOpen = { spawnShell() } }
+        val other = ThreadCoordinator(otherTerminal, ThreadMapper(probe), slot, events) { "o1" }
+        other.newThread("/q", now = 1_000) // shell 10, and the slot
+        terminal.lazyShells = true
+        coordinator.restore(listOf(saved("r1", A)), snap(), now = 1_000)
+        terminal.show("r1") // shell 11
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 2_000)
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 3_500)
+        assertTrue(terminal.typed.isEmpty())
+        assertEquals(ThreadState.Starting, thread("r1").state)
+        val s100 = claude(100, under = 10, cwd = "/q", sessionId = D)
+        other.onSnapshot(snap(s100), viewed = { false }, now = 4_000)
+        assertNull(slot.holder(now = 4_000))
+        coordinator.onSnapshot(snap(s100), viewed = { true }, now = 4_500)
+        assertEquals(listOf("r1" to "claude --resume $A"), terminal.typed)
+        assertEquals("r1", slot.holder(now = 4_500))
+    }
+
+    /**
+     * Two windows restored a thread on one session. The first one's start takes the app-wide slot and the second one's
+     * waits for it - and once the first claude's status file is there and the slot is free, the second window types no
+     * second claude on that session, its thread runs elsewhere and holds no slot. Once that claude is gone, the thread
+     * waits again and goes on a moment later, still in view.
+     */
+    @Test
+    fun aQueuedStartWhoseSessionCameUpInAnotherWindowIsNotTyped() {
+        restoreLazily(saved("r1", A))
+        val otherTerminal = FakeThreadTerminal().apply {
+            onOpen = { spawnShell() }
+            lazyShells = true
+        }
+        val other = ThreadCoordinator(otherTerminal, ThreadMapper(probe), slot, events) { "o1" }
+        other.restore(listOf(saved("o1", A)), snap(), now = 1_000)
+        otherTerminal.show("o1") // shell 10
+        terminal.show("r1") // shell 11
+        for (now in listOf(2_000L, 3_500L)) {
+            other.onSnapshot(snap(), viewed = { true }, now = now)
+            coordinator.onSnapshot(snap(), viewed = { true }, now = now)
+        }
+        assertEquals(listOf("o1" to "claude --resume $A"), otherTerminal.typed)
+        assertTrue(terminal.typed.isEmpty())
+        assertEquals(ThreadState.Starting, thread("r1").state)
+        val s100 = claude(100, under = 10, startedAt = 3_700, sessionId = A)
+        other.onSnapshot(snap(s100), viewed = { true }, now = 4_000)
+        assertNull(slot.holder(now = 4_000))
+        coordinator.onSnapshot(snap(s100), viewed = { true }, now = 4_000)
+        assertTrue(terminal.typed.isEmpty())
+        assertEquals(ThreadState.RunningElsewhere(100), thread("r1").state)
+        assertNull(slot.holder(now = 4_000))
+        coordinator.onSnapshot(snap(s100), viewed = { true }, now = 6_000)
+        assertTrue(terminal.typed.isEmpty())
+        probe.kill(100)
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 7_000)
+        assertEquals(ThreadState.NotStarted, thread("r1").state)
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 8_500)
+        assertEquals(listOf("r1" to "claude --resume $A"), terminal.typed)
+    }
+
+    /**
+     * A thread back after a lost tab resumes on its own, and while its resume waits for the slot someone resumes its
+     * session in another terminal - it runs elsewhere then, nothing typed, and resumes once that claude is gone.
+     */
+    @Test
+    fun aQueuedResumeAfterALostTabWaitsForItsSessionRunningElsewhere() {
+        coordinator.newThread("/p", now = 1_000) // shell 10
+        val s100 = claude(100, under = 10)
+        coordinator.onSnapshot(snap(s100), viewed = { false }, now = 2_000)
+        coordinator.endingsBeforeLoss(listOf("t1"), snap(s100))
+        probe.kill(100)
+        probe.kill(10)
+        val otherTerminal = FakeThreadTerminal().apply { onOpen = { spawnShell() } }
+        val other = ThreadCoordinator(otherTerminal, ThreadMapper(probe), slot, events) { "o1" }
+        other.newThread("/q", now = 2_500) // shell 11, and the slot
+        coordinator.onTabLost("t1", select = false, snap(), now = 3_000) // shell 12, its resume queued
+        assertEquals(listOf("t1" to "claude"), terminal.typed)
+        assertEquals(ThreadState.Starting, thread().state)
+        val foreign = claude(200, under = 2, sessionId = A)
+        val s300 = claude(300, under = 11, startedAt = 3_000, cwd = "/q", sessionId = D)
+        other.onSnapshot(snap(s300, foreign), viewed = { false }, now = 3_500)
+        assertNull(slot.holder(now = 3_500))
+        coordinator.onSnapshot(snap(s300, foreign), viewed = { false }, now = 3_500)
+        assertEquals(listOf("t1" to "claude"), terminal.typed)
+        assertEquals(ThreadState.RunningElsewhere(200), thread().state)
+        probe.kill(200)
+        coordinator.onSnapshot(snap(s300), viewed = { false }, now = 4_000)
+        assertEquals(listOf("t1" to "claude", "t1" to "claude --resume $A"), terminal.typed)
+    }
+
+    /** The same resume with only the status file of the old tab's claude, gone already, left in the snapshot - typed once the slot is free. */
+    @Test
+    fun aQueuedResumeAfterALostTabIsNotHeldBackByAClaudeAlreadyGone() {
+        coordinator.newThread("/p", now = 1_000) // shell 10
+        val s100 = claude(100, under = 10)
+        coordinator.onSnapshot(snap(s100), viewed = { false }, now = 2_000)
+        coordinator.endingsBeforeLoss(listOf("t1"), snap(s100))
+        probe.kill(100)
+        probe.kill(10)
+        val otherTerminal = FakeThreadTerminal().apply { onOpen = { spawnShell() } }
+        val other = ThreadCoordinator(otherTerminal, ThreadMapper(probe), slot, events) { "o1" }
+        other.newThread("/q", now = 2_500) // shell 11, and the slot
+        coordinator.onTabLost("t1", select = false, snap(), now = 3_000)
+        val s300 = claude(300, under = 11, startedAt = 3_000, cwd = "/q", sessionId = D)
+        other.onSnapshot(snap(s300, s100), viewed = { false }, now = 3_500)
+        coordinator.onSnapshot(snap(s300, s100), viewed = { false }, now = 3_500)
+        assertEquals(listOf("t1" to "claude", "t1" to "claude --resume $A"), terminal.typed)
+    }
+
+    /** A resume the user asked for although its session runs elsewhere ("Resume Here") still goes once the slot is free. */
+    @Test
+    fun aResumeTheUserAskedForAnywayGoesOnceTheSlotIsFree() {
+        val otherTerminal = FakeThreadTerminal().apply { onOpen = { spawnShell() } }
+        val other = ThreadCoordinator(otherTerminal, ThreadMapper(probe), slot, events) { "o1" }
+        other.newThread("/q", now = 1_000) // shell 10, and the slot
+        val foreign = claude(200, under = 2, sessionId = A)
+        assertEquals(ResumeOutcome.RunningElsewhere(200), coordinator.resume(entry(A), snap(foreign), now = 1_100))
+        assertEquals(ResumeOutcome.Opened("t1"), coordinator.resume(entry(A), snap(foreign), now = 1_100, force = true))
+        assertTrue(terminal.typed.isEmpty())
+        val s100 = claude(100, under = 10, cwd = "/q", sessionId = D)
+        other.onSnapshot(snap(s100, foreign), viewed = { false }, now = 2_000)
+        coordinator.onSnapshot(snap(s100, foreign), viewed = { false }, now = 2_000)
+        assertEquals(listOf("t1" to "claude --resume $A"), terminal.typed)
+    }
+
+    @Test
+    fun aRestoredWorktreeThreadInViewStartsTheWorktreeCommand() {
+        restoreLazily(saved("r1", null, worktree = "feat-x"))
+        terminal.show("r1")
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 2_000)
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 3_500)
+        assertEquals(listOf("r1" to "claude --worktree feat-x"), terminal.typed)
+    }
+
+    /** Only the tab in view starts, the others stay lazy, their shells started or not. */
+    @Test
+    fun onlyTheRestoredThreadInViewStarts() {
+        restoreLazily(saved("r1", A), saved("r2", Z), saved("r3", D))
+        terminal.show("r1")
+        terminal.show("r2")
+        for (now in listOf(2_000L, 3_500L, 5_000L, 9_000L)) coordinator.onSnapshot(snap(), viewed = { it == "r1" }, now = now)
+        assertEquals(listOf("r1" to "claude --resume $A"), terminal.typed)
+        assertEquals(ThreadState.NotStarted, thread("r2").state)
+        assertEquals(ThreadState.NotStarted, thread("r3").state)
+    }
+
+    @Test
+    fun theUserOpeningItTooStartsItOnce() {
+        restoreLazily(saved("r1", A), saved("r2", Z))
+        terminal.show("r1")
+        terminal.show("r2")
+        coordinator.onSnapshot(snap(), viewed = { it == "r1" }, now = 2_000)
+        coordinator.onSnapshot(snap(), viewed = { it == "r1" }, now = 3_500)
+        coordinator.onTabSelected("r1", snap(), now = 3_600)
+        val s100 = claude(100, under = 10, startedAt = 3_700)
+        coordinator.onSnapshot(snap(s100), viewed = { it == "r1" }, now = 4_500)
+        assertEquals(10L, thread("r1").anchor)
+        // the other way round - the user's click first, then the tab stays in view
+        coordinator.onTabSelected("r2", snap(s100), now = 4_600)
+        coordinator.onSnapshot(snap(s100), viewed = { it == "r2" }, now = 5_500)
+        coordinator.onSnapshot(snap(s100), viewed = { it == "r2" }, now = 7_000)
+        assertEquals(listOf("r1" to "claude --resume $A", "r2" to "claude --resume $Z"), terminal.typed)
+    }
+
+    /** A claude that exited leaves the thread exited however long its tab stays in view, as before. */
+    @Test
+    fun anExitedThreadInViewIsNotStartedAgain() {
+        restoreLazily(saved("r1", A))
+        terminal.show("r1")
+        coordinator.onTabSelected("r1", snap(), now = 2_000)
+        coordinator.onSnapshot(snap(claude(100, under = 10, startedAt = 2_500)), viewed = { true }, now = 3_000)
+        probe.kill(100)
+        for (now in listOf(4_000L, 6_000L, 9_000L)) coordinator.onSnapshot(snap(), viewed = { true }, now = now)
+        assertEquals(ThreadState.Exited, thread("r1").state)
+        assertEquals(listOf("r1" to "claude --resume $A"), terminal.typed)
+    }
+
+    /**
+     * While the project closes nothing may start - a claude typed into a terminal the IDE is about to close would hang on
+     * unread. The thread starts on the next look once the close was refused.
+     */
+    @Test
+    fun aThreadInViewWhileTheProjectClosesDoesNotStart() {
+        restoreLazily(saved("r1", A))
+        terminal.show("r1")
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 2_000, startsInView = false)
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 3_500, startsInView = false)
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 6_000, startsInView = false)
+        assertTrue(terminal.typed.isEmpty())
+        assertEquals(ThreadState.NotStarted, thread("r1").state)
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 7_000)
+        assertEquals(listOf("r1" to "claude --resume $A"), terminal.typed)
+    }
+
+    /** The moment is unbroken - a tick out of view starts it over. */
+    @Test
+    fun leavingViewStartsTheMomentOver() {
+        restoreLazily(saved("r1", A))
+        terminal.show("r1")
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 2_000)
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 3_000)
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 3_500)
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 4_900)
+        assertTrue(terminal.typed.isEmpty())
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 5_000)
+        assertEquals(listOf("r1" to "claude --resume $A"), terminal.typed)
+    }
+
+    /**
+     * Skein closes the tab in front, and the IDE shows its neighbour, a restored thread, during Skein's own close - not
+     * the user's pick, so nothing starts then. Left in front a moment after, it starts as if opened.
+     */
+    @Test
+    fun theNeighbourLeftInFrontAfterSkeinsCloseStartsOnceItStaysThere() {
+        restoreLazily(saved("r1", A), saved("r2", Z))
+        terminal.show("r1")
+        terminal.front = "r1"
+        terminal.setListener(
+            object : ThreadTerminalListener {
+                override fun tabClosed(tabId: String) = coordinator.onTabClosed(tabId)
+
+                override fun tabSelected(tabId: String) = coordinator.onTabSelected(tabId, snap(), now = 2_000)
+
+                override fun closeRequested(tabIds: List<String>): Boolean = false
+
+                override fun tabsClosingPastCheck(tabIds: List<String>, withinMillis: Long, comesBack: Boolean) = Unit
+
+                override fun tabsLostPastCheck(tabIds: List<String>): Boolean = false
+
+                override fun tabLost(tabId: String, select: Boolean) = Unit
+            },
+        )
+        terminal.close(listOf(terminal.opened.first { it.id == "r1" }))
+        coordinator.onTabClosed("r1")
+        assertEquals("r2", terminal.front)
+        assertTrue(terminal.typed.isEmpty())
+        terminal.show("r2")
+        coordinator.onSnapshot(snap(), viewed = { it == terminal.front }, now = 3_000)
+        assertTrue(terminal.typed.isEmpty())
+        coordinator.onSnapshot(snap(), viewed = { it == terminal.front }, now = 4_500)
+        assertEquals(listOf("r2" to "claude --resume $Z"), terminal.typed)
+    }
+
+    /**
+     * A tab left in view whose shell has exited (it failed to start, or the user typed exit) has nothing to type into -
+     * a start there would hold the launch slot of every window until the launch timed out, and then say status files are
+     * missing.
+     */
+    @Test
+    fun aRestoredThreadInViewWhoseShellExitedDoesNotStart() {
+        restoreLazily(saved("r1", A))
+        terminal.show("r1")
+        terminal.notRunning += "r1"
+        for (now in listOf(2_000L, 3_500L, 6_000L, 40_000L)) coordinator.onSnapshot(snap(), viewed = { true }, now = now)
+        assertTrue(terminal.typed.isEmpty())
+        assertEquals(ThreadState.NotStarted, thread("r1").state)
+        assertNull(slot.holder(now = 40_000))
+        assertEquals(0, missingStatusFilesCalls)
+    }
+
+    /**
+     * Skein decided to close the thread's tab and waits for the batch's running threads first - a claude typed there now
+     * would be left in a closed terminal nobody reads. A close that does not happen after all lets it start again.
+     */
+    @Test
+    fun aThreadWhoseCloseWasDecidedDoesNotStartInView() {
+        restoreLazily(saved("r1", A))
+        terminal.show("r1")
+        val closing = coordinator.close(listOf("r1"), confirmed = setOf("r1"), snap()).closing
+        assertEquals(listOf("r1"), closing.map { it.tab.id })
+        for (now in listOf(2_000L, 3_500L, 6_000L)) coordinator.onSnapshot(snap(), viewed = { true }, now = now)
+        assertTrue(terminal.typed.isEmpty())
+        assertEquals(ThreadState.NotStarted, thread("r1").state)
+        coordinator.closeDropped(listOf("r1"))
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 7_000)
+        assertEquals(listOf("r1" to "claude --resume $A"), terminal.typed)
+    }
+
+    /** The same for the tabs a clear of the editor area takes past the close check - they come back in new tabs. */
+    @Test
+    fun aThreadWhoseTabTheIdeClosesDoesNotStartInView() {
+        restoreLazily(saved("r1", A))
+        terminal.show("r1")
+        coordinator.endingsBeforeTheIdeCloses(listOf("r1"), snap(), comesBack = true)
+        for (now in listOf(2_000L, 3_500L, 6_000L)) coordinator.onSnapshot(snap(), viewed = { true }, now = now)
+        assertTrue(terminal.typed.isEmpty())
+        coordinator.onTabLost("r1", select = false, snap(), now = 6_500)
+        terminal.show("r1")
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 7_000)
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 8_500)
+        assertEquals(listOf("r1" to "claude --resume $A"), terminal.typed)
+    }
+
+    /**
+     * The other claude of the thread's session ends while the thread's tab is in view - the thread waits again, and its
+     * moment starts over from then, so a status file gone a little before that claude has finished is no reason to resume
+     * the session at once.
+     */
+    @Test
+    fun aThreadWhoseSessionEndsElsewhereWhileInViewStartsAMomentLater() {
+        val foreign = claude(200, under = 2, sessionId = A)
+        terminal.lazyShells = true
+        coordinator.restore(listOf(saved("r1", A)), snap(foreign), now = 1_000)
+        terminal.show("r1")
+        coordinator.onSnapshot(snap(foreign), viewed = { true }, now = 2_000)
+        coordinator.onSnapshot(snap(foreign), viewed = { true }, now = 4_000)
+        assertEquals(ThreadState.RunningElsewhere(200), thread("r1").state)
+        probe.kill(200)
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 5_000)
+        assertEquals(ThreadState.NotStarted, thread("r1").state)
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 6_000)
+        assertTrue(terminal.typed.isEmpty())
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 6_500)
+        assertEquals(listOf("r1" to "claude --resume $A"), terminal.typed)
+    }
+
+    /**
+     * The user typed into the restored tab's shell before the moment was up - a line of theirs at the prompt, or a program
+     * of theirs running there - so Skein types nothing into it however long it stays in view, and the thread goes on once
+     * the user opens it, as before.
+     */
+    @Test
+    fun aRestoredThreadInViewTheUserTypedIntoWaitsToBeOpened() {
+        restoreLazily(saved("r1", A))
+        terminal.show("r1")
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 2_000)
+        terminal.userTyped += "r1"
+        for (now in listOf(3_500L, 6_000L, 40_000L)) coordinator.onSnapshot(snap(), viewed = { true }, now = now)
+        assertTrue(terminal.typed.isEmpty())
+        assertEquals(ThreadState.NotStarted, thread("r1").state)
+        assertNull(slot.holder(now = 40_000))
+        coordinator.onTabSelected("r1", snap(), now = 41_000)
+        assertEquals(listOf("r1" to "claude --resume $A"), terminal.typed)
+    }
+
+    /** A terminal that cannot say whether the user typed into a tab starts nothing in view - the look goes on, and a click still starts it. */
+    @Test
+    fun aTabThatCannotSayWhetherItWasTypedIntoStartsNothingInView() {
+        val unsure = object : ThreadTerminal by terminal {
+            override fun typedInto(tab: ThreadTab): Boolean = error("no key watch for the tab")
+        }
+        val window = ThreadCoordinator(unsure, ThreadMapper(probe), slot, events) { "w1" }
+        terminal.lazyShells = true
+        window.restore(listOf(saved("w1", A)), snap(), now = 1_000)
+        terminal.show("w1")
+        window.onSnapshot(snap(), viewed = { true }, now = 2_000)
+        window.onSnapshot(snap(), viewed = { true }, now = 4_000)
+        assertTrue(terminal.typed.isEmpty())
+        assertEquals(ThreadState.NotStarted, window.threads.single().state)
+        window.onTabSelected("w1", snap(), now = 5_000)
+        assertEquals(listOf("w1" to "claude --resume $A"), terminal.typed)
+    }
+
+    /** A terminal that cannot say whether a tab's shell runs costs only the start in view - the look goes on. */
+    @Test
+    fun aShellStateThatCannotBeReadStartsNothingInView() {
+        val unsure = object : ThreadTerminal by terminal {
+            override fun sessionStarted(tab: ThreadTab): Boolean = error("no view for the tab")
+
+            override fun sessionRunning(tab: ThreadTab): Boolean = error("no view for the tab")
+        }
+        val window = ThreadCoordinator(unsure, ThreadMapper(probe), slot, events) { "w1" }
+        terminal.lazyShells = true
+        window.restore(listOf(saved("w1", A)), snap(), now = 1_000)
+        terminal.show("w1")
+        window.onSnapshot(snap(), viewed = { true }, now = 2_000)
+        window.onSnapshot(snap(), viewed = { true }, now = 4_000)
+        assertTrue(terminal.typed.isEmpty())
+        assertEquals(ThreadState.NotStarted, window.threads.single().state)
+    }
+
+    /**
+     * A restored thread started by staying in view gets the bracket a click gives it - its own shell, started at first
+     * show, is proved, and a Close hangs up claude and that shell, never the terminal that was there before.
+     */
+    @Test
+    fun aRestoredThreadStartedInViewHangsUpItsOwnShell() {
+        restoreLazily(saved("r1", A))
+        probe.add(20, parent = 1, start = Instant.ofEpochMilli(1_100)) // another terminal, not the thread's
+        coordinator.onSnapshot(snap(), viewed = { false }, now = 2_000)
+        terminal.show("r1") // its shell 10 starts
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 3_000)
+        coordinator.onSnapshot(snap(), viewed = { true }, now = 4_500)
+        assertEquals(listOf("r1" to "claude --resume $A"), terminal.typed)
+        val own = claude(100, under = 10, startedAt = 5_000, sessionId = A)
+        coordinator.onSnapshot(snap(own), viewed = { true }, now = 5_500)
+        assertEquals(10L, thread("r1").anchor)
+        val ending = coordinator.close(listOf("r1"), confirmed = setOf("r1"), snap(own)).closing.single()
+        assertEquals(ProcessId(10, t0), ending.shell)
+        assertNull(ending.doubt)
+        val hangUp = HangUp { pid ->
+            terminal.calls += "hup $pid"
+            probe.kill(pid)
+            true
+        }
+        runBlocking { CloseSequence(hangUp, terminal, ThreadMapper(probe), timeoutMillis = 2_000) {}.run(listOf(ending)) }
+        assertEquals(listOf("ending r1", "hup 100", "hup 10", "await r1", "close r1"), terminal.calls)
+    }
+
     @Test
     fun restoredThreadWithoutSessionStartsPlainClaude() {
         coordinator.restore(listOf(saved("r1", null)), snap(), now = 1_000)
@@ -735,6 +1220,44 @@ class ThreadCoordinatorTest {
     }
 
     private fun entry(sessionId: String = A, cwd: String = "/p") = HistoryEntry(sessionId, cwd, "title", 0, null)
+
+    /**
+     * While the saved threads waited for the project's trust the user resumed one of their sessions from the History;
+     * when they come back that one is not opened a second time, and the others are.
+     */
+    @Test
+    fun restoreSkipsASavedThreadWhoseSessionALiveThreadHolds() {
+        assertEquals(ResumeOutcome.Opened("t1"), coordinator.resume(entry(A), snap(), now = 1_000))
+        coordinator.restore(listOf(saved("r1", A), saved("r2", D), saved("r3", null)), snap(), now = 2_000)
+        assertEquals(listOf("t1", "r2", "r3"), terminal.opened.map { it.id })
+        assertEquals(setOf("t1", "r2", "r3"), coordinator.threads.mapTo(HashSet()) { it.id })
+        assertEquals(A, thread("t1").sessionId)
+    }
+
+    /**
+     * The thread the user resumed from the History while the saved threads waited takes on what they gave the saved one on
+     * that session when the saved threads come back - its pin, its colour, and in the same worktree the base its changes
+     * count against - and what it has of its own stays.
+     */
+    @Test
+    fun aSkippedSavedThreadHandsItsPinColourAndBaseToTheLiveOne() {
+        coordinator.resume(HistoryEntry(A, "/p/.claude/worktrees/feat-x", "title", 0, null, worktree = "feat-x"), snap(), now = 1_000)
+        coordinator.resume(entry(D), snap(), now = 1_100)
+        coordinator.color(listOf("t2"), ThreadColor.RED)
+        coordinator.restore(
+            listOf(
+                saved("r1", A, worktree = "feat-x").copy(pinned = true, color = ThreadColor.BLUE, base = "main"),
+                saved("r2", D).copy(color = ThreadColor.GREEN),
+            ),
+            snap(),
+            now = 2_000,
+        )
+        assertEquals(setOf("t1", "t2"), coordinator.threads.mapTo(HashSet()) { it.id })
+        assertTrue(thread("t1").pinned)
+        assertEquals(ThreadColor.BLUE, thread("t1").color)
+        assertEquals("main", thread("t1").base)
+        assertEquals(ThreadColor.RED, thread("t2").color)
+    }
 
     @Test
     fun resumeOwnThreadSelectsIt() {
@@ -1187,7 +1710,8 @@ class ThreadCoordinatorTest {
         coordinator.newWorktreeThread("/p", "feat-x", now = 1_000)
         coordinator.onSnapshot(snap(claude(100, under = 10, cwd = "/p")), viewed = { false }, now = 2_000)
         assertEquals(10L, thread().anchor)
-        coordinator.restore(listOf(saved("r1", A, worktree = "feat-y")), snap(), now = 3_000)
+        // a session of its own, since one the live thread holds would not come back a second time
+        coordinator.restore(listOf(saved("r1", Z, worktree = "feat-y")), snap(), now = 3_000)
         coordinator.onTabSelected("r1", snap(), now = 4_000)
         coordinator.onSnapshot(snap(claude(100, under = 10, cwd = "/p"), claude(101, under = 11, startedAt = 4_500, cwd = "/p", sessionId = D)), viewed = { false }, now = 5_000)
         assertEquals(11L, thread("r1").anchor)

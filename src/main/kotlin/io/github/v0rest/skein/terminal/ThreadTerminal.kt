@@ -28,12 +28,13 @@ sealed interface ShellsAtCommand {
 /**
  * Which thread tabs the user has before them, read in one go ([ThreadTerminal.tabsInView]). [inView]: the ids of the
  * threads whose tab the user is looking at right now (the IDE frame is active and the tab is a selected editor, or
- * the selected tab of the visible Terminal tool window). [inFront]: the id of the thread whose tab is the selected
- * editor of this project, else one selected in the visible Terminal tool window, whether or not the IDE or the
- * project's window has focus, or null; unlike [inView] this is what the list marks, so the mark stays while the user
- * is in another application.
+ * the selected tab of the visible Terminal tool window, settled in its place - [ViewRule]). [inFront]: the id of the
+ * thread whose tab is the selected editor of this project, else one selected in the visible Terminal tool window,
+ * whether or not the IDE or the project's window has focus, or null; unlike [inView] this is what the list marks, so
+ * the mark stays while the user is in another application. [modal]: a modal dialog or a modal progress is open, so
+ * whatever is in view sits behind it.
  */
-data class TabsInView(val inView: Set<String>, val inFront: String?)
+data class TabsInView(val inView: Set<String>, val inFront: String?, val modal: Boolean = false)
 
 /** What the coordinator needs from the IDE terminal; the only seam between the IDE-free core and the terminal plugin. */
 interface ThreadTerminal {
@@ -82,6 +83,14 @@ interface ThreadTerminal {
      * only when it is first shown. False when that cannot be told.
      */
     fun sessionStarted(tab: ThreadTab): Boolean
+
+    /**
+     * Whether the user may have typed into the tab since Skein set it up - a key, a paste, the terminal's Escape or an
+     * input method's text, as the tab's key watch hears them ([DraftGuard.reachesInput]) - or nobody can tell, since the
+     * tab is not watched. Skein then types nothing there on its own ([io.github.v0rest.skein.threads.InViewStart]), only
+     * once the user opens the thread. Returns at once.
+     */
+    fun typedInto(tab: ThreadTab): Boolean
 
     /**
      * Suspends until the tab's terminal session has ended (its shell exited), and returns at once for a tab that could

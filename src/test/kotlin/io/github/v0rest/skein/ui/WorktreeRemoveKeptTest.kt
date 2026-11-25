@@ -11,12 +11,14 @@ import io.github.v0rest.skein.testutil.Fixture
 import io.github.v0rest.skein.testutil.sessionFile
 import io.github.v0rest.skein.threads.SkeinThread
 import io.github.v0rest.skein.threads.ThreadState
+import io.github.v0rest.skein.threads.WaitingThreads
 import io.github.v0rest.skein.threads.WorktreeClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.file.Path
@@ -86,6 +88,7 @@ class WorktreeRemoveKeptTest {
     private fun flow(
         answer: (List<String>) -> GitResult = answers(),
         threads: () -> List<SkeinThread> = { emptyList() },
+        waiting: () -> WaitingThreads = { WaitingThreads.NONE },
         snapshots: MutableStateFlow<SessionSnapshot> = MutableStateFlow(SessionSnapshot.EMPTY),
         remove: Boolean = true,
         force: suspend () -> Boolean = { true },
@@ -102,6 +105,7 @@ class WorktreeRemoveKeptTest {
         git = WorktreeGit(FakeGit(answer), style),
         snapshots = snapshots,
         threads = threads,
+        waiting = waiting,
         ask = { message, _ ->
             events += "ask"
             questions += message
@@ -629,5 +633,33 @@ class WorktreeRemoveKeptTest {
         run(flow(answers(list = { if (calls++ < 3) ok(listing("branch refs/heads/$branch\n$claudeLock")) else failed })))
         assertEquals(listOf(list) + reads + "ask" + reads + list, events)
         assertEquals(listOf(WorktreeCloseText.lockNotLifted("acme", "not a git repository")), reports)
+    }
+
+    /**
+     * A saved thread waiting for its project's trust, in any window, keeps the worktree and a leftover folder of it, by its
+     * folder as written: neither the resolver nor the look on the disk sees that folder.
+     */
+    @Test
+    fun aThreadWaitingForTrustKeepsTheWorktreeAndItsFolderIsNeverLookedUp() {
+        val seen = mutableListOf<String>()
+        val resolve: (String) -> String? = {
+            seen += it
+            null
+        }
+        val sameFolder: (String, String) -> Boolean = { _, cwd ->
+            seen += cwd
+            false
+        }
+        val holder = WaitingThreads(listOf(SkeinThread("w9", "$repo/", null, "acme", ThreadState.NotStarted, 0, 0, null, worktree = "acme")))
+        run(flow(waiting = { holder }, resolve = resolve, sameFolder = sameFolder))
+        assertEquals(listOf(list), events)
+        assertEquals(listOf("Worktree acme was not removed: ${WorktreeClose.OTHER_THREAD}"), reports)
+
+        events.clear()
+        reports.clear()
+        run(flow(answers(list = { ok(listing(entry = null)) }), waiting = { holder }, resolve = resolve, sameFolder = sameFolder))
+        assertEquals(listOf("Folder acme was not deleted: ${WorktreeClose.OTHER_THREAD}"), reports)
+        assertTrue(events.none { it.startsWith("delete") })
+        assertFalse(seen.toString(), "$repo/" in seen)
     }
 }

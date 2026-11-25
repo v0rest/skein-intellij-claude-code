@@ -20,7 +20,8 @@ import java.awt.event.MouseEvent
  *   and the thread comes back right after as a Resume of its session ([Close.END_THEN_RESUME]). An answer claude was in
  *   the middle of is lost. On Windows the IDE ends claude with the tab and Skein sends no hang-up, so there the thread
  *   only comes back. A restored thread nobody opened gets no mark, since opening its tab again would start it, and comes
- *   back the same way, not started.
+ *   back the same way, not started - unless its new tab ends up in front, where it goes on once it stays there a moment,
+ *   as any restored tab does ([io.github.v0rest.skein.threads.InViewStart]).
  *
  * A marked tab closed on its own, outside a clear, is either a drag of the IDE's own or the user's close that skips the
  * check (a middle click or a Shift+click on an editor tab, or a Shift+Alt+click on another tab of its window, which
@@ -339,7 +340,8 @@ object TabRestore {
     /**
      * Whether a tab that comes back is selected - only the one that was the selected editor when the close began, and only
      * if its terminal had started. Every other one comes back beside the editor the restore selected, and a tab whose
-     * session never started (a restored thread nobody opened) is never shown, as that would start its claude.
+     * session never started (a restored thread nobody opened) is not selected, so its claude starts only if the tab ends
+     * up in front all the same (an editor area the restore left empty) and stays there a moment.
      */
     fun selects(wasInFront: Boolean, started: Boolean): Boolean = wasInFront && started
 

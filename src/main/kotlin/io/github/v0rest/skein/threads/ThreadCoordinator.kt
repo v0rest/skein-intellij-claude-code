@@ -145,6 +145,20 @@ class ThreadCoordinator(
         /** The user is looking at the tab, as of the last tick or tab selection. */
         var inView = false
 
+        /**
+         * Since when the ticks have seen the tab in view without a break ([InViewStart]), null while out of view. Only the
+         * ticks set it, a selection does not, so the moment is what the user had before them. It starts over when the
+         * thread waits again after its session ran elsewhere.
+         */
+        var inViewSince: Long? = null
+
+        /**
+         * Skein decided to close the tab ([close], [endingsBeforeLoss]) and now ends what runs in the batch first, so the
+         * thread does not start in view meanwhile - a claude typed then would stay in a terminal closed a moment later. Gone
+         * with the record once the tab closes or comes back, and lifted for a close that does not happen ([closeDropped]).
+         */
+        var closing = false
+
         /** Typed into the tab and not yet seen in the session directory. */
         var pending: PendingLaunch? = null
         var pendingTimedOut = false
@@ -159,6 +173,9 @@ class ThreadCoordinator(
         var queued: String? = null
         var queuedResumeId: String? = null
 
+        /** What [queued] asks again right before it is typed ([Recheck]). */
+        var queuedRecheck = Recheck.NONE
+
         /**
          * How the thread comes back once the IDE has closed its tab past Skein's close check ([TabLoss.resumesNow]),
          * decided before Skein hung its claude up ([endingsBeforeLoss]), and null while no such close is under way.
@@ -171,12 +188,31 @@ class ThreadCoordinator(
         fun toThread() = SkeinThread(id, folder, sessionId, name ?: worktree ?: folderName(folder), state, stateSince, createdAt, anchor, pinned, color, sessionCwd, worktree, base)
     }
 
+    /**
+     * What a launch that waits for the slot asks again right before it is typed - what the request that queued it asked
+     * then. Its session may have come up elsewhere meanwhile - another window restored a thread on the same session and
+     * got the slot first - and a second claude on one session is what that request would have refused.
+     */
+    private enum class Recheck {
+        /** Nothing - a new session, a resume the user asked for although its session ran elsewhere, a relaunch in an exited thread's tab. */
+        NONE,
+
+        /** Whether the session runs elsewhere now, as opening a thread asks ([onTabSelected]) and a resume from the History. */
+        ELSEWHERE,
+
+        /** The same by a claude still alive, as a thread back after a lost tab asks ([onTabLost]), which resumes once that claude is gone. */
+        ELSEWHERE_THEN_RESUME,
+    }
+
     private val records = LinkedHashMap<String, Record>()
     private var anyFileEverMatched = false
     private var missingReported = false
 
     val threads: List<SkeinThread>
         get() = ThreadOrdering.sort(records.values.map { it.toThread() }, { it.state }, { it.createdAt }, { it.pinned })
+
+    /** Whether thread [threadId] has not started yet - opening its tab would start it ([onTabSelected]). */
+    fun notStarted(threadId: String): Boolean = records[threadId]?.state == ThreadState.NotStarted
 
     /** Opens a tab in [folder] and types `claude` into it (or queues that until the launch slot is free). */
     fun newThread(folder: String, now: Long): String {
@@ -207,12 +243,28 @@ class ThreadCoordinator(
         return id
     }
 
-    /** Reopens the saved threads lazily: a tab each, `claude --resume` only when the user first opens one. */
+    /**
+     * Reopens the saved threads lazily - a tab each, and `claude --resume` in one only when the user opens it or its tab
+     * stays in view a moment ([InViewStart]) - after a restart that is the one tab left in front. A saved thread whose
+     * session a thread here holds already, one the user resumed from the History while the saved threads waited for the
+     * project's trust, is that thread now and does not come back a second time ([SavedThreads.heldByLive]); that thread
+     * takes on its pin, colour and base ([SavedThreads.merged]).
+     */
     fun restore(saved: List<SkeinThread>, snapshot: SessionSnapshot, now: Long) {
         val preexisting = mapper.ideChildren()
         val baseline = mapper.ideChildList()
+        val holders = HashMap<String, Record>()
+        for (record in records.values) record.sessionId?.let { holders.putIfAbsent(it, record) }
         for (thread in saved) {
             if (thread.id in records) continue
+            if (SavedThreads.heldByLive(thread.sessionId, holders.keys)) {
+                val holder = holders.getValue(thread.sessionId!!)
+                val merged = SavedThreads.merged(holder.toThread(), thread)
+                holder.pinned = merged.pinned
+                holder.color = merged.color
+                holder.base = merged.base
+                continue
+            }
             // out of view, the tab starts its shell only when first shown: its baseline keeps following until then
             val tab = terminal.open(thread.id, thread.folder, thread.name, focus = false)
             val record = Record(thread.id, thread.folder, tab, createdAt = thread.createdAt, preexisting = preexisting, baseline = baseline, baselineFinal = false)
@@ -262,11 +314,20 @@ class ThreadCoordinator(
         record.name = entry.title
         record.color = color
         records[id] = record
-        requestLaunch(record, ClaudeCommand.resume(entry.sessionId), resumeId = entry.sessionId, now = now)
+        // the user's yes to a second claude on a session running elsewhere holds while the launch waits for the slot
+        requestLaunch(record, ClaudeCommand.resume(entry.sessionId), resumeId = entry.sessionId, now = now, recheck = if (force) Recheck.NONE else Recheck.ELSEWHERE)
         return ResumeOutcome.Opened(id)
     }
 
-    fun onSnapshot(snapshot: SessionSnapshot, viewed: (String) -> Boolean, now: Long) {
+    /**
+     * One look at the threads - the launches in flight, the statuses, which tabs are in view ([viewed]) and the queued
+     * launches, each asked again whether its session runs elsewhere by now ([Recheck]) before the slot lets it go. A
+     * thread waiting to be opened whose tab stayed in view a moment, its shell running, starts as if the user
+     * had opened it ([InViewStart]), unless Skein closes its tab ([Record.closing]) or [startsInView] is false - the
+     * project closes, and a claude typed into a terminal about to close would hang on with nobody reading it, or a modal
+     * dialog stands in front of the tab.
+     */
+    fun onSnapshot(snapshot: SessionSnapshot, viewed: (String) -> Boolean, now: Long, startsInView: Boolean = true) {
         followShells()
         val sessions = snapshot.sessions.values
         // the launch in flight first; a timed-out one may still find its claude late, but never while another
@@ -312,7 +373,20 @@ class ThreadCoordinator(
                 checkTimeout(record, pending, snapshot, now)
             }
         }
-        for (record in records.values) markInView(record, viewed(record.id))
+        for (record in records.values) {
+            val inView = viewed(record.id)
+            markInView(record, inView)
+            record.inViewSince = InViewStart.inViewSince(record.inViewSince, inView, now)
+        }
+        if (startsInView) {
+            // after followShells, so the shell bracket is taken before the launch, and through the door a click takes, so
+            // the session running elsewhere, the launch slot and the worktree command are minded as for a click
+            for (record in records.values) {
+                if (!record.closing && InViewStart.starts(record.state, record.inViewSince, now, { typedIntoQuietly(record) }, { shellRunningQuietly(record) })) {
+                    onTabSelected(record.id, snapshot, now)
+                }
+            }
+        }
         for (record in records.values) {
             val anchor = record.anchor ?: continue
             val file = mapper.processFor(anchor, sessions)
@@ -335,14 +409,62 @@ class ThreadCoordinator(
                     resumeAfterLoss(record, now)
                 } else {
                     setState(record, ThreadState.NotStarted, now)
+                    // the moment in view starts over - the other claude's status file may go a little before it is done
+                    record.inViewSince = record.inViewSince?.let { now }
                 }
             }
         }
         for (record in records.values) {
             val command = record.queued ?: continue
-            if (slot.tryAcquire(record.id, now, owner = this)) type(record, command, record.queuedResumeId, now)
+            val elsewhere = queuedElsewhere(record, snapshot)
+            if (elsewhere != null) {
+                // what the request would have said had it come now - no second claude on the session, and no slot taken
+                val thenResume = record.queuedRecheck == Recheck.ELSEWHERE_THEN_RESUME
+                record.queued = null
+                record.queuedResumeId = null
+                record.queuedRecheck = Recheck.NONE
+                setState(record, ThreadState.RunningElsewhere(elsewhere.pid), now)
+                record.resumeWhenFree = thenResume
+            } else if (slot.tryAcquire(record.id, now, owner = this)) {
+                type(record, command, record.queuedResumeId, now)
+            }
         }
     }
+
+    /**
+     * The live status file of the session [record]'s queued launch resumes, when the request that queued it asked
+     * whether that session runs elsewhere ([Recheck]) and it does now, else null.
+     */
+    private fun queuedElsewhere(record: Record, snapshot: SessionSnapshot): SessionFile? {
+        val sessionId = record.queuedResumeId ?: return null
+        if (record.queuedRecheck == Recheck.NONE) return null
+        val file = snapshot.sessions.values.firstOrNull { it.sessionId == sessionId } ?: return null
+        // a lost tab's claude may leave its status file in the snapshot a moment after it is gone, as [onTabLost] knows
+        return file.takeIf { record.queuedRecheck != Recheck.ELSEWHERE_THEN_RESUME || mapper.isAlive(it.pid) }
+    }
+
+    /**
+     * [ThreadTerminal.sessionRunning] for [record]'s tab, with a terminal that cannot say read as not running - a start
+     * on a doubt would keep the typed command, and the launch slot with it, waiting for a shell that may never take it.
+     * Not [ThreadTerminal.sessionStarted], which a shell that exited still passes.
+     */
+    private fun shellRunningQuietly(record: Record): Boolean =
+        try {
+            terminal.sessionRunning(record.tab)
+        } catch (e: Exception) {
+            false
+        }
+
+    /**
+     * [ThreadTerminal.typedInto] for [record]'s tab, with a terminal that cannot say read as typed into - a command typed
+     * on a doubt could land on whatever the user left at the prompt.
+     */
+    private fun typedIntoQuietly(record: Record): Boolean =
+        try {
+            terminal.typedInto(record.tab)
+        } catch (e: Exception) {
+            true
+        }
 
     private fun clearPending(record: Record) {
         record.pending = null
@@ -533,7 +655,7 @@ class ThreadCoordinator(
                     val sessionId = record.sessionId?.takeIf(ClaudeCommand::isSessionId)
                     val worktree = record.worktree
                     val command = if (sessionId == null && worktree != null) ClaudeCommand.worktree(worktree) else ClaudeCommand.forSession(sessionId)
-                    requestLaunch(record, command, resumeId = sessionId, now = now)
+                    requestLaunch(record, command, resumeId = sessionId, now = now, recheck = Recheck.ELSEWHERE)
                 }
             }
             is ThreadState.RunningElsewhere -> Unit
@@ -556,14 +678,24 @@ class ThreadCoordinator(
      * the user agreed to close although busy ([CloseRule]); a thread busy now but not among them turned busy after the
      * question, so it stays open and comes back in [CloseOutcome.leftOpen], for the caller to say so. The closed threads
      * stay until a tab reports that it closed ([onTabClosed]), which then runs the usual close path, the worktree
-     * question included. A thread whose processes cannot be read gets nothing hung up and a doubt for the log, and the
-     * others still end ([endingQuietly]).
+     * question included, and meanwhile none of them starts in view ([Record.closing]). A thread whose processes cannot be
+     * read gets nothing hung up and a doubt for the log, and the others still end ([endingQuietly]).
      */
     fun close(threadIds: Collection<String>, confirmed: Set<String>, snapshot: SessionSnapshot): CloseOutcome {
         val asked = threadIds.mapNotNull { records[it] }
         val (leftOpen, closing) = asked.partition { CloseRule.isBusy(it.state) && it.id !in confirmed }
         val sessions = snapshot.sessions.values
+        for (record in closing) record.closing = true
         return CloseOutcome(leftOpen.map { it.toThread() }, closing.map { endingQuietly(it, sessions) })
+    }
+
+    /**
+     * A close of [threadIds] that [close] or [endingsBeforeLoss] decided does not happen after all (the ending failed
+     * before it got to the tabs), so their threads may start in view again. A tab Skein's own close skipped (not set up in
+     * time, or kept open by something else) is not reported here, and its thread then starts only when the user opens it.
+     */
+    fun closeDropped(threadIds: Collection<String>) {
+        for (id in threadIds) records[id]?.closing = false
     }
 
     /**
@@ -581,7 +713,8 @@ class ThreadCoordinator(
      * ([io.github.v0rest.skein.terminal.ThreadTerminalListener.tabsClosingPastCheck]), asking nothing, by how the threads
      * fare once the tabs are gone - back in new tabs when [comesBack] (a clear of the editor area, [endingsBeforeLoss]),
      * else gone as after Close (one tab the user closed on its own), which is Close's own pick with every thread of it
-     * confirmed, since the close is the user's own, and leaves no note on how a thread comes back. Changes nothing else.
+     * confirmed, since the close is the user's own, and leaves no note on how a thread comes back. Changes nothing else
+     * but that none of them starts in view any more ([Record.closing]).
      */
     fun endingsBeforeTheIdeCloses(threadIds: Collection<String>, snapshot: SessionSnapshot, comesBack: Boolean): List<Ending> =
         if (comesBack) endingsBeforeLoss(threadIds, snapshot) else close(threadIds, confirmed = threadIds.toSet(), snapshot).closing
@@ -590,12 +723,14 @@ class ThreadCoordinator(
      * What to end in each of [threadIds] before the IDE closes their tabs past Skein's close check
      * ([io.github.v0rest.skein.terminal.ThreadTerminalListener.tabsClosingPastCheck]), asking nothing, as for a project
      * close, and how each comes back once its tab is gone ([onTabLost]) - decided now, while claude still runs, since the
-     * hang-up turns the thread exited before the tab goes. Closes and changes nothing else.
+     * hang-up turns the thread exited before the tab goes. Closes and changes nothing else, but that none of them starts in
+     * view before its tab is gone ([Record.closing]).
      */
     fun endingsBeforeLoss(threadIds: Collection<String>, snapshot: SessionSnapshot): List<Ending> {
         val sessions = snapshot.sessions.values
         return threadIds.mapNotNull { records[it] }.map { record ->
             record.resumeAfterLoss = TabLoss.resumesNow(record.state)
+            record.closing = true
             endingQuietly(record, sessions)
         }
     }
@@ -607,9 +742,10 @@ class ThreadCoordinator(
      * where Skein ended it) has its shell started at once and its session resumed when it has a conversation to go on
      * with ([resumeAfterLoss]), so the conversation goes on, and its
      * tab is selected when [select] says the old one was the selected editor. Any other comes back as an IDE restart
-     * brings it back, not shown, its claude resumed once the user opens it. A claude of that session still running (the
-     * old tab's, which the IDE ends a moment later on Windows) is waited for, as running elsewhere, and the resume
-     * follows once it is gone. No close is reported, so nothing asks about the worktree.
+     * brings it back, not shown, its claude resumed once the user opens it or it stays in view a moment ([InViewStart]).
+     * A claude of that session still running (the old tab's, which the IDE ends a moment later on Windows) is waited
+     * for, as running elsewhere, and the resume follows once it is gone. No close is reported, so nothing asks about the
+     * worktree.
      */
     fun onTabLost(threadId: String, select: Boolean, snapshot: SessionSnapshot, now: Long) {
         val old = records[threadId] ?: return
@@ -654,7 +790,7 @@ class ThreadCoordinator(
         val sessionId = record.sessionId?.takeIf(ClaudeCommand::isSessionId)?.takeIf { conversationQuietly(record, it) }
         val worktree = record.worktree
         val command = if (sessionId == null && worktree != null) ClaudeCommand.worktree(worktree) else ClaudeCommand.forSession(sessionId)
-        requestLaunch(record, command, resumeId = sessionId, now = now)
+        requestLaunch(record, command, resumeId = sessionId, now = now, recheck = Recheck.ELSEWHERE_THEN_RESUME)
     }
 
     /** [ending], where a failure costs only this thread its hangup, with a doubt for the log, and never the whole close. */
@@ -854,13 +990,15 @@ class ThreadCoordinator(
         transition.notify?.let { events.notify(record.toThread(), it) }
     }
 
-    private fun requestLaunch(record: Record, command: String, resumeId: String?, now: Long) {
+    /** Types [command] into [record]'s tab, or queues it until the slot is free, and then asks [recheck] first. */
+    private fun requestLaunch(record: Record, command: String, resumeId: String?, now: Long, recheck: Recheck = Recheck.NONE) {
         setState(record, ThreadState.Starting, now)
         if (slot.tryAcquire(record.id, now, owner = this)) {
             type(record, command, resumeId, now)
         } else {
             record.queued = command
             record.queuedResumeId = resumeId
+            record.queuedRecheck = recheck
         }
     }
 
@@ -874,6 +1012,7 @@ class ThreadCoordinator(
         record.pendingTimedOut = false
         record.queued = null
         record.queuedResumeId = null
+        record.queuedRecheck = Recheck.NONE
     }
 
     private fun liveElsewhere(record: Record, snapshot: SessionSnapshot): SessionFile? {

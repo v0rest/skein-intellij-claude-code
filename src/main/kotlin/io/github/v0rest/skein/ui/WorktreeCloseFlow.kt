@@ -35,6 +35,7 @@ import io.github.v0rest.skein.threads.KeptWorktrees
 import io.github.v0rest.skein.threads.SameFolder
 import io.github.v0rest.skein.threads.SkeinThread
 import io.github.v0rest.skein.threads.ThreadService
+import io.github.v0rest.skein.threads.WaitingThreads
 import io.github.v0rest.skein.threads.WorktreeClose
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -181,6 +182,8 @@ class WorktreeCloseFlow(
     private val snapshots: StateFlow<SessionSnapshot>,
     /** The project's open threads; the closed one may still be among them. */
     private val threads: () -> List<SkeinThread> = { emptyList() },
+    /** The saved threads that wait for their project's trust; each holds its worktree by its text alone ([WaitingThreads]). */
+    private val waiting: () -> WaitingThreads = { WaitingThreads.NONE },
     /** The worktree folders a close flow is busy with, shared by every flow of the project. */
     private val inFlight: MutableSet<String> = ConcurrentHashMap.newKeySet(),
     /** Keep or Remove; true for Remove. The section's Remove… asks Remove or Cancel. */
@@ -398,7 +401,7 @@ class WorktreeCloseFlow(
                 // a clone or a worktree link deeper inside holds work too, and a look that cannot finish counts as one
                 null -> gitInside(folder) ?: when {
                     liveInside(snapshots.value, repositories, name, style, resolve, sameFolder) -> WorktreeClose.SESSION_INSIDE
-                    repositories.any { KeptWorktrees.held(Worktrees.dirOf(it, name, style), threads(), resolve, style, sameFolder) } -> WorktreeClose.OTHER_THREAD
+                    repositories.any { KeptWorktrees.held(Worktrees.dirOf(it, name, style), threads(), resolve, style, sameFolder, waiting()) } -> WorktreeClose.OTHER_THREAD
                     else -> trackedThere(Path.of(repository), folder)
                 }
             }
@@ -447,9 +450,9 @@ class WorktreeCloseFlow(
         val live = !settled || withContext(Dispatchers.IO) { liveInside(snapshots.value, repositories, name, style, resolve, sameFolder) }
         val otherThread = withContext(Dispatchers.IO) {
             if (closedId != null) {
-                sharedWithThread(threads(), closedId, repositories, name, resolve, style)
+                sharedWithThread(threads(), closedId, repositories, name, resolve, style, waiting())
             } else {
-                repositories.any { KeptWorktrees.held(Worktrees.dirOf(it, name, style), threads(), resolve, style, sameFolder) }
+                repositories.any { KeptWorktrees.held(Worktrees.dirOf(it, name, style), threads(), resolve, style, sameFolder, waiting()) }
             }
         }
         val view = if (present && !live && !otherThread) withContext(Dispatchers.IO) { read(repository, worktree, repositories, name) } else GitView.NONE
@@ -656,7 +659,8 @@ class WorktreeCloseFlow(
         /**
          * Whether an open thread other than [closedId] runs in the worktree [name] of one of [repositories] (or in a
          * worktree nested inside it), whatever its claude's cwd and whichever path to the repository it names;
-         * [resolve] gives a folder's real path, and may block.
+         * [resolve] gives a folder's real path, and may block. A thread of [waiting] counts too, by its folder as written
+         * alone, which [resolve] never sees ([WaitingThreads]).
          */
         fun sharedWithThread(
             threads: List<SkeinThread>,
@@ -665,15 +669,18 @@ class WorktreeCloseFlow(
             name: String,
             resolve: (String) -> String? = { null },
             style: PathStyle = PathStyle.current,
+            waiting: WaitingThreads = WaitingThreads.NONE,
         ): Boolean {
             val dirs = repositories.map { Worktrees.dirOf(it, name, style) }
+            fun usesIt(folder: String?, worktree: String): Boolean =
+                !folder.isNullOrBlank() && dirs.any { PathRules.mayBeInside(Worktrees.dirOf(folder, worktree, style), it, style) }
             return threads.any { other ->
                 val worktree = other.worktree ?: return@any false
                 if (other.id == closedId) return@any false
-                val usesIt = { folder: String? ->
-                    !folder.isNullOrBlank() && dirs.any { PathRules.mayBeInside(Worktrees.dirOf(folder, worktree, style), it, style) }
-                }
-                usesIt(other.folder) || usesIt(resolve(other.folder))
+                usesIt(other.folder, worktree) || usesIt(resolve(other.folder), worktree)
+            } || waiting.textOnly.any { other ->
+                val worktree = other.worktree ?: return@any false
+                other.id != closedId && usesIt(other.folder, worktree)
             }
         }
 
@@ -716,6 +723,7 @@ class WorktreeCloseFlow(
             thread: SkeinThread,
             snapshots: StateFlow<SessionSnapshot>,
             threads: () -> List<SkeinThread>,
+            waiting: () -> WaitingThreads,
             inFlight: MutableSet<String>,
             active: () -> Boolean,
         ) {
@@ -724,6 +732,7 @@ class WorktreeCloseFlow(
                 removals = WorktreeGit(ProcessGitRunner(REMOVAL_TIMEOUT_MILLIS)),
                 snapshots = snapshots,
                 threads = threads,
+                waiting = waiting,
                 inFlight = inFlight,
                 ask = { message, title ->
                     withContext(Dispatchers.EDT) {
@@ -754,6 +763,7 @@ class WorktreeCloseFlow(
                 removals = WorktreeGit(ProcessGitRunner(REMOVAL_TIMEOUT_MILLIS)),
                 snapshots = snapshots,
                 threads = ::threadsOfOpenWindows,
+                waiting = ::waitingOfOpenWindows,
                 inFlight = inFlight,
                 ask = { message, title -> choose(project, message, title, REMOVE, active) },
                 confirmForce = { message, title -> choose(project, message, title, FORCE_REMOVE, active) },
@@ -768,6 +778,10 @@ class WorktreeCloseFlow(
         /** The threads of every open project window. */
         internal fun threadsOfOpenWindows(): List<SkeinThread> =
             ProjectManager.getInstance().openProjects.filterNot { it.isDisposed }.flatMap { ThreadService.getInstance(it).threads.value }
+
+        /** The saved threads of every open project window that wait for their project's trust, by their text alone ([WaitingThreads]). */
+        internal fun waitingOfOpenWindows(): WaitingThreads =
+            WaitingThreads(ProjectManager.getInstance().openProjects.filterNot { it.isDisposed }.flatMap { ThreadService.getInstance(it).waitingThreads().textOnly })
 
         /** [yes] or Cancel, on the EDT, with Cancel the default, since each of these questions may lose work; true for [yes]. */
         private suspend fun choose(project: Project, message: String, title: String, yes: String, active: () -> Boolean): Boolean =
