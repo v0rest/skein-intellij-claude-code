@@ -186,7 +186,7 @@ class ThreadListPanel(private val project: Project, parent: Disposable) {
         headers = ThreadSections.headers(sections)
         list.emptyText.clear()
         if (lastThreads.isEmpty()) {
-            list.emptyText.text = "No threads yet"
+            list.emptyText.text = EmptyThreadsText.of(service.waitingCount())
             list.emptyText.appendSecondaryText("Start claude in a new tab", SimpleTextAttributes.LINK_ATTRIBUTES) {
                 NewThreadAction.start(project, list)
             }

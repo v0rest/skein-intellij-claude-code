@@ -765,9 +765,9 @@ class WorktreeCloseFlow(
             ).removeKept(repository, name)
         }
 
-        /** The threads of every open project window. */
+        /** The threads of every open project window, those still waiting for their project's trust included. */
         internal fun threadsOfOpenWindows(): List<SkeinThread> =
-            ProjectManager.getInstance().openProjects.filterNot { it.isDisposed }.flatMap { ThreadService.getInstance(it).threads.value }
+            ProjectManager.getInstance().openProjects.filterNot { it.isDisposed }.flatMap { ThreadService.getInstance(it).threadsWithWaiting() }
 
         /** [yes] or Cancel, on the EDT, with Cancel the default, since each of these questions may lose work; true for [yes]. */
         private suspend fun choose(project: Project, message: String, title: String, yes: String, active: () -> Boolean): Boolean =

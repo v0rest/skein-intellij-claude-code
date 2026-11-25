@@ -59,8 +59,9 @@ class NewWorktreeThreadAction : DumbAwareAction() {
             // git lists real paths, while a project opened through a link names the repository by the link
             val repositories = setOfNotNull(repo, GitToplevel.resolved(repo))
             val existing = WorktreeStart.existingNames(repositories, git.list(repository))
-            // a thread still queued or starting has no worktree git could list yet, but its name is taken
-            val inUse = WorktreeStart.threadNames(repositories, ThreadService.getInstance(project).threads.value, GitToplevel::resolved)
+            // a thread still queued or starting has no worktree git could list yet, but its name is taken, and so is the name of
+            // a saved thread that waits for the project's trust
+            val inUse = WorktreeStart.threadNames(repositories, ThreadService.getInstance(project).threadsWithWaiting(), GitToplevel::resolved)
             // a branch left behind by an earlier worktree of the same name (git refused to delete it)
             val branches = git.branches(repository)
             // the base the worktree starts from may be behind its remote (as of the last fetch, Skein never fetches); the

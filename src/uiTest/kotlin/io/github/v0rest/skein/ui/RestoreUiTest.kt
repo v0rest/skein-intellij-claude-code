@@ -112,7 +112,13 @@ class RestoreUiTest {
             for (each in resumed.keys) started += each to RemoteIde.startOf(each)
             assertEquals("more than one claude on the session of thread $first: $resumed", 1, resumed.size)
             val pid = resumed.keys.single()
-            assertEquals("the thread in front is not the first saved one of ${saved.map { it[0] }}", first, RemoteIde.threadInFront(project))
+            // the editor that shows a restored tab can be built again while a slow machine opens the project, which leaves
+            // no thread in front for a moment - so the front is waited for, and only a front that stays wrong fails
+            try {
+                waitFor(Duration.ofSeconds(20), Duration.ofMillis(500), "the first saved thread $first in front") { RemoteIde.threadInFront(project) == first }
+            } catch (e: WaitForConditionTimeoutException) {
+                throw AssertionError("the thread in front is not the first saved one of ${saved.map { it[0] }}; ${seen()}", e)
+            }
 
             // a few more of Skein's looks, and still nothing else of this project starts
             Thread.sleep(5_000)

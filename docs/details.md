@@ -70,12 +70,15 @@ When the IDE restarts, or you open the project again, Skein reopens the same thr
 `claude --resume <id>` when you open its tab or when its tab stays in front a moment. So the thread tab in front after a
 restart goes on by itself and the others wait for you, unless the IDE put a file of yours in front - then none goes on
 until you open one. A tab whose shell you typed into first waits for you to open it too, so it does not go on by itself
-into a line of yours. With Open threads in the editor area off, the one that goes on is the thread selected in the
-Terminal tool window while that window is open, one for each pane of a split. The history under the threads lists the
-project's past sessions, including those started elsewhere and those started in a folder inside the project, which
-show that folder after their title, but leaves out the runs a program made through the Agent SDK on its own, so they do
-not bury yours; a run you went on with in a terminal stays, and a session that moved to another folder shows up where
-it moved to. An open history reads the transcripts again when a thread comes or goes, and also when you come back to
+into a line of yours. In a project you have not trusted Skein brings back no thread, as the IDE does with its own
+terminal tabs there, and the list says how many wait - once you trust the project they come back as after a restart.
+With Open threads in the editor area off, the one that goes on is the thread selected in the Terminal tool window while
+that window is open, one for each pane of a split. The
+history under the threads lists the project's past sessions, including those started elsewhere and those started in a
+folder inside the project, which show that folder after their title, but leaves out the runs a program made through the
+Agent SDK on its own, so they do not bury yours; a run you went on with in a terminal stays, and a session that moved to
+another folder shows up where it moved to.
+An open history reads the transcripts again when a thread comes or goes, and also when you come back to
 the IDE from another app or move into the Skein panel from anywhere else in the IDE, at most every few seconds, so a
 session you went on with in a plain terminal shows its new state then. A click selects a session,
 and a double click on it, Enter or Open in its right-click menu resumes it in a new tab; a session still running in
@@ -357,7 +360,7 @@ claude for the end-to-end tests is a POSIX script, so those tests skip on Window
 
 ## Checked
 
-- 1657 unit tests (six of them need Windows and skip on macOS), among them a lifecycle test that drives a thread from
+- 1681 unit tests (six of them need Windows and skip on macOS), among them a lifecycle test that drives a thread from
   start to restore against a copy of a Claude home and proves, byte for byte, that nothing under it changed (and fails
   as soon as anything does).
 - Unit tests for which glyph and tooltip words a waiting thread gets for each reason (and that the three glyphs differ

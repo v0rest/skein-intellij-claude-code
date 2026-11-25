@@ -20,6 +20,7 @@ import io.github.v0rest.skein.testutil.Fixture
 import io.github.v0rest.skein.testutil.sessionFile
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -694,6 +695,16 @@ class ThreadCoordinatorTest {
         assertEquals(10L, thread("r1").anchor)
     }
 
+    /** Only a thread opening its tab would start counts as not started - what the trust gate on coming back asks. */
+    @Test
+    fun notStartedNamesOnlyAThreadThatOpeningWouldStart() {
+        coordinator.restore(listOf(saved("r1", A)), snap(), now = 1_000)
+        assertTrue(coordinator.notStarted("r1"))
+        assertFalse(coordinator.notStarted("nobody"))
+        coordinator.onTabSelected("r1", snap(), now = 2_000)
+        assertFalse(coordinator.notStarted("r1"))
+    }
+
     /**
      * The tab a restore leaves in front, its shell started, stays in view for a moment while nobody clicks - that counts
      * as opening it, and its session is resumed there.
@@ -1210,6 +1221,44 @@ class ThreadCoordinatorTest {
 
     private fun entry(sessionId: String = A, cwd: String = "/p") = HistoryEntry(sessionId, cwd, "title", 0, null)
 
+    /**
+     * While the saved threads waited for the project's trust the user resumed one of their sessions from the History;
+     * when they come back that one is not opened a second time, and the others are.
+     */
+    @Test
+    fun restoreSkipsASavedThreadWhoseSessionALiveThreadHolds() {
+        assertEquals(ResumeOutcome.Opened("t1"), coordinator.resume(entry(A), snap(), now = 1_000))
+        coordinator.restore(listOf(saved("r1", A), saved("r2", D), saved("r3", null)), snap(), now = 2_000)
+        assertEquals(listOf("t1", "r2", "r3"), terminal.opened.map { it.id })
+        assertEquals(setOf("t1", "r2", "r3"), coordinator.threads.mapTo(HashSet()) { it.id })
+        assertEquals(A, thread("t1").sessionId)
+    }
+
+    /**
+     * The thread the user resumed from the History while the saved threads waited takes on what they gave the saved one on
+     * that session when the saved threads come back - its pin, its colour, and in the same worktree the base its changes
+     * count against - and what it has of its own stays.
+     */
+    @Test
+    fun aSkippedSavedThreadHandsItsPinColourAndBaseToTheLiveOne() {
+        coordinator.resume(HistoryEntry(A, "/p/.claude/worktrees/feat-x", "title", 0, null, worktree = "feat-x"), snap(), now = 1_000)
+        coordinator.resume(entry(D), snap(), now = 1_100)
+        coordinator.color(listOf("t2"), ThreadColor.RED)
+        coordinator.restore(
+            listOf(
+                saved("r1", A, worktree = "feat-x").copy(pinned = true, color = ThreadColor.BLUE, base = "main"),
+                saved("r2", D).copy(color = ThreadColor.GREEN),
+            ),
+            snap(),
+            now = 2_000,
+        )
+        assertEquals(setOf("t1", "t2"), coordinator.threads.mapTo(HashSet()) { it.id })
+        assertTrue(thread("t1").pinned)
+        assertEquals(ThreadColor.BLUE, thread("t1").color)
+        assertEquals("main", thread("t1").base)
+        assertEquals(ThreadColor.RED, thread("t2").color)
+    }
+
     @Test
     fun resumeOwnThreadSelectsIt() {
         startIdleThread()
@@ -1634,7 +1683,8 @@ class ThreadCoordinatorTest {
         coordinator.newWorktreeThread("/p", "feat-x", now = 1_000)
         coordinator.onSnapshot(snap(claude(100, under = 10, cwd = "/p")), viewed = { false }, now = 2_000)
         assertEquals(10L, thread().anchor)
-        coordinator.restore(listOf(saved("r1", A, worktree = "feat-y")), snap(), now = 3_000)
+        // a session of its own, since one the live thread holds would not come back a second time
+        coordinator.restore(listOf(saved("r1", Z, worktree = "feat-y")), snap(), now = 3_000)
         coordinator.onTabSelected("r1", snap(), now = 4_000)
         coordinator.onSnapshot(snap(claude(100, under = 10, cwd = "/p"), claude(101, under = 11, startedAt = 4_500, cwd = "/p", sessionId = D)), viewed = { false }, now = 5_000)
         assertEquals(11L, thread("r1").anchor)

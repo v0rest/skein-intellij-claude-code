@@ -211,6 +211,9 @@ class ThreadCoordinator(
     val threads: List<SkeinThread>
         get() = ThreadOrdering.sort(records.values.map { it.toThread() }, { it.state }, { it.createdAt }, { it.pinned })
 
+    /** Whether thread [threadId] has not started yet - opening its tab would start it ([onTabSelected]). */
+    fun notStarted(threadId: String): Boolean = records[threadId]?.state == ThreadState.NotStarted
+
     /** Opens a tab in [folder] and types `claude` into it (or queues that until the launch slot is free). */
     fun newThread(folder: String, now: Long): String {
         val id = ids()
@@ -242,13 +245,26 @@ class ThreadCoordinator(
 
     /**
      * Reopens the saved threads lazily - a tab each, and `claude --resume` in one only when the user opens it or its tab
-     * stays in view a moment ([InViewStart]) - after a restart that is the one tab left in front.
+     * stays in view a moment ([InViewStart]) - after a restart that is the one tab left in front. A saved thread whose
+     * session a thread here holds already, one the user resumed from the History while the saved threads waited for the
+     * project's trust, is that thread now and does not come back a second time ([SavedThreads.heldByLive]); that thread
+     * takes on its pin, colour and base ([SavedThreads.merged]).
      */
     fun restore(saved: List<SkeinThread>, snapshot: SessionSnapshot, now: Long) {
         val preexisting = mapper.ideChildren()
         val baseline = mapper.ideChildList()
+        val holders = HashMap<String, Record>()
+        for (record in records.values) record.sessionId?.let { holders.putIfAbsent(it, record) }
         for (thread in saved) {
             if (thread.id in records) continue
+            if (SavedThreads.heldByLive(thread.sessionId, holders.keys)) {
+                val holder = holders.getValue(thread.sessionId!!)
+                val merged = SavedThreads.merged(holder.toThread(), thread)
+                holder.pinned = merged.pinned
+                holder.color = merged.color
+                holder.base = merged.base
+                continue
+            }
             // out of view, the tab starts its shell only when first shown: its baseline keeps following until then
             val tab = terminal.open(thread.id, thread.folder, thread.name, focus = false)
             val record = Record(thread.id, thread.folder, tab, createdAt = thread.createdAt, preexisting = preexisting, baseline = baseline, baselineFinal = false)
