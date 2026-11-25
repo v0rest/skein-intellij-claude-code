@@ -30,6 +30,12 @@ class ThreadUiTest {
 
         /** A prompt that keeps claude at its answer well past the close. */
         const val LONG_PROMPT = "Write a detailed essay of about 1500 words on the history of tea, in plain text, no headings."
+
+        /** A prompt whose answer is a few tokens, sent only so the session has a transcript the History lists. */
+        const val SHORT_PROMPT = "Reply with the single word ok."
+
+        /** An answer of claude's in a transcript line. */
+        val ASSISTANT = Regex("\"type\"\\s*:\\s*\"assistant\"")
     }
 
     private val demo = DemoProject()
@@ -187,6 +193,76 @@ class ThreadUiTest {
         }
     }
 
+    /**
+     * A thread's colour stays with its session. A thread gets a colour from its row's menu, its tab is closed with its ×,
+     * and its session, resumed from the History with a double click, opens a new thread with that colour on its row.
+     * One short prompt goes first (a few tokens), since a session without a turn has no transcript the History could
+     * list. Both claudes are ended at the end, by their tabs or, failing that, by pid.
+     */
+    @Test
+    fun aColouredThreadsSessionResumedFromHistoryAfterItsTabClosedKeepsTheColour() {
+        val frame = RemoteIde.frame(project)
+        val before = RemoteIde.claudePids()
+        val list = RemoteIde.startClaudeFromTheEmptyList(project)
+        var started = emptySet<Long>()
+        waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "a new claude.exe") {
+            started = RemoteIde.claudePids() - before
+            started.size == 1
+        }
+        val pid = started.single()
+        val start = RemoteIde.startOf(pid)
+        // every claude the resume starts, by pid with its start, noted as soon as it shows, so a second one is ended too
+        val resumedClaudes = LinkedHashMap<Long, String>()
+        try {
+            // a fresh folder, so claude writes its status file only once the trust question is answered
+            RemoteIde.acceptTheTrustQuestion(project)
+            waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "the status file of claude $pid") { pid in RemoteIde.sessionPids() }
+            waitFor(Duration.ofSeconds(120), Duration.ofSeconds(1), "claude $pid idle") { RemoteIde.sessionField(pid, "status") == "idle" }
+            val sessionId = RemoteIde.sessionField(pid, "sessionId")
+            assertTrue("claude $pid has no session id", sessionId.isNotEmpty())
+            RemoteIde.sendToTheThreadsTerminal(project, SHORT_PROMPT)
+            waitFor(Duration.ofSeconds(120), Duration.ofSeconds(1), "claude's answer in the transcript of $sessionId") {
+                RemoteIde.transcript(sessionId).any { ASSISTANT.containsMatchIn(it) }
+            }
+            waitFor(Duration.ofSeconds(120), Duration.ofSeconds(1), "claude $pid idle after its answer") { RemoteIde.sessionField(pid, "status") == "idle" }
+
+            colourTheFirstRow(list, "Red")
+            waitFor(Duration.ofSeconds(10), Duration.ofSeconds(1), "the row in red") { threadColours(list) == listOf("RED") }
+
+            closeTheThreadsTab(frame)
+            waitFor(Duration.ofSeconds(30), Duration.ofSeconds(1), "claude $pid gone") { pid !in RemoteIde.claudePids() }
+            waitFor(Duration.ofSeconds(30), Duration.ofSeconds(1), "the status file of claude $pid gone") { pid !in RemoteIde.sessionPids() }
+            waitFor(Duration.ofSeconds(20), Duration.ofSeconds(1), "the thread's row gone") { RemoteIde.threadRows(project) == 0 }
+
+            val history = openTheHistory(frame)
+            var row = -1
+            waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "session $sessionId in the History") {
+                row = historyRowOf(history, sessionId)
+                row >= 0
+            }
+            val beforeResume = RemoteIde.claudePids()
+            history.doubleClick(middleOfRow(history, row))
+            waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "the claude of the resumed session") {
+                for (newPid in RemoteIde.claudePids() - beforeResume) {
+                    if (newPid !in resumedClaudes) resumedClaudes[newPid] = RemoteIde.startOf(newPid)
+                }
+                resumedClaudes.size == 1
+            }
+            val resumedPid = resumedClaudes.keys.single()
+            waitFor(Duration.ofSeconds(20), Duration.ofSeconds(1), "the new thread's row") { RemoteIde.threadRows(project) == 1 }
+            waitFor(Duration.ofSeconds(10), Duration.ofSeconds(1), "the new thread's row in red") { threadColours(list) == listOf("RED") }
+
+            closeTheThreadsTab(frame)
+            waitFor(Duration.ofSeconds(30), Duration.ofSeconds(1), "claude $resumedPid gone") { !RemoteIde.alive(resumedPid) }
+        } finally {
+            // a claude left hanging must not outlive the test, and the clean-up after it finds one only by its shell
+            RemoteIde.destroy(pid, start)
+            // and one that showed only after the wait gave up
+            for (late in RemoteIde.claudePids() - before - pid) resumedClaudes.getOrPut(late) { RemoteIde.startOf(late) }
+            for ((resumedPid, resumedStart) in resumedClaudes) RemoteIde.destroy(resumedPid, resumedStart)
+        }
+    }
+
     @Test
     fun aWorktreeThreadStartsInItsWorktreeAndGitStaysClean() {
         val frame = RemoteIde.frame(project)
@@ -263,6 +339,92 @@ class ThreadUiTest {
     }
 
     private fun rowSays(list: ComponentFixture, words: String): Boolean = list.findAllText().any { it.text.contains(words) }
+
+    /** The colour of each thread row, top down, by its name ("RED"), or "null" for a row without one. */
+    private fun threadColours(list: ComponentFixture): List<String> = list.callJs<String>(
+        """
+        var m = component.getModel(); var out = [];
+        for (var i = 0; i < m.getSize(); i++) out.push('' + m.getElementAt(i).getColor());
+        out.join(',')
+        """,
+    ).trim().split(',').filter { it.isNotEmpty() }
+
+    /** Gives the first thread row the colour [name] from its right-click menu, Color and then [name]. */
+    private fun colourTheFirstRow(list: ComponentFixture, name: String) {
+        RemoteIde.toFront(project)
+        // a right click selects the row under it, and the first row sits at the top of the list
+        list.rightClick(Point(60, 12))
+        clickShowing("//div[@class='ActionMenu' and @text='Color']")
+        clickShowing("//div[@class='ActionMenuItem' and @text='$name']")
+    }
+
+    /** Clicks the menu entry [xpath] that is on screen: the IDE can hold a second, hidden copy of a submenu's items. */
+    private fun clickShowing(xpath: String) {
+        var showing: ComponentFixture? = null
+        waitFor(Duration.ofSeconds(10), Duration.ofMillis(300), "a showing $xpath") {
+            showing = RemoteIde.robot.findAll(ComponentFixture::class.java, byXpath(xpath)).firstOrNull { it.callJs<Boolean>("component.isShowing()") }
+            showing != null
+        }
+        showing!!.click()
+    }
+
+    /**
+     * The History's list, opened with a click on its header unless it shows already. It is the list whose empty text
+     * speaks of past sessions, the thread list's speaks of threads. Closed, it sits in a hidden scroll pane, which the
+     * robot may not find at all, so it is looked for again once the header was clicked.
+     */
+    private fun openTheHistory(frame: CommonContainerFixture): ComponentFixture {
+        RemoteIde.toFront(project)
+        // the IDE's own balloons (an update it cannot check, a virus scanner note) sit over the History header on a small
+        // screen, and a click there opens their link instead
+        expireTheIdesBalloons()
+        if (shownHistory(frame) == null) {
+            frame.find(ComponentFixture::class.java, byXpath("//div[@class='JBLabel' and starts-with(@text, 'History')]")).click()
+        }
+        var history: ComponentFixture? = null
+        waitFor(Duration.ofSeconds(10), Duration.ofSeconds(1), "the History open") {
+            history = shownHistory(frame)
+            history != null
+        }
+        return history!!
+    }
+
+    /** Expires every notification of the test's project, so no balloon covers what the test clicks next. */
+    private fun expireTheIdesBalloons() {
+        RemoteIde.js(
+            """
+            var ps = com.intellij.openapi.project.ProjectManager.getInstance().getOpenProjects();
+            for (var i = 0; i < ps.length; i++) if (ps[i].getName() == '$project') {
+                var ns = com.intellij.notification.NotificationsManager.getNotificationsManager().getNotificationsOfType(com.intellij.notification.Notification, ps[i]);
+                for (var j = 0; j < ns.length; j++) ns[j].expire();
+            }
+            'ok'
+            """,
+            edt = true,
+        )
+    }
+
+    /** The History's list while it shows, or null. */
+    private fun shownHistory(frame: CommonContainerFixture): ComponentFixture? =
+        frame.findAll(ComponentFixture::class.java, byXpath("//div[@class='JBList']")).firstOrNull { list ->
+            list.callJs<String>("('' + component.getEmptyText().getText()).indexOf('past sessions') >= 0 && component.isShowing() ? 'yes' : 'no'").trim() == "yes"
+        }
+
+    /** The index of session [sessionId]'s row in the History, or -1 while it has none. */
+    private fun historyRowOf(history: ComponentFixture, sessionId: String): Int = history.callJs<String>(
+        """
+        var m = component.getModel(); var out = -1;
+        for (var i = 0; i < m.getSize() && out < 0; i++) if (('' + m.getElementAt(i).getEntry().getSessionId()) == '$sessionId') out = i;
+        '' + out
+        """,
+    ).trim().toIntOrNull() ?: -1
+
+    /** The middle of row [index] of [list], where a click lands on that row. */
+    private fun middleOfRow(list: ComponentFixture, index: Int): Point {
+        val (x, y, width, height) = list.callJs<String>("var r = component.getCellBounds($index, $index); r.x + ',' + r.y + ',' + r.width + ',' + r.height")
+            .trim().split(',').map { it.trim().toDouble().toInt() }
+        return Point(x + width / 2, y + height / 2)
+    }
 
     /**
      * New Thread in Worktree… from its own button next to "+", for a project whose list is empty, and the name dialog it

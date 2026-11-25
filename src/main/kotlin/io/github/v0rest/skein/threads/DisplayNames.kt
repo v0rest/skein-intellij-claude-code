@@ -9,9 +9,10 @@ object DisplayNames {
 
     /**
      * Names follow a thread to its new session (`/clear`): [previous] and [current] map thread ids to session ids.
-     * A new session that already has a name keeps it; threads that are new or gone change nothing.
+     * A new session that already has a name keeps it; threads that are new or gone change nothing. Colours, and any
+     * other mark kept by session id, follow the same way.
      */
-    fun carry(previous: Map<String, String?>, current: Map<String, String?>, names: Map<String, String>): Map<String, String> {
+    fun <V> carry(previous: Map<String, String?>, current: Map<String, String?>, names: Map<String, V>): Map<String, V> {
         var result = names
         for ((threadId, before) in previous) {
             val after = current[threadId] ?: continue

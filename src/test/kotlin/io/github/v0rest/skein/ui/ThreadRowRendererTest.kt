@@ -1,5 +1,6 @@
 package io.github.v0rest.skein.ui
 
+import com.intellij.util.ui.NamedColorUtil
 import io.github.v0rest.skein.git.Changes
 import io.github.v0rest.skein.git.WorktreeCounts
 import io.github.v0rest.skein.paths.PathStyle
@@ -13,6 +14,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.awt.Color
 import java.awt.image.BufferedImage
 import javax.swing.JLabel
 import javax.swing.JList
@@ -93,6 +95,36 @@ class ThreadRowRendererTest {
         }
         assertEquals(ThreadColors.rowTint(ThreadColor.BLUE), render(thread(color = ThreadColor.BLUE)).background)
         assertNull(render(thread()).stripe)
+    }
+
+    /**
+     * The grey of line 2 reads poorly on a tint, so an unselected coloured row draws its line 2, age and context in the
+     * list's own text colour. An uncoloured row and a selected one keep the grey.
+     */
+    @Test
+    fun aColouredRowDrawsItsSecondLineInTheListForeground() {
+        list.foreground = Color(0x123456)
+        val grey = NamedColorUtil.getInactiveTextColor()
+        val coloured = render(thread(color = ThreadColor.GREEN), contexts = opus)
+        for (label in listOf(coloured.detail, coloured.age, coloured.context)) assertEquals(list.foreground, label.foreground)
+        val plain = render(thread(), contexts = opus)
+        for (label in listOf(plain.detail, plain.age, plain.context)) assertEquals(grey, label.foreground)
+        val selected = render(thread(color = ThreadColor.GREEN), selected = true, contexts = opus)
+        for (label in listOf(selected.detail, selected.age, selected.context)) assertEquals(grey, label.foreground)
+    }
+
+    /**
+     * The worktree's ahead count sits next to the age on line 1, and the info grey reads at under 2:1 on a dark tint, so
+     * on an unselected coloured row it takes the list's text colour like the age; the amber of the changes count stays.
+     */
+    @Test
+    fun aColouredWorktreeRowDrawsItsAheadCountInTheListForeground() {
+        list.foreground = Color(0x123456)
+        val grey = NamedColorUtil.getInactiveTextColor()
+        val coloured = render(thread(worktree = "acme", color = ThreadColor.BLUE), worktreeCounts = dirty)
+        assertEquals(list.foreground, coloured.ahead.foreground)
+        assertEquals(ThreadRowRenderer.WORKTREE_CHANGES_COLOR, coloured.changes.foreground)
+        assertEquals(grey, render(thread(worktree = "acme"), worktreeCounts = dirty).ahead.foreground)
     }
 
     @Test

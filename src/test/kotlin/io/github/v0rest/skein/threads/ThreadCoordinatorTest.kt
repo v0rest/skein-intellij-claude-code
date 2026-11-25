@@ -1031,6 +1031,33 @@ class ThreadCoordinatorTest {
         assertNull(thread("t1").color)
     }
 
+    /**
+     * The colour stays with the session - closed, the thread is gone with its colour, but the session keeps it in the
+     * marks ([SessionColors.set], as ThreadService.setColor does), and its resume from History opens a new thread with it.
+     */
+    @Test
+    fun aClosedColouredThreadsSessionResumedFromHistoryComesBackColoured() {
+        startIdleThread()
+        coordinator.color(listOf("t1"), ThreadColor.RED)
+        val marks = SessionColors.set(SessionMarks(), coordinator.threads, listOf("t1"), ThreadColor.RED)
+        coordinator.onTabClosed("t1")
+        assertTrue(coordinator.threads.isEmpty())
+
+        assertEquals(ResumeOutcome.Opened("t2"), coordinator.resume(entry(A), snap(), now = 5_000, color = marks.colors[A]))
+        assertEquals(ThreadColor.RED, thread("t2").color)
+        assertEquals("an uncoloured session opens uncoloured", ResumeOutcome.Opened("t3"), coordinator.resume(entry(D), snap(), now = 6_000))
+        assertNull(thread("t3").color)
+    }
+
+    /** A resume that only selects the thread already holding the session leaves that thread's colour as it is. */
+    @Test
+    fun aResumeThatSelectsAThreadKeepsItsColour() {
+        val s100 = startIdleThread()
+        coordinator.color(listOf("t1"), ThreadColor.BLUE)
+        assertEquals(ResumeOutcome.Selected("t1"), coordinator.resume(entry(A), snap(s100), now = 3_000, color = ThreadColor.RED))
+        assertEquals(ThreadColor.BLUE, thread("t1").color)
+    }
+
     @Test
     fun pinningAnUnknownThreadChangesNothing() {
         coordinator.newThread("/w/acme", now = 1_000)

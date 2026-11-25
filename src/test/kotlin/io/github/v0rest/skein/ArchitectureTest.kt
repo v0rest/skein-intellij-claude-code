@@ -637,6 +637,53 @@ class ArchitectureTest {
     }
 
     /**
+     * The service only passes a thread's colour to its session and back - what goes where is SessionColors' and the
+     * coordinator's, unit-tested, and no unit test reaches ThreadService while its UI test runs in neither `test` nor CI.
+     * So gutting the glue (the sessions left out of a colour change, a History resume opening uncoloured, fill before
+     * the carry or against the wrong sessions, no tab refresh after a coloured resume, the editor tab back on the row's
+     * tint) fails here.
+     */
+    @Test
+    fun theColourGlueHandsEveryDecisionToTheTestedRules() {
+        val service = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/threads/ThreadService.kt"))
+        val refresh = "if (it is ResumeOutcome.Opened && color != null) terminal.refreshPresentation(it.threadId)"
+        val resume = "coordinator.resume(entry, snapshot(), now(), force, color).also {"
+        for (line in listOf(
+            "SessionMarksService.getInstance(project).update { SessionColors.set(it, coordinator.threads, ids, color) }",
+            "val color = SessionMarksService.getInstance(project).marks.value.colors[entry.sessionId]",
+            resume,
+            refresh,
+        )) {
+            assertEquals(line, 1, service.count { it == line })
+        }
+        // the tab colour provider reads the published rows, so the refresh comes after the publish
+        val opened = service.indexOf(resume)
+        assertEquals(listOf("publish()", "pushTitlesQuietly()", refresh), service.subList(opened + 1, opened + 4))
+        // the carry runs first and fill after, on the threads just published and the sessions of the publish before
+        val carry = service.indexOf("private fun carryMarksQuietly(sessions: Map<String, String?>): Map<String, String> {")
+        assertEquals(
+            listOf(
+                "try {", "val marks = SessionMarksService.getInstance(project)", "val previous = sessionByThread", "val threads = latest",
+                "val step = { m: SessionMarks -> SessionColors.fill(m.carry(previous, sessions), previous, threads) }",
+                "val current = marks.marks.value", "if (step(current) != current) marks.update(step)",
+            ),
+            service.subList(carry + 1, carry + 8),
+        )
+        // so the publish sets the threads before the carry and moves the sessions on only after it
+        val publish = service.indexOf("private fun publish() {")
+        assertEquals(
+            listOf(
+                "latest = coordinator.threads", "rows.value = latest", "val sessions = latest.associate { it.id to it.sessionId }",
+                "val names = carryMarksQuietly(sessions)", "sessionByThread = sessions",
+            ),
+            service.subList(publish + 1, publish + 6),
+        )
+        // the editor tab takes its own stronger colour, and nothing else from the palette
+        val provider = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/ui/ThreadTabColorProvider.kt"))
+        assertEquals(listOf("return ThreadColors.tab(color, islandsPainter())"), SourceRules.offenders(provider, listOf("ThreadColors.")))
+    }
+
+    /**
      * A close past Skein's close check is met in TerminalAdapter.beforeClose and the service, and every decision there is
      * TabRestore's or the coordinator's, unit-tested - the adapter hands them exactly these facts and does what they say,
      * so gutting the glue (a running tab taken for idle, the single close not ended, the clear ended twice, a tab under a

@@ -60,6 +60,26 @@ class SessionMarksServiceTest {
         assertEquals(mapOf(a to "task-1"), fresh.marks.value.claudeRenames)
     }
 
+    /** A session's colour survives an IDE restart, so the session resumed from History later still gets it. */
+    @Test
+    fun sessionColoursAreSavedToo() {
+        val marks = SessionMarks(names = mapOf(a to "task-1"), colors = mapOf(a to ThreadColor.RED, b to ThreadColor.PURPLE))
+        val service = SessionMarksService().apply { update { marks } }
+        val element = XmlSerializer.serialize(service.state)
+        val fresh = SessionMarksService().apply { loadState(XmlSerializer.deserialize(element, SessionMarksService.Saved::class.java)) }
+        assertEquals(marks, fresh.marks.value)
+    }
+
+    /** A colour name this version does not know (a hand-edited file, a later version's colour) is dropped, the rest stays. */
+    @Test
+    fun anUnknownColourIsNotLoaded() {
+        val saved = SessionMarksService.Saved().apply {
+            colors.putAll(mapOf(a to "GREEN", b to "MAGENTA", c to ""))
+        }
+        val fresh = SessionMarksService().apply { loadState(saved) }
+        assertEquals(mapOf(a to ThreadColor.GREEN), fresh.marks.value.colors)
+    }
+
     @Test
     fun theSavedStateSurvivesTheXmlTheWorkspaceFileHolds() {
         val marks = SessionMarks(pinned = setOf(a), names = mapOf(b to "Fix login & <co>"), done = mapOf(c to 42L))
