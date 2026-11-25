@@ -753,12 +753,35 @@ class ArchitectureTest {
         assertTrue("a failed schedule must give the gate back", "trustedRestore.didNotRun()" in restoreBody.subList(schedule, poll))
         assertEquals(1, service.count { it == "for (t in SavedThreads.toSave(restored, saved.threads, latest)) state.threads.add(t)" })
         assertEquals(1, service.count { it == "fun heldSessionIds(): Set<String> = HeldSessions.of(restored, threads.value, saved.threads.map { it.sessionId })" })
-        assertEquals(1, service.count { it == "fun threadsWithWaiting(): List<SkeinThread> = SavedThreads.withWaiting(restored, saved.threads, threads.value)" })
-        assertEquals(1, service.count { it == "threads = ::threadsWithWaiting," })
+        assertEquals(1, service.count { it == "fun waitingThreads(): WaitingThreads = SavedThreads.waitingThreads(restored, saved.threads, threads.value)" })
+        assertEquals(1, service.count { it == "waiting = ::waitingThreads," })
         val flow = SourceRules.codeLines(mainRoot.resolve("io/github/v0rest/skein/ui/WorktreeCloseFlow.kt"))
         assertEquals(
-            "ProjectManager.getInstance().openProjects.filterNot { it.isDisposed }.flatMap { ThreadService.getInstance(it).threadsWithWaiting() }",
-            flow[flow.indexOf("internal fun threadsOfOpenWindows(): List<SkeinThread> =") + 1],
+            "WaitingThreads(ProjectManager.getInstance().openProjects.filterNot { it.isDisposed }.flatMap { ThreadService.getInstance(it).waitingThreads().textOnly })",
+            flow[flow.indexOf("internal fun waitingOfOpenWindows(): WaitingThreads =") + 1],
+        )
+        assertEquals(1, flow.count { it == "waiting = ::waitingOfOpenWindows," })
+    }
+
+    /**
+     * The saved threads of a project nobody trusted are text from its workspace file, which may name a share on another
+     * machine that a mere look signs in to. They reach the worktree checks only as WaitingThreads, the mixed list that
+     * once went to a resolver is gone, and the list inside is unwrapped only where those checks compare it as text.
+     */
+    @Test
+    fun theThreadsWaitingForTrustReachNoResolver() {
+        assertEquals(emptyList<String>(), filesContaining("threadsWithWaiting", "withWaiting("))
+        val unwraps = SourceRules.kotlinFiles(mainRoot).flatMap { f ->
+            SourceRules.offenders(SourceRules.codeLines(f), listOf(".textOnly")).map { SourceRules.relative(mainRoot, f) + ": " + it }
+        }
+        assertEquals(
+            listOf(
+                "io/github/v0rest/skein/threads/WorktreeSweep.kt: } || waiting.textOnly.any { thread -> places(thread, real = { null }, style).any { PathRules.mayBeInside(it, dir, style) } }",
+                "io/github/v0rest/skein/ui/WorktreeCloseFlow.kt: WaitingThreads(ProjectManager.getInstance().openProjects.filterNot { it.isDisposed }.flatMap { ThreadService.getInstance(it).waitingThreads().textOnly })",
+                "io/github/v0rest/skein/ui/WorktreeCloseFlow.kt: } || waiting.textOnly.any { other ->",
+                "io/github/v0rest/skein/ui/WorktreeStart.kt: val saved = waiting.textOnly.filter { t -> t.worktree != null && named(t.folder) }",
+            ),
+            unwraps.sorted(),
         )
     }
 

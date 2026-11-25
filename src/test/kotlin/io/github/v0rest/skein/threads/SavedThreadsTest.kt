@@ -1,5 +1,6 @@
 package io.github.v0rest.skein.threads
 
+import io.github.v0rest.skein.paths.PathStyle
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -133,17 +134,36 @@ class SavedThreadsTest {
     }
 
     /**
-     * The worktree checks of a close and of the Worktrees section see the waiting threads too, as threads not started yet,
-     * after the live ones; a saved entry without an id never comes back, so it counts for nothing. Once back, only the live
-     * ones count.
+     * The worktree checks of a close, of the Worktrees section and of a new worktree thread see the waiting threads, apart
+     * from the live ones, as threads not started yet; a saved entry without an id never comes back, so it counts for
+     * nothing. Once back, none waits.
      */
     @Test
-    fun withWaitingAddsTheWaitingThreadsAfterTheLiveOnes() {
-        val loaded = listOf(saved("r1", S1, worktree = "feat-a"), saved("r2", S2), saved(null, S3))
-        val all = SavedThreads.withWaiting(restored = false, saved = loaded, live = listOf(live("t1", S2)))
-        assertEquals(listOf("t1", "r1"), all.map { it.id })
-        assertEquals(ThreadState.NotStarted, all[1].state)
-        assertEquals("feat-a", all[1].worktree)
-        assertEquals(listOf("t1"), SavedThreads.withWaiting(restored = true, saved = loaded, live = listOf(live("t1", S2))).map { it.id })
+    fun theWaitingThreadsAreTheSavedOnesNoLiveThreadIsYet() {
+        val loaded = listOf(saved("r1", S1, worktree = "feat-a", base = "main"), saved("r2", S2), saved(null, S3))
+        val waiting = SavedThreads.waitingThreads(restored = false, saved = loaded, live = listOf(live("t1", S2))).textOnly
+        assertEquals(listOf("r1"), waiting.map { it.id })
+        assertEquals(ThreadState.NotStarted, waiting.single().state)
+        assertEquals("feat-a", waiting.single().worktree)
+        assertEquals("main", waiting.single().base)
+        assertEquals(0, SavedThreads.waitingThreads(restored = true, saved = loaded, live = listOf(live("t1", S2))).size)
+    }
+
+    /**
+     * A worktree name the restore would not take - a hand-edited workspace file may hold any text there - names no
+     * worktree while its thread waits either, and the base goes with it.
+     */
+    @Test
+    fun aWorktreeNameTheRestoreWouldDropNamesNoWorktreeWhileItsThreadWaits() {
+        fun waiting(worktree: String, style: PathStyle) =
+            SavedThreads.waitingThreads(false, listOf(saved("r1", S1, worktree = worktree, base = "main")), emptyList(), style).textOnly.single()
+        for (name in listOf("..", "../acme", "a/b", "-x", "\\\\srv\\share", "x".repeat(65))) {
+            assertNull(name, waiting(name, PathStyle.UNIX).worktree)
+            assertNull(name, waiting(name, PathStyle.UNIX).base)
+        }
+        // on Windows a name Win32 would trim is no name either
+        assertNull(waiting("task-1.", PathStyle.WINDOWS).worktree)
+        assertEquals("task-1", waiting("task-1", PathStyle.WINDOWS).worktree)
+        assertEquals("main", waiting("task-1", PathStyle.WINDOWS).base)
     }
 }

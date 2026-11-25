@@ -360,7 +360,7 @@ claude for the end-to-end tests is a POSIX script, so those tests skip on Window
 
 ## Checked
 
-- 1681 unit tests (six of them need Windows and skip on macOS), among them a lifecycle test that drives a thread from
+- 1688 unit tests (six of them need Windows and skip on macOS), among them a lifecycle test that drives a thread from
   start to restore against a copy of a Claude home and proves, byte for byte, that nothing under it changed (and fails
   as soon as anything does).
 - Unit tests for which glyph and tooltip words a waiting thread gets for each reason (and that the three glyphs differ

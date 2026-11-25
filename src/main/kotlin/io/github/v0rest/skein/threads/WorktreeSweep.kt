@@ -253,7 +253,8 @@ object KeptWorktrees {
      * to the repository the thread names ([real] gives a folder's real path), or any thread whose claude runs in it or
      * below it, or whose folder lies in it. A yes keeps the folder from going, so a place the text cannot place for sure
      * ([PathRules.mayBeInside], a `..` say) holds it too, and so does a claude's cwd [sameFolder] finds in it on the disk
-     * (blocking; none by default).
+     * (blocking; none by default). A thread of [waiting] holds it the same way by its text alone: neither [real] nor
+     * [sameFolder] ever sees a waiting thread ([WaitingThreads]).
      */
     fun held(
         dir: String,
@@ -261,10 +262,11 @@ object KeptWorktrees {
         real: (String) -> String?,
         style: PathStyle = PathStyle.current,
         sameFolder: (dir: String, cwd: String) -> Boolean = { _, _ -> false },
+        waiting: WaitingThreads = WaitingThreads.NONE,
     ): Boolean = threads.any { thread ->
         places(thread, real, style).any { PathRules.mayBeInside(it, dir, style) } ||
             thread.sessionCwd?.takeIf(String::isNotBlank)?.let { sameFolder(dir, it) } == true
-    }
+    } || waiting.textOnly.any { thread -> places(thread, real = { null }, style).any { PathRules.mayBeInside(it, dir, style) } }
 
     /**
      * The folders [thread] works in: its worktree under the repository as named and as resolved, its claude's cwd as

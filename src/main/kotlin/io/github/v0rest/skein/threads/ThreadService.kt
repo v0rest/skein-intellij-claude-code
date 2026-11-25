@@ -229,16 +229,17 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
     fun heldSessionIds(): Set<String> = HeldSessions.of(restored, threads.value, saved.threads.map { it.sessionId })
 
     /**
-     * The live threads and, until the saved threads are back, the waiting ones too ([SavedThreads.withWaiting]), for a
-     * worktree close and the Worktrees section, so they never take a waiting thread's worktree for a free one. Any thread.
+     * The saved threads that wait, until they are back ([SavedThreads.waitingThreads]), for a worktree close, the
+     * Worktrees section and a new worktree thread, so none takes a waiting thread's worktree for a free one - by their
+     * text alone, as they come from a workspace file nobody trusted ([WaitingThreads]). Any thread.
      */
-    fun threadsWithWaiting(): List<SkeinThread> = SavedThreads.withWaiting(restored, saved.threads, threads.value)
+    fun waitingThreads(): WaitingThreads = SavedThreads.waitingThreads(restored, saved.threads, threads.value)
 
     /**
-     * How many saved threads wait for the project's trust, for the empty thread list ([threadsWithWaiting]); none in a
+     * How many saved threads wait for the project's trust, for the empty thread list ([waitingThreads]); none in a
      * trusted project, whose threads are only on their way back for a moment. Any thread.
      */
-    fun waitingCount(): Int = if (projectTrusted()) 0 else threadsWithWaiting().size - threads.value.size
+    fun waitingCount(): Int = if (projectTrusted()) 0 else waitingThreads().size
 
     /** Claude Code's vim mode setting, each file read again only when it changed ([ClaudeEditorModeWatch]); never on the EDT. */
     private val editorMode = ClaudeEditorModeWatch(ClaudeHome.default())
@@ -662,10 +663,11 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
      * A project opened without trust (Safe Mode) may have brought its saved threads in its own files, its
      * .idea/workspace.xml among them, so none comes back - no tab, no shell, no git for a worktree thread - until the user
      * trusts the project; the IDE's own terminal restores its tabs only in a trusted project too. Meanwhile a save keeps
-     * them ([SavedThreads.toSave]), the History counts their sessions as held ([heldSessionIds]) and a worktree close counts
-     * their worktrees as held ([threadsWithWaiting]). While the project has not been trusted no thread of the file is in
-     * it, so the terminal's focus watch (TerminalAdapter.watchFocus), which takes the focus coming back to the IDE for the
-     * user opening a thread, has nothing of the file to start then and needs no trust check of its own. A trust taken back
+     * them ([SavedThreads.toSave]), the History counts their sessions as held ([heldSessionIds]) and the worktree checks
+     * count their worktrees as held, by the file's text alone ([waitingThreads]). While the project has not been trusted
+     * no thread of the file is in it, so the terminal's focus watch (TerminalAdapter.watchFocus), which takes the focus
+     * coming back to the IDE for the user opening a thread, has nothing of the file to start then and needs no trust
+     * check of its own. A trust taken back
      * after the restore leaves the restored threads in place; the in-view start and the start on coming back to the IDE
      * ask again then, the focus watch does not.
      *
@@ -960,8 +962,9 @@ class ThreadService(private val project: Project, private val scope: CoroutineSc
                     project,
                     thread,
                     monitor.snapshots,
-                    // a waiting thread's worktree is not free either
-                    threads = ::threadsWithWaiting,
+                    threads = { threads.value },
+                    // a waiting thread's worktree is not free either, by its folder as written
+                    waiting = ::waitingThreads,
                     inFlight = closingWorktrees,
                     active = { !closing() },
                 )

@@ -7,6 +7,7 @@ import io.github.v0rest.skein.paths.PathStyle.UNIX
 import io.github.v0rest.skein.paths.PathStyle.WINDOWS
 import io.github.v0rest.skein.threads.SkeinThread
 import io.github.v0rest.skein.threads.ThreadState
+import io.github.v0rest.skein.threads.WaitingThreads
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -181,5 +182,24 @@ class WorktreeStartTest {
     fun theTrustWarningNamesTheRepositoryInItsCanonicalForm() {
         val text = WorktreeStart.trustWarning("C:/Users/skein/demo-shop/", FolderTrust.NOT_TRUSTED, WINDOWS)
         assertTrue(text, text!!.contains("Start a plain thread in C:\\Users\\skein\\demo-shop once"))
+    }
+
+    /**
+     * A saved thread waiting for the project's trust takes its worktree name by its folder as written; the resolver never
+     * sees that folder, so one that names the repository through a link takes no name while it waits.
+     */
+    @Test
+    fun aWaitingThreadsNameIsTakenByItsFolderAsWrittenAlone() {
+        val seen = mutableListOf<String>()
+        val resolve: (String) -> String? = {
+            seen += it
+            "/w/acme"
+        }
+        val waiting = WaitingThreads(
+            listOf(thread("w1", "/w/acme", "task-3"), thread("w2", "/w/link", "task-4"), thread("w3", "//srv/share/acme", "task-5"), thread("w4", "/w/acme", null)),
+        )
+        val live = listOf(thread("t1", "/w/link", "task-1"))
+        assertEquals(setOf("task-1", "task-3"), WorktreeStart.threadNames(setOf("/w/acme"), live, resolve, UNIX, waiting))
+        assertEquals(listOf("/w/link"), seen)
     }
 }

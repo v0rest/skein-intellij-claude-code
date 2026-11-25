@@ -16,6 +16,7 @@ import io.github.v0rest.skein.testutil.sessionFile
 import io.github.v0rest.skein.threads.CloseOffer
 import io.github.v0rest.skein.threads.SkeinThread
 import io.github.v0rest.skein.threads.ThreadState
+import io.github.v0rest.skein.threads.WaitingThreads
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -96,6 +97,7 @@ class WorktreeCloseFlowTest {
         snapshots: MutableStateFlow<SessionSnapshot> = MutableStateFlow(SessionSnapshot.EMPTY),
         exists: (Path) -> Boolean = { true },
         threads: () -> List<SkeinThread> = { emptyList() },
+        waiting: () -> WaitingThreads = { WaitingThreads.NONE },
         inFlight: MutableSet<String> = ConcurrentHashMap.newKeySet(),
         removals: WorktreeGit? = null,
         settleMillis: Long = 50,
@@ -116,6 +118,7 @@ class WorktreeCloseFlowTest {
             removals = removals ?: git,
             snapshots = snapshots,
             threads = threads,
+            waiting = waiting,
             inFlight = inFlight,
             ask = ask,
             report = { text, warning ->
@@ -870,5 +873,49 @@ class WorktreeCloseFlowTest {
             assertEquals(reads + rereads + listEvent, events)
             assertEquals(listOf(WorktreeCloseText.notRemoved("feat-x", WorktreeCloseText.LOCK_CHANGED)), reports)
         }
+    }
+
+    /**
+     * A saved thread that waits for its project's trust keeps the worktree it will need, by its folder as written, which
+     * the resolver never sees: a workspace file nobody trusted may name a share on another machine there.
+     */
+    @Test
+    fun aThreadWaitingForTrustKeepsTheWorktreeAndItsFolderIsNeverResolved() {
+        val seen = mutableListOf<String>()
+        val resolve: (String) -> String? = {
+            seen += it
+            null
+        }
+        // the repository's own folder, with a separator at its end, so the resolver's calls tell it apart
+        val waiting = thread(id = "w1", sessionId = null).copy(folder = "$repo/", state = ThreadState.NotStarted)
+        runBlocking { flow(waiting = { WaitingThreads(listOf(waiting)) }, resolve = resolve).run(thread()) }
+        assertEquals(emptyList<String>(), events)
+        assertEquals(listOf("Worktree feat-x is kept: another Skein thread uses this worktree"), reports)
+        assertFalse(seen.toString(), "$repo/" in seen)
+
+        // one in another worktree keeps nothing
+        events.clear()
+        reports.clear()
+        runBlocking { flow(waiting = { WaitingThreads(listOf(waiting.copy(worktree = "feat-y"))) }, remove = false).run(thread()) }
+        assertEquals(reads, events)
+    }
+
+    /** A waiting thread shares the worktree by its folder as written alone; the resolver never sees that folder. */
+    @Test
+    fun aWaitingThreadSharesTheWorktreeByItsFolderAsWrittenAlone() {
+        fun other(folder: String, worktree: String = "feat-x") = SkeinThread("w2", folder, null, "w2", ThreadState.NotStarted, 0, 0, null, worktree = worktree)
+        val seen = mutableListOf<String>()
+        val resolve: (String) -> String? = {
+            seen += it
+            "C:\\w\\acme"
+        }
+        fun shared(waiting: SkeinThread) =
+            WorktreeCloseFlow.sharedWithThread(emptyList(), "t1", setOf("C:\\w\\acme"), "feat-x", resolve, WINDOWS, WaitingThreads(listOf(waiting)))
+        assertTrue(shared(other("c:/W/acme/")))
+        assertFalse(shared(other("C:/link/acme")))
+        assertFalse(shared(other("\\\\srv\\share\\acme")))
+        assertFalse(shared(other("C:/w/acme", "feat-y")))
+        assertFalse(shared(other("C:/w/acme").copy(id = "t1")))
+        assertEquals(emptyList<String>(), seen)
     }
 }

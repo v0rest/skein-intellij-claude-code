@@ -8,6 +8,7 @@ import io.github.v0rest.skein.git.GitWorktree
 import io.github.v0rest.skein.paths.PathRules
 import io.github.v0rest.skein.paths.PathStyle
 import io.github.v0rest.skein.threads.SkeinThread
+import io.github.v0rest.skein.threads.WaitingThreads
 import java.nio.file.Path
 
 /** The pure part of starting a worktree thread: which names are taken, which one is suggested, and what stops a start. */
@@ -27,17 +28,20 @@ object WorktreeStart {
     /**
      * The worktree names this project's [threads] in the repository use, whichever path to it a thread names
      * ([resolve] gives a folder's real path, and may block). A thread whose `claude --worktree` is still queued or
-     * starting has no worktree git could list yet, but its name is taken.
+     * starting has no worktree git could list yet, but its name is taken, and so is the name of a thread of [waiting],
+     * which waits for the project's trust - by its folder as written, which [resolve] never sees ([WaitingThreads]).
      */
     fun threadNames(
         repositories: Set<String>,
         threads: List<SkeinThread>,
         resolve: (String) -> String? = { null },
         style: PathStyle = PathStyle.current,
+        waiting: WaitingThreads = WaitingThreads.NONE,
     ): Set<String> {
         fun named(folder: String?) = folder != null && repositories.any { PathRules.same(folder, it, style) }
-        return threads.filter { t -> t.worktree != null && (named(t.folder) || named(resolve(t.folder))) }
-            .mapNotNullTo(LinkedHashSet()) { it.worktree }
+        val live = threads.filter { t -> t.worktree != null && (named(t.folder) || named(resolve(t.folder))) }
+        val saved = waiting.textOnly.filter { t -> t.worktree != null && named(t.folder) }
+        return (live + saved).mapNotNullTo(LinkedHashSet()) { it.worktree }
     }
 
     /**

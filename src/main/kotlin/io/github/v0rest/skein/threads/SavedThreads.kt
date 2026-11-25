@@ -1,5 +1,8 @@
 package io.github.v0rest.skein.threads
 
+import io.github.v0rest.skein.claude.Worktrees
+import io.github.v0rest.skein.paths.PathStyle
+
 /**
  * The threads the workspace file keeps while its saved ones have not come back yet - in a project opened without trust
  * they wait until the user trusts it ([ThreadService.restoreOnce]) - and which of them come back then. One rule for all:
@@ -47,12 +50,24 @@ object SavedThreads {
     }
 
     /**
-     * The live threads and, until the saved threads are back ([restored]), the waiting ones after them as threads not
-     * started yet - for the checks that must not take a waiting thread's worktree for a free one. A saved entry without
-     * an id or a folder never comes back, so it counts for nothing.
+     * The saved threads that still wait ([waiting]) as threads not started yet, for the checks that must not take a
+     * waiting thread's worktree for a free one, which go by their text alone ([WaitingThreads]); none once they are back
+     * ([restored]). A saved entry without an id or a folder never comes back, so it counts for nothing, and a worktree
+     * name the restore would not take (it keeps only one [Worktrees.isValidName] passes) is no name here either, nor is
+     * the base that goes with it.
      */
-    fun withWaiting(restored: Boolean, saved: List<ThreadService.SavedThread>, live: List<SkeinThread>): List<SkeinThread> =
-        live + waiting(restored, saved, live).mapNotNull(ThreadService::restored)
+    fun waitingThreads(
+        restored: Boolean,
+        saved: List<ThreadService.SavedThread>,
+        live: List<SkeinThread>,
+        style: PathStyle = PathStyle.current,
+    ): WaitingThreads =
+        WaitingThreads(
+            waiting(restored, saved, live).mapNotNull(ThreadService::restored).map { thread ->
+                val worktree = thread.worktree?.takeIf { Worktrees.isValidName(it, style) }
+                thread.copy(worktree = worktree, base = thread.base.takeIf { worktree != null })
+            },
+        )
 
     /** The saved threads by session, the first in the file for each, leaving out those a live thread is by its id. */
     private fun onSession(saved: List<ThreadService.SavedThread>, live: List<SkeinThread>): Map<String, SkeinThread> {
