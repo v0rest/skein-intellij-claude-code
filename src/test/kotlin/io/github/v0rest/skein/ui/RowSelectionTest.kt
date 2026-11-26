@@ -120,4 +120,27 @@ class RowSelectionTest {
         assertFalse(RowSelection.ownMenuOpen(arrayOf(elsewhere), list))
         assertFalse(RowSelection.ownMenuOpen(emptyArray<MenuElement>(), list))
     }
+
+    /** The thread list keeps the row a click opened, also once the focus went on to its tab, and so does a refresh. */
+    @Test
+    fun aListThatKeepsWhatWasClickedKeepsItOutOfUseToo() {
+        assertEquals(setOf("t1"), RowSelection.restored(setOf("t1"), listInUse = false, keeping = RowSelection.Keeping.CLICKED))
+        assertEquals(setOf("t1", "t2"), RowSelection.restored(setOf("t1", "t2"), listInUse = false, keeping = RowSelection.Keeping.CLICKED))
+        assertEquals(emptySet<String>(), RowSelection.restored(emptySet(), listInUse = false, keeping = RowSelection.Keeping.CLICKED))
+        assertFalse(RowSelection.clearsOnFocusLoss(RowSelection.Keeping.CLICKED))
+        assertTrue(RowSelection.clearsOnFocusLoss(RowSelection.Keeping.WHILE_IN_USE))
+    }
+
+    /** In the thread list only a click changes what is selected: the opened row, none after a click below the rows, else the last clicked one. */
+    @Test
+    fun aGestureThatIsNoClickGoesBackToTheClickedRow() {
+        assertEquals("t2", RowSelection.clickedAfter(RowSelection.Release.Open("t2"), pressed = "t2", clicked = "t1"))
+        assertEquals(null, RowSelection.clickedAfter(RowSelection.Release.Clear, pressed = null, clicked = "t1"))
+        // the second click of a double click that landed on another row
+        assertEquals("t1", RowSelection.clickedAfter(RowSelection.Release.Clear, pressed = "t2", clicked = "t1"))
+        // a drag from one row to another, or from below the rows onto one
+        assertEquals("t1", RowSelection.clickedAfter(RowSelection.Release.Keep, pressed = "t2", clicked = "t1"))
+        assertEquals("t1", RowSelection.clickedAfter(RowSelection.Release.Keep, pressed = null, clicked = "t1"))
+        assertEquals(null, RowSelection.clickedAfter(RowSelection.Release.Keep, pressed = "t2", clicked = null))
+    }
 }

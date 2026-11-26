@@ -86,7 +86,7 @@ class ThreadListPanel(private val project: Project, parent: Disposable) {
             NewThreadAction.start(project, this)
         }
     }
-    private val clicks = RowClicks(list, SkeinThread::id) { open(it.id) }
+    private val clicks = RowClicks(list, SkeinThread::id, keeping = RowSelection.Keeping.CLICKED) { open(it.id) }
     private val history = HistoryPanel(project, scope)
     private val worktrees = WorktreesSection(project, scope)
     private val worktreesSplit = SectionSplit(
@@ -176,7 +176,7 @@ class ThreadListPanel(private val project: Project, parent: Disposable) {
 
     /**
      * Applies grouping and the filter to the last thread list and shows the result, keeping by thread id the selection
-     * [RowSelection] keeps: one row or several, only while the list is in use.
+     * [RowSelection] keeps: the row the user clicked, or the rows they selected, also while the list is not in use.
      */
     private fun showSections() {
         val state = SkeinSettings.getInstance().state
@@ -199,7 +199,7 @@ class ThreadListPanel(private val project: Project, parent: Disposable) {
     }
 
     /**
-     * Brings the thread's tab forward ([RowClicks] then clears the selection). The in-front marker moves at once
+     * Brings the thread's tab forward ([RowClicks] then keeps its row selected). The in-front marker moves at once
      * instead of at the next tick. If the tab did not come forward, [ThreadService.inFront] may not change and so not
      * correct the marker; a check a little later puts back what it says. EDT only.
      */

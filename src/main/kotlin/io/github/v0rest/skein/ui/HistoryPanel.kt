@@ -101,7 +101,8 @@ internal fun liveSessionIds(snapshots: Flow<SessionSnapshot>): Flow<Set<String>>
 /**
  * The history under the threads, closed until the owner opens it. It scans transcripts only while open, off the EDT. A
  * click selects a session, and a double click, Enter or the menu's Open resumes it in a new thread (or selects the
- * thread that already has it), with the thread list's selection rules ([RowClicks]).
+ * thread that already has it), with the same click handling as the thread list ([RowClicks]), whose selection lasts only
+ * while the History is in use.
  */
 class HistoryPanel(private val project: Project, private val scope: CoroutineScope) {
     private val service = ThreadService.getInstance(project)
@@ -208,8 +209,9 @@ class HistoryPanel(private val project: Project, private val scope: CoroutineSco
     }
 
     /**
-     * The thread list's selection rules ([RowClicks]), opening on a double click: a click selects a session, a double
-     * click on it or Enter resumes it, and no row stays selected after that.
+     * The thread list's click handling ([RowClicks]), opening on a double click: a click selects a session, a double
+     * click on it or Enter resumes it, and no row stays selected after that; a selection lasts only while the History is
+     * in use.
      */
     private val clicks = RowClicks(list, { it.entry.sessionId }, RowSelection.Opening.DOUBLE_CLICK) { resume(it.entry) }
 

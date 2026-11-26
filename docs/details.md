@@ -42,7 +42,7 @@ then a preview of what happened last, the
 answer, the tool a permission prompt waits on or what a working thread is doing, and at its right end the model and
 the context in use once claude has answered, like Opus · 385k, with the full model id, the exact token count and the
 time of the last answer in the tooltip, and no percentage because the transcript does not say how big the window is. A
-marker at the left edge shows the thread whose tab is in front, and no row stays selected after a click. The View
+marker at the left edge shows the thread whose tab is in front. A click on a row keeps it selected, over its colour, until you click another row or the empty space below them. The View
 Options menu in the panel's title bar switches Only Threads Waiting for Me (the ones that need you, the ones whose
 turn finished, and the pinned ones), Group by State (sections by what the threads are doing), Show Last Message, Show
 Time and Show Model and Context (also a checkbox in Settings | Tools | Skein), and the IDE remembers them for all
@@ -365,7 +365,7 @@ claude for the end-to-end tests is a POSIX script, so those tests skip on Window
 
 ## Checked
 
-- 1709 unit tests (six of them need Windows and skip on macOS), among them a lifecycle test that drives a thread from
+- 1721 unit tests (six of them need Windows and skip on macOS), among them a lifecycle test that drives a thread from
   start to restore against a copy of a Claude home and proves, byte for byte, that nothing under it changed (and fails
   as soon as anything does).
 - Unit tests for which glyph and tooltip words a waiting thread gets for each reason (and that the three glyphs differ
@@ -594,7 +594,9 @@ none on the other two, whatever claude another open project starts meanwhile, th
 other two stay not started, and the IDE's log shows no failed move. It logs the Skein build the IDE runs, so a run
 against 1.5.3 shows it was one. One checks that a colour stays with its session - a thread coloured from its menu, its
 tab closed, and its session resumed from the History with a double click opens a new thread in that colour. It sends
-one short prompt first, since a session without a turn has no transcript the History could list. After each test they
+one short prompt first, since a session without a turn has no transcript the History could list. Another checks that a
+clicked row stays selected through Skein's looks and the focus going on to its tab, and that a click below the rows
+clears it without lighting up any row while the mouse is down or moves. After each test they
 end the claude processes the IDE under test still has, by pid, and delete the test's repository under
 `skein-ci/ui-work` in the home folder of that machine. A thread starts from the empty list's link, after indexing
 ended, and on a cold IDE, where the first click can go unheard, the link is clicked again every 15 seconds while no

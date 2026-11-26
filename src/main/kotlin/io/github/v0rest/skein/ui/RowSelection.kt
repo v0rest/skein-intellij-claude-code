@@ -5,22 +5,44 @@ import javax.swing.JPopupMenu
 import javax.swing.MenuElement
 
 /**
- * The selection rules of the thread list and the History list, whose rows they know by id (a thread id, a session id).
- * In the thread list a plain click opens the row and clears the selection, so a selection is the user's own, made for
- * the menus (a right click, Shift/Cmd clicks, the arrow keys, a drag across rows); in the History a plain click only
- * selects the row and a double click opens it ([Opening]). Either way opening leaves no row selected, and a selection
- * lasts only while the list is in use, that is while it has focus or its own menu is open.
+ * The selection rules of the thread list, the History list and the Worktrees section, whose rows they know by id (a
+ * thread id, a session id, a folder). In the thread list a plain click opens the row and leaves it selected, and the
+ * selection stays until a click on another row moves it or a click on no row clears it ([Keeping.CLICKED]); in the
+ * History a plain click only selects the row and a double click opens it ([Opening]), opening leaves no row selected,
+ * and a selection lasts only while the list is in use, that is while it has focus or its own menu is open
+ * ([Keeping.WHILE_IN_USE]). In every list nothing lights up below the rows: a press or a drag there selects none, where
+ * Swing would select the row nearest to the mouse, and a right click there clears the selection.
  */
 object RowSelection {
-    /** What a refresh selects again: the selection while the list is in use ([listInUse]), one row or several; else nothing. */
-    fun restored(selectedIds: Set<String>, listInUse: Boolean): Set<String> = if (listInUse) selectedIds else emptySet()
+    /** How long a list keeps its selection. */
+    enum class Keeping {
+        /** While the list has focus or its own menu is open; opening a row leaves none selected. The History, the Worktrees section. */
+        WHILE_IN_USE,
+
+        /**
+         * The row a click opened stays selected, also once the focus went on to its tab, until a click on another row
+         * moves the selection or a click on no row clears it; a drag, or any other gesture that is no click, goes back to
+         * it ([clickedAfter]). The thread list.
+         */
+        CLICKED,
+    }
+
+    /**
+     * What a refresh selects again: the selection, one row or several, while the list is in use ([listInUse]) or always
+     * in a list that keeps what was clicked ([Keeping.CLICKED]); else nothing.
+     */
+    fun restored(selectedIds: Set<String>, listInUse: Boolean, keeping: Keeping = Keeping.WHILE_IN_USE): Set<String> =
+        if (listInUse || keeping == Keeping.CLICKED) selectedIds else emptySet()
+
+    /** Whether the focus going for good (no menu of the list's own open) clears the selection: only where it lasts while in use. */
+    fun clearsOnFocusLoss(keeping: Keeping): Boolean = keeping == Keeping.WHILE_IN_USE
 
     /** Which click opens a row: a single one in the thread list, a double one in the History. */
     enum class Opening { CLICK, DOUBLE_CLICK }
 
     /** What a plain left-button release does to the list (no Shift, Cmd or Ctrl; those select rows for the menus). */
     sealed interface Release {
-        /** Open the row and clear the selection: a click. */
+        /** Open the row: a click. It stays selected or not as the list keeps its selection ([Keeping]). */
         data class Open(val id: String) : Release
 
         /** Leave the row the click selected, the first click of a double click that would open it. */
@@ -59,6 +81,18 @@ object RowSelection {
         opening == Opening.DOUBLE_CLICK && clickCount < 2 -> Release.Select(pressed)
         clickCount >= 2 && pressed != opened -> if (opening == Opening.DOUBLE_CLICK) Release.Keep else Release.Clear
         else -> Release.Open(pressed)
+    }
+
+    /**
+     * The row a list that keeps what was clicked ([Keeping.CLICKED]) has selected once a plain release is done: the row
+     * it opened, none after a click on no row ([pressed] null, and so the release on none either), and for anything else
+     * - a drag that ended on another row or below the rows, the second click of a double click that landed on another
+     * row - the row the user's last click selected ([clicked]), so only a click changes what is selected.
+     */
+    fun clickedAfter(release: Release, pressed: String?, clicked: String?): String? = when (release) {
+        is Release.Open -> release.id
+        Release.Clear -> if (pressed == null) null else clicked
+        Release.Keep, is Release.Select -> clicked
     }
 
     /** The row a release opened or selected, which the next release passes as `opened`; null for one that did neither. */
