@@ -338,6 +338,77 @@ class ThreadUiTest {
         assertEquals("", RemoteIde.gitStatus(repo).trim())
     }
 
+    /**
+     * A click on a thread's row leaves the row selected, through Skein's looks once a second and the focus going on to
+     * the thread's tab, and a click on the empty space below the rows clears it without lighting up any row while the
+     * mouse is down or moves a pixel, where Swing would select the last row. The press, the move and the release below the
+     * rows are sent to the list on the EDT, so the selection between them can be read. No prompt, so no tokens; claude is
+     * ended by its tab at the end.
+     */
+    @Test
+    fun aClickedRowStaysSelectedAndAClickBelowTheRowsClearsIt() {
+        val frame = RemoteIde.frame(project)
+        val before = RemoteIde.claudePids()
+        val list = RemoteIde.startClaudeFromTheEmptyList(project)
+        var started = emptySet<Long>()
+        waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "a new claude.exe") {
+            started = RemoteIde.claudePids() - before
+            started.size == 1
+        }
+        val pid = started.single()
+        val start = RemoteIde.startOf(pid)
+        try {
+            // a fresh folder, so claude writes its status file only once the trust question is answered
+            RemoteIde.acceptTheTrustQuestion(project)
+            waitFor(Duration.ofSeconds(60), Duration.ofSeconds(1), "the status file of claude $pid") { pid in RemoteIde.sessionPids() }
+            waitFor(Duration.ofSeconds(20), Duration.ofSeconds(1), "the thread's row") { RemoteIde.threadRows(project) == 1 }
+
+            list.click(middleOfRow(list, 0))
+            waitFor(Duration.ofSeconds(10), Duration.ofMillis(250), "the clicked row selected") { selectedRow(list) == 0 }
+            // a few of Skein's looks, which redraw the rows, and the focus gone on to the thread's tab
+            Thread.sleep(4_000)
+            assertEquals("the clicked row lost its selection (the list ${if (listHasFocus(list)) "has" else "has no"} focus)", 0, selectedRow(list))
+
+            assertEquals("the selection while the mouse is down below the rows, after it moved a pixel, and after it is up", "-1,-1,-1", clickBelowTheRows(list))
+
+            closeTheThreadsTab(frame)
+            waitFor(Duration.ofSeconds(30), Duration.ofSeconds(1), "claude $pid gone") { !RemoteIde.alive(pid) }
+        } finally {
+            // a claude left hanging must not outlive the test, and the clean-up after it finds one only by its shell
+            RemoteIde.destroy(pid, start)
+        }
+    }
+
+    private fun selectedRow(list: ComponentFixture): Int = list.callJs<String>("'' + component.getSelectedIndex()").trim().toInt()
+
+    private fun listHasFocus(list: ComponentFixture): Boolean = list.callJs<String>("'' + component.hasFocus()").trim() == "true"
+
+    /**
+     * A left press 40 px below the last row of [list], a drag of one pixel and the release, each sent to the list on the EDT
+     * as the mouse would send them; the selected row right after each, as "pressed,dragged,released".
+     */
+    private fun clickBelowTheRows(list: ComponentFixture): String = list.callJs<String>(
+        """
+        var l = component;
+        var out = new java.util.concurrent.atomic.AtomicReference('');
+        javax.swing.SwingUtilities.invokeAndWait(new java.lang.Runnable({
+            run: function() {
+                var last = l.getCellBounds(l.getModel().getSize() - 1, l.getModel().getSize() - 1);
+                var y = last.y + last.height + 40;
+                if (y >= l.getHeight()) { out.set('the list ends ' + (y - l.getHeight()) + ' px too early'); return; }
+                var E = java.awt.event.MouseEvent;
+                l.dispatchEvent(new E(l, E.MOUSE_PRESSED, java.lang.System.currentTimeMillis(), java.awt.event.InputEvent.BUTTON1_DOWN_MASK, 20, y, 1, false, E.BUTTON1));
+                var pressed = l.getSelectedIndex();
+                l.dispatchEvent(new E(l, E.MOUSE_DRAGGED, java.lang.System.currentTimeMillis(), java.awt.event.InputEvent.BUTTON1_DOWN_MASK, 21, y, 0, false, E.NOBUTTON));
+                var dragged = l.getSelectedIndex();
+                l.dispatchEvent(new E(l, E.MOUSE_RELEASED, java.lang.System.currentTimeMillis(), 0, 21, y, 1, false, E.BUTTON1));
+                out.set(pressed + ',' + dragged + ',' + l.getSelectedIndex());
+            }
+        }));
+        out.get()
+        """,
+    ).trim()
+
     private fun rowSays(list: ComponentFixture, words: String): Boolean = list.findAllText().any { it.text.contains(words) }
 
     /** The colour of each thread row, top down, by its name ("RED"), or "null" for a row without one. */
