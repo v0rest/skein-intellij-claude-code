@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.5](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.5.4...v1.5.5) (2026-11-26)
+
+
+### Bug Fixes
+
+* keep the clicked thread row selected and clear it with a click below the rows ([#46](https://github.com/v0rest/skein-intellij-claude-code/issues/46)) ([52d651d](https://github.com/v0rest/skein-intellij-claude-code/commit/52d651d78c13c4b1591097469bdb2149aeaa6bf9))
+
 ## [1.5.4](https://github.com/v0rest/skein-intellij-claude-code/compare/v1.5.3...v1.5.4) (2026-11-25)
 
 
